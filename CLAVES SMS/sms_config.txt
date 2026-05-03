@@ -1,1 +1,0 @@
-https://api-mapper.clicksend.com/http/v2/send.php?method=http&username=eldarvi30@gmail.com&key=3EEA9665-1113-063D-2F6D-DE34BFF9A636&to={+34637861019}&message={DAVASA MALAGA TIENE PAQUETERIA PREPARADA PARA SU RECOGIDA GRACIAS

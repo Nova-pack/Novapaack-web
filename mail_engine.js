@@ -12,13 +12,40 @@ const { JSDOM } = require('jsdom');
 const firebase = require('firebase/compat/app');
 require('firebase/compat/auth');
 require('firebase/compat/firestore');
+const path = require('path');
+const fs = require('fs');
 
-// ============ CONFIG ============
+// Load .env if present (no external dotenv dep)
+(function loadDotEnv() {
+    const envPath = path.join(__dirname, '.env');
+    if (!fs.existsSync(envPath)) return;
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+        const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+        if (!m) continue;
+        const key = m[1];
+        let val = m[2];
+        if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+        if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+        if (process.env[key] === undefined) process.env[key] = val;
+    }
+})();
+
+function requireEnv(name) {
+    const v = process.env[name];
+    if (!v) {
+        console.error('[MAIL ENGINE] Missing env var: ' + name + '. Configure it in .env or system env. See .env.example.');
+        process.exit(1);
+    }
+    return v;
+}
+
+// ============ CONFIG (from environment) ============
 const IMAP_CONFIG = {
-    user: 'administracion@novapack.info',
-    password: 'MAJUPACLA',
-    host: 'imap.ionos.es',
-    port: 993,
+    user: requireEnv('IMAP_USER'),
+    password: requireEnv('IMAP_PASS'),
+    host: process.env.IMAP_HOST || 'imap.ionos.es',
+    port: parseInt(process.env.IMAP_PORT || '993', 10),
     tls: true,
     tlsOptions: { rejectUnauthorized: false },
     connTimeout: 30000,
@@ -26,10 +53,13 @@ const IMAP_CONFIG = {
 };
 
 const FIREBASE_CONFIG = {
-    apiKey: "AIzaSyCHIqqwPtx5SFzf5d-cb6H0VSwX5eP_5lE",
-    authDomain: "novapack-68f05.firebaseapp.com",
-    projectId: "novapack-68f05"
+    apiKey: requireEnv('FIREBASE_API_KEY'),
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN || 'novapack-68f05.firebaseapp.com',
+    projectId: process.env.FIREBASE_PROJECT_ID || 'novapack-68f05'
 };
+
+const FIREBASE_AUTH_USER = requireEnv('FIREBASE_ADMIN_EMAIL');
+const FIREBASE_AUTH_PASS = requireEnv('FIREBASE_ADMIN_PASS');
 
 // How many days back to scan for emails
 const DAYS_BACK = 3;
@@ -503,7 +533,7 @@ async function main() {
         // Read admin UID from environment or hardcode for this script
         // The Firestore rules require auth, so we need a valid user
         const accounts = [
-            { email: 'administracion@novapack.info', pass: 'novapack' },
+            { email: FIREBASE_AUTH_USER, pass: FIREBASE_AUTH_PASS },
         ];
 
         let authed = false;

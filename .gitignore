@@ -5,5 +5,13 @@ firebase-hosts.log
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 *.local
 *.log
+
+# Sensitive — credentials and data dumps must never be committed
+CLAVES SMS/
+COPIA DE SEGURIDAD/
+*FULL_BACKUP*.json
+secrets/

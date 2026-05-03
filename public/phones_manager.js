@@ -325,17 +325,51 @@
         }
     };
 
-    // ============ MASTER PINS ============
+    // ============ MASTER PINS (stored hashed; plain values are never re-shown) ============
+
+    async function _sha256Hex(str) {
+        const enc = new TextEncoder().encode(str);
+        const buf = await crypto.subtle.digest('SHA-256', enc);
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+    }
 
     async function loadMasterPins() {
         try {
             const doc = await db.collection('config').doc('phones').get();
-            if (doc.exists) {
-                const data = doc.data();
-                const pin1 = document.getElementById('master-pin-1');
-                const pin2 = document.getElementById('master-pin-2');
-                if (pin1 && data.masterPin1) pin1.value = data.masterPin1;
-                if (pin2 && data.masterPin2) pin2.value = data.masterPin2;
+            if (!doc.exists) return;
+            const data = doc.data();
+            const pin1El = document.getElementById('master-pin-1');
+            const pin2El = document.getElementById('master-pin-2');
+            const statusEl = document.getElementById('master-pin-status');
+
+            // Auto-migrate: if plain PINs exist without hashes, hash them and clear plaintext.
+            const needsMigration = (data.masterPin1 && !data.masterPin1Hash)
+                                || (data.masterPin2 && !data.masterPin2Hash);
+            if (needsMigration) {
+                const upd = {
+                    masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    masterPin1: firebase.firestore.FieldValue.delete(),
+                    masterPin2: firebase.firestore.FieldValue.delete()
+                };
+                if (data.masterPin1) upd.masterPin1Hash = await _sha256Hex(data.masterPin1);
+                if (data.masterPin2) upd.masterPin2Hash = await _sha256Hex(data.masterPin2);
+                await db.collection('config').doc('phones').set(upd, { merge: true });
+                console.log('[Phones] Migrated plain PINs → SHA-256 hashes');
+            }
+
+            // Never show the original PIN. Indicate whether one is configured.
+            if (pin1El) {
+                pin1El.value = '';
+                pin1El.placeholder = (data.masterPin1Hash || data.masterPin1) ? '•••• (configurado)' : 'Introduce un PIN';
+            }
+            if (pin2El) {
+                pin2El.value = '';
+                pin2El.placeholder = (data.masterPin2Hash || data.masterPin2) ? '•••• (configurado)' : 'Introduce un PIN';
+            }
+            if (statusEl && needsMigration) {
+                statusEl.textContent = 'PINs migrados a almacenamiento seguro (hash)';
+                statusEl.style.color = '#4CAF50';
+                setTimeout(() => { statusEl.textContent = ''; }, 4000);
             }
         } catch (e) {
             console.error('[Phones] Error loading master PINs:', e);
@@ -353,13 +387,21 @@
         }
 
         try {
-            await db.collection('config').doc('phones').set({
-                masterPin1: pin1,
-                masterPin2: pin2,
-                masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
+            const upd = {
+                masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                masterPin1: firebase.firestore.FieldValue.delete(),
+                masterPin2: firebase.firestore.FieldValue.delete()
+            };
+            if (pin1) upd.masterPin1Hash = await _sha256Hex(pin1);
+            if (pin2) upd.masterPin2Hash = await _sha256Hex(pin2);
+            await db.collection('config').doc('phones').set(upd, { merge: true });
+            // Clear inputs so plain PIN never lingers in DOM
+            const pin1El = document.getElementById('master-pin-1');
+            const pin2El = document.getElementById('master-pin-2');
+            if (pin1El) { pin1El.value = ''; pin1El.placeholder = pin1 ? '•••• (configurado)' : pin1El.placeholder; }
+            if (pin2El) { pin2El.value = ''; pin2El.placeholder = pin2 ? '•••• (configurado)' : pin2El.placeholder; }
             if (statusEl) {
-                statusEl.textContent = 'PINs guardados';
+                statusEl.textContent = 'PINs guardados (hash SHA-256)';
                 statusEl.style.color = '#4CAF50';
                 setTimeout(() => { statusEl.textContent = ''; }, 3000);
             }

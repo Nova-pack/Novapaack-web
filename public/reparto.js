@@ -828,7 +828,34 @@ function initApp() {
     // --- MASTER PIN AUTH ---
     var _adminRoutes = [];
 
+    // SHA-256 hex of an input string. Falls back gracefully if SubtleCrypto missing.
+    async function _sha256Hex(str) {
+        try {
+            var enc = new TextEncoder().encode(str);
+            var buf = await crypto.subtle.digest('SHA-256', enc);
+            var bytes = new Uint8Array(buf);
+            var hex = '';
+            for (var i = 0; i < bytes.length; i++) {
+                hex += bytes[i].toString(16).padStart(2, '0');
+            }
+            return hex;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Rate-limit PIN attempts per browser to slow down brute force
+    var _pinAttempts = parseInt(sessionStorage.getItem('pinAttempts') || '0', 10);
+    var _pinLockUntil = parseInt(sessionStorage.getItem('pinLockUntil') || '0', 10);
+
     document.getElementById('btn-master-pin').addEventListener('click', async function() {
+        var now = Date.now();
+        if (now < _pinLockUntil) {
+            var secs = Math.ceil((_pinLockUntil - now) / 1000);
+            document.getElementById('login-error').textContent = 'Demasiados intentos. Espera ' + secs + 's.';
+            return;
+        }
+
         var pin = (document.getElementById('master-pin-input').value || '').trim();
         if (!pin) {
             document.getElementById('login-error').textContent = 'Introduce un PIN maestro.';
@@ -838,18 +865,57 @@ function initApp() {
         showLoading();
 
         try {
-            var configDoc = await db.collection('config').doc('phones').get();
-            var configData = configDoc.exists ? configDoc.data() : {};
-            var pin1 = configData.masterPin1 || '';
-            var pin2 = configData.masterPin2 || '';
-
-            if (pin !== pin1 && pin !== pin2) {
-                document.getElementById('login-error').textContent = 'PIN maestro incorrecto.';
+            // STEP 1: anonymous auth FIRST so config/phones (now auth-protected) is readable
+            _isMasterPinSession = true;
+            try {
+                await auth.signInAnonymously();
+                console.log('[REPARTO] Master PIN: anonymous auth OK');
+            } catch (authErr) {
+                console.error('[REPARTO] Anonymous auth failed:', authErr);
+                document.getElementById('login-error').textContent = 'Error de autenticación. Contacta al administrador.';
+                _isMasterPinSession = false;
                 hideLoading();
                 return;
             }
 
-            // PIN valid — load all routes
+            // STEP 2: read PIN config (requires auth)
+            var configDoc = await db.collection('config').doc('phones').get();
+            var configData = configDoc.exists ? configDoc.data() : {};
+            var pin1Hash = configData.masterPin1Hash || '';
+            var pin2Hash = configData.masterPin2Hash || '';
+            var pin1Plain = configData.masterPin1 || '';  // legacy fallback
+            var pin2Plain = configData.masterPin2 || '';  // legacy fallback
+
+            // STEP 3: compare. Prefer hash; fall back to plain for migration period.
+            var pinHash = await _sha256Hex(pin);
+            var ok = false;
+            if (pinHash && (pinHash === pin1Hash || pinHash === pin2Hash)) ok = true;
+            else if (pin1Plain && pin === pin1Plain) ok = true;
+            else if (pin2Plain && pin === pin2Plain) ok = true;
+
+            if (!ok) {
+                _pinAttempts++;
+                sessionStorage.setItem('pinAttempts', String(_pinAttempts));
+                if (_pinAttempts >= 5) {
+                    _pinLockUntil = Date.now() + 60000; // 60s lockout after 5 fails
+                    sessionStorage.setItem('pinLockUntil', String(_pinLockUntil));
+                    sessionStorage.setItem('pinAttempts', '0');
+                    _pinAttempts = 0;
+                }
+                document.getElementById('login-error').textContent = 'PIN maestro incorrecto.';
+                // Roll back the anonymous session — never leave logged in on bad PIN
+                try { await auth.signOut(); } catch(e){}
+                _isMasterPinSession = false;
+                hideLoading();
+                return;
+            }
+
+            // Reset attempt counter on success
+            sessionStorage.removeItem('pinAttempts');
+            sessionStorage.removeItem('pinLockUntil');
+            _pinAttempts = 0;
+
+            // STEP 4: load all routes
             var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
             _adminRoutes = [];
             phonesSnap.forEach(function(doc) {
@@ -864,18 +930,8 @@ function initApp() {
 
             if (_adminRoutes.length === 0) {
                 document.getElementById('login-error').textContent = 'No hay rutas configuradas.';
-                hideLoading();
-                return;
-            }
-
-            // Anonymous auth needed so Firestore rules (request.auth != null) allow ticket queries
-            _isMasterPinSession = true;
-            try {
-                await auth.signInAnonymously();
-                console.log('[REPARTO] Master PIN: anonymous auth OK');
-            } catch (authErr) {
-                console.error('[REPARTO] Anonymous auth failed:', authErr);
-                document.getElementById('login-error').textContent = 'Error de autenticación. Contacta al administrador.';
+                try { await auth.signOut(); } catch(e){}
+                _isMasterPinSession = false;
                 hideLoading();
                 return;
             }
@@ -884,6 +940,8 @@ function initApp() {
         } catch (e) {
             console.error('Master PIN error:', e);
             document.getElementById('login-error').textContent = 'Error: ' + e.message;
+            try { await auth.signOut(); } catch(_){}
+            _isMasterPinSession = false;
         } finally {
             hideLoading();
         }

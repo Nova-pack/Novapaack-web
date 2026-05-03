@@ -246,18 +246,24 @@ function _doRenderMailbox() {
             dateStr = item.date;
         }
 
-        // For outgoing: show recipient. For incoming: show sender
+        // For outgoing: show recipient. For incoming: show sender. Email headers
+        // come from external IMAP and may contain HTML payloads — escape always.
+        const _esc = (typeof escapeHtml === 'function')
+            ? escapeHtml
+            : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'));
         const contactDisplay = outgoing
-            ? `<span style="color:#2196F3;">→</span> ${item.toName || item.to || 'Desconocido'}`
-            : (item.from || 'Desconocido');
+            ? `<span style="color:#2196F3;">→</span> ${_esc(item.toName || item.to || 'Desconocido')}`
+            : _esc(item.from || 'Desconocido');
 
-        const ticketStr = item.ticketRef ? `<span style="background:rgba(255,152,0,0.2); color:#FF9800; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8rem;">${item.ticketRef}</span>` : `<span style="color:#666;">-</span>`;
+        const ticketStr = item.ticketRef ? `<span style="background:rgba(255,152,0,0.2); color:#FF9800; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8rem;">${_esc(item.ticketRef)}</span>` : `<span style="color:#666;">-</span>`;
 
         // Preview: primeras 80 chars del body
-        const bodyPreview = item.body ? item.body.replace(/[\r\n]+/g, ' ').substring(0, 80) + (item.body.length > 80 ? '...' : '') : '';
+        const bodyPreviewRaw = item.body ? item.body.replace(/[\r\n]+/g, ' ').substring(0, 80) + (item.body.length > 80 ? '...' : '') : '';
+        const bodyPreview = _esc(bodyPreviewRaw);
 
-        // Subject con title tooltip
-        const subjectFull = (item.subject || '(Sin Asunto)').replace(/"/g, '&quot;');
+        // Subject con title tooltip — escape both for attribute and content
+        const subjectFull = _esc(item.subject || '(Sin Asunto)');
+        const subjectText = _esc(item.subject || '(Sin Asunto)');
 
         // Row highlight for new incoming
         const rowBg = (!outgoing && est === 'nueva') ? 'background:rgba(255,152,0,0.04);' : '';
@@ -272,7 +278,7 @@ function _doRenderMailbox() {
             <td style="padding:12px; font-size:0.85rem; color:#aaa; font-weight: bold;">${catText}</td>
             <td style="padding:12px; font-weight:bold; color:#ddd;">${contactDisplay}</td>
             <td style="padding:12px; color:#fff; max-width:300px;" title="${subjectFull}">
-                <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600;">${item.subject || '(Sin Asunto)'}</div>
+                <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600;">${subjectText}</div>
                 <div style="font-size:0.75rem; color:#888; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${bodyPreview}</div>
             </td>
             <td style="padding:12px; text-align:center;">${ticketStr}</td>
@@ -338,7 +344,10 @@ window.openMailboxModal = function(id) {
     const fromEl = document.getElementById('mailbox-modal-from');
     if (fromEl) {
         if (outgoing) {
-            fromEl.innerHTML = `<span style="color:#2196F3;">→ Enviado a:</span> ${item.toName || item.to || 'Desconocido'}`;
+            const _esc = (typeof escapeHtml === 'function')
+                ? escapeHtml
+                : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'));
+            fromEl.innerHTML = `<span style="color:#2196F3;">→ Enviado a:</span> ${_esc(item.toName || item.to || 'Desconocido')}`;
         } else {
             fromEl.innerText = item.from || 'Desconocido';
         }
@@ -429,6 +438,9 @@ window.openMailboxModal = function(id) {
     // ============ POD PANEL ============
     const podPanel = document.getElementById('mailbox-pod-panel');
     if (podPanel) {
+        const _esc = (typeof escapeHtml === 'function')
+            ? escapeHtml
+            : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'));
         if (!outgoing && item.podInfo && item.podInfo.ready) {
             const reasonMap = { pod_disponible: 'POD disponible' };
             let deliveredAt = 'N/A';
@@ -445,9 +457,9 @@ window.openMailboxModal = function(id) {
                     </div>
                     <div style="font-size:0.8rem; color:#ccc; margin-bottom:8px;">
                         <div><strong>Estado:</strong> <span style="color:#4CAF50;">Entregado</span></div>
-                        <div><strong>Fecha entrega:</strong> ${deliveredAt}</div>
-                        <div><strong>Recibido por:</strong> ${item.podInfo.receiverName || 'N/A'}</div>
-                        <div><strong>Repartidor:</strong> ${item.podInfo.driverName || 'N/A'}</div>
+                        <div><strong>Fecha entrega:</strong> ${_esc(deliveredAt)}</div>
+                        <div><strong>Recibido por:</strong> ${_esc(item.podInfo.receiverName || 'N/A')}</div>
+                        <div><strong>Repartidor:</strong> ${_esc(item.podInfo.driverName || 'N/A')}</div>
                         <div style="margin-top:6px;">
                             ${item.podInfo.signatureURL ? '<span style="color:#2196F3;">📝 Firma</span> ' : ''}
                             ${item.podInfo.photoURL ? '<span style="color:#FF9800;">📷 Foto</span>' : ''}
@@ -477,7 +489,7 @@ window.openMailboxModal = function(id) {
                         <span class="material-symbols-outlined" style="color:#FF9800; font-size:1.1rem;">info</span>
                         <strong style="color:#FF9800; font-size:0.8rem; text-transform:uppercase;">POD No Disponible</strong>
                     </div>
-                    <div style="font-size:0.8rem; color:#aaa;">${reason}</div>
+                    <div style="font-size:0.8rem; color:#aaa;">${_esc(reason)}</div>
                 </div>`;
             podPanel.style.display = 'block';
         } else if (!outgoing && item.category === 'pod') {
@@ -492,24 +504,34 @@ window.openMailboxModal = function(id) {
     const attachPanel = document.getElementById('mailbox-modal-attachments');
     if (attachPanel) {
         if (item.attachments && item.attachments.length > 0) {
+            const _esc = (typeof escapeHtml === 'function')
+                ? escapeHtml
+                : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'));
+            // Only allow data: URLs for href/src — block javascript:, vbscript: etc.
+            const _safeUrl = (u) => {
+                if (typeof u !== 'string') return '';
+                return /^data:/i.test(u) ? u : '';
+            };
             let attHtml = '<div style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">📎 Adjuntos (' + item.attachments.length + '):</div>';
             item.attachments.forEach(att => {
                 const sizeKB = att.size ? (att.size / 1024).toFixed(1) + ' KB' : '';
                 const isImage = (att.contentType || '').startsWith('image/');
-                if (att.dataUrl) {
+                const safeName = _esc(att.filename || 'archivo');
+                const safeUrl = _safeUrl(att.dataUrl);
+                if (safeUrl) {
                     attHtml += `<div style="display:flex; align-items:center; gap:6px; padding:5px 0; font-size:0.8rem; color:#ccc; border-bottom:1px solid #222;">
                         <span class="material-symbols-outlined" style="font-size:1rem; color:#4CAF50;">attach_file</span>
-                        <a href="${att.dataUrl}" download="${att.filename}" style="flex:1; color:#4FC3F7; text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="Descargar">${att.filename}</a>
+                        <a href="${safeUrl}" download="${safeName}" style="flex:1; color:#4FC3F7; text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="Descargar">${safeName}</a>
                         <span style="color:#666; font-size:0.7rem;">${sizeKB}</span>
-                        <a href="${att.dataUrl}" download="${att.filename}" style="color:#4CAF50; font-size:0.7rem; text-decoration:none; font-weight:bold; padding:2px 8px; border:1px solid #4CAF50; border-radius:4px;">⬇ Descargar</a>
+                        <a href="${safeUrl}" download="${safeName}" style="color:#4CAF50; font-size:0.7rem; text-decoration:none; font-weight:bold; padding:2px 8px; border:1px solid #4CAF50; border-radius:4px;">⬇ Descargar</a>
                     </div>`;
                     if (isImage) {
-                        attHtml += `<div style="padding:4px 0 8px;"><img src="${att.dataUrl}" style="max-width:100%; max-height:200px; border-radius:6px; border:1px solid #333;"></div>`;
+                        attHtml += `<div style="padding:4px 0 8px;"><img src="${safeUrl}" style="max-width:100%; max-height:200px; border-radius:6px; border:1px solid #333;"></div>`;
                     }
                 } else {
                     attHtml += `<div style="display:flex; align-items:center; gap:6px; padding:5px 0; font-size:0.8rem; color:#ccc; border-bottom:1px solid #222;">
                         <span class="material-symbols-outlined" style="font-size:1rem; color:#FF9800;">attach_file</span>
-                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${att.filename}</span>
+                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${safeName}</span>
                         <span style="color:#666; font-size:0.7rem;">${sizeKB}</span>
                     </div>`;
                 }
@@ -536,7 +558,8 @@ window.openMailboxModal = function(id) {
                 let hDate = '';
                 if (h.at && h.at.toDate) hDate = h.at.toDate().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
                 else if (h.at && h.at._seconds) hDate = new Date(h.at._seconds * 1000).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
-                hHtml += `<div style="font-size:0.75rem; color:#888; padding:2px 0; border-left:2px solid #333; padding-left:8px; margin-left:4px;">${hDate} → <span style="color:#ccc;">${h.status}</span></div>`;
+                const _eh = (typeof escapeHtml === 'function') ? escapeHtml : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));
+                hHtml += `<div style="font-size:0.75rem; color:#888; padding:2px 0; border-left:2px solid #333; padding-left:8px; margin-left:4px;">${_eh(hDate)} → <span style="color:#ccc;">${_eh(h.status)}</span></div>`;
             });
             historyPanel.innerHTML = '<strong style="color:var(--text-dim); font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; display:block; margin-bottom:6px;">Historial</strong>' + hHtml;
             historyPanel.style.display = 'block';

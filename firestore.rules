@@ -12,17 +12,14 @@ service cloud.firestore {
     }
 
     // ─── CONFIG (admin-only write, auth read) ───
+    // Auth required for ALL config docs — including config/phones (master PIN
+    // hashes live there). Drivers must signInAnonymously() before reading.
     match /config/{docId} {
       allow read: if isAuth();
       allow write: if isAdmin();
     }
-    // Phones subcollection: public read (driver PIN validation), admin write
-    match /config/phones {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
     match /config/{parent}/list/{phoneId} {
-      allow read: if true;
+      allow read: if isAuth();
       allow write: if isAdmin();
     }
 
