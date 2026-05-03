@@ -729,6 +729,27 @@ document.addEventListener('DOMContentLoaded', function() {
 function initApp() {
     var storage = firebase.storage();
 
+    // --- VAN MODE (modo furgón: botones grandes, alto contraste) ---
+    (function() {
+        var urlParams = new URLSearchParams(window.location.search);
+        var fromUrl = urlParams.get('furgon') === '1';
+        var saved = localStorage.getItem('vanMode') === '1';
+        if (fromUrl || saved) {
+            document.body.classList.add('van-mode');
+            if (fromUrl) localStorage.setItem('vanMode', '1');
+        }
+        var btn = document.getElementById('btn-van-mode');
+        if (btn) {
+            btn.addEventListener('click', function() {
+                var on = document.body.classList.toggle('van-mode');
+                localStorage.setItem('vanMode', on ? '1' : '0');
+                if (typeof showToast === 'function') {
+                    showToast(on ? 'Modo furgón activado' : 'Modo furgón desactivado', 'info', 1800);
+                }
+            });
+        }
+    })();
+
     // --- CONNECTION STATUS MONITOR ---
     function updateConnectionDot(online) {
         var dot = document.getElementById('connection-dot');

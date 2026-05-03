@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instalar Novapack Repartidor</title>
+    <meta name="theme-color" content="#FF4D00">
+    <link rel="icon" href="icon_new.png">
+    <link rel="apple-touch-icon" href="icon_new.png">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e8e8e8;
+            min-height: 100vh;
+            padding: 24px 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .logo {
+            width: 96px; height: 96px;
+            border-radius: 24px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(255,77,0,0.3);
+        }
+        h1 {
+            font-size: 1.6rem;
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 4px;
+            color: #FF4D00;
+            letter-spacing: 0.5px;
+        }
+        .subtitle {
+            font-size: 0.95rem;
+            color: #999;
+            text-align: center;
+            margin-bottom: 28px;
+        }
+        .card {
+            background: #161616;
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            padding: 20px;
+            width: 100%;
+            max-width: 420px;
+            margin-bottom: 16px;
+        }
+        .card h2 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card h2::before {
+            content: "";
+            display: inline-block;
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            background: #FF4D00;
+            color: #000;
+            font-size: 0.85rem;
+            text-align: center;
+            line-height: 24px;
+            font-weight: 800;
+        }
+        .card.step-1 h2::before { content: "1"; }
+        .card.step-2 h2::before { content: "2"; }
+        .card.step-3 h2::before { content: "3"; }
+        ol, ul {
+            padding-left: 18px;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: #ccc;
+        }
+        ol li, ul li { margin-bottom: 6px; }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 16px;
+            border: 0;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            margin-top: 12px;
+        }
+        .btn-primary {
+            background: #FF4D00;
+            color: #000;
+            box-shadow: 0 4px 16px rgba(255,77,0,0.4);
+        }
+        .btn-primary:disabled {
+            background: #444;
+            color: #888;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        .btn-ghost {
+            background: transparent;
+            color: #FF4D00;
+            border: 1px solid rgba(255,77,0,0.4);
+        }
+        #qr-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 0;
+        }
+        #qr-canvas {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+        }
+        .url-box {
+            background: #0a0a0a;
+            border: 1px solid rgba(255,255,255,0.10);
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #FF9F0A;
+            text-align: center;
+            user-select: all;
+            word-break: break-all;
+        }
+        .platform-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 100px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(255,77,0,0.15);
+            color: #FF9F0A;
+            margin-bottom: 12px;
+        }
+        .hidden { display: none !important; }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 0.75rem;
+            margin-top: 16px;
+        }
+    </style>
+</head>
+<body>
+    <img class="logo" src="icon_new.png" alt="Novapack">
+    <h1>NOVAPACK REPARTIDOR</h1>
+    <p class="subtitle">Instala la app en este dispositivo</p>
+
+    <div class="card step-1">
+        <h2>Plataforma detectada</h2>
+        <span class="platform-badge" id="platform-badge">Detectando...</span>
+        <p id="platform-hint" style="font-size:0.85rem; color:#999;"></p>
+    </div>
+
+    <!-- ANDROID / DESKTOP CHROME — beforeinstallprompt -->
+    <div class="card step-2 hidden" id="card-android">
+        <h2>Instalación automática</h2>
+        <p style="font-size:0.9rem; color:#ccc;">Pulsa el botón y acepta el aviso de Chrome.</p>
+        <button class="btn btn-primary" id="btn-install" disabled>Instalar app</button>
+        <p id="install-status" style="font-size:0.8rem; color:#999; text-align:center; margin-top:8px;"></p>
+        <details style="margin-top:14px;">
+            <summary style="cursor:pointer; font-size:0.85rem; color:#FF9F0A;">¿No aparece el botón?</summary>
+            <ol style="margin-top:8px;">
+                <li>Abre el menú de Chrome (los 3 puntos arriba a la derecha).</li>
+                <li>Pulsa <b>Instalar app</b> o <b>Añadir a pantalla de inicio</b>.</li>
+                <li>Confirma. El icono saldrá en el escritorio.</li>
+            </ol>
+        </details>
+    </div>
+
+    <!-- iOS — manual instructions -->
+    <div class="card step-2 hidden" id="card-ios">
+        <h2>Instalar en iPhone / iPad</h2>
+        <ol>
+            <li>Abre esta página en <b>Safari</b> (no Chrome).</li>
+            <li>Pulsa el botón <b>Compartir</b> (icono de cuadrado con flecha hacia arriba).</li>
+            <li>Desplázate y elige <b>Añadir a pantalla de inicio</b>.</li>
+            <li>Pulsa <b>Añadir</b>. Aparecerá el icono Novapack.</li>
+        </ol>
+    </div>
+
+    <!-- DESKTOP fallback -->
+    <div class="card step-2 hidden" id="card-desktop">
+        <h2>Escanea para instalar en la tablet</h2>
+        <div id="qr-wrap">
+            <canvas id="qr-canvas" width="200" height="200"></canvas>
+            <div class="url-box" id="install-url"></div>
+        </div>
+        <p style="font-size:0.85rem; color:#999; text-align:center;">
+            Abre el enlace desde la tablet del furgón y pulsa "Instalar app".
+        </p>
+    </div>
+
+    <div class="card step-3">
+        <h2>Abrir directamente</h2>
+        <p style="font-size:0.9rem; color:#ccc; margin-bottom:8px;">
+            Si prefieres usarla en el navegador sin instalar:
+        </p>
+        <a href="reparto.html" class="btn btn-ghost" style="text-decoration:none; text-align:center;">Abrir Reparto</a>
+        <a href="reparto.html?furgon=1" class="btn btn-ghost" style="text-decoration:none; text-align:center; margin-top:8px;">Abrir Modo Furgón (botones grandes)</a>
+    </div>
+
+    <p class="footer">Novapack Cloud · v2.2</p>
+
+    <script>
+        // ===== Platform detection =====
+        var ua = navigator.userAgent || '';
+        var isIOS = /iPhone|iPad|iPod/i.test(ua) && !window.MSStream;
+        var isAndroid = /Android/i.test(ua);
+        var isMobile = isIOS || isAndroid || /Mobi|Tablet/i.test(ua);
+        var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+        var badge = document.getElementById('platform-badge');
+        var hint = document.getElementById('platform-hint');
+
+        if (isStandalone) {
+            badge.textContent = '✅ App ya instalada';
+            badge.style.background = 'rgba(52,199,89,0.15)';
+            badge.style.color = '#34C759';
+            hint.textContent = 'Estás abriendo Novapack desde la app instalada.';
+            setTimeout(function() { window.location.href = 'reparto.html'; }, 1500);
+        } else if (isIOS) {
+            badge.textContent = '🍎 iPhone / iPad';
+            hint.textContent = 'En iOS hay que instalar manualmente desde Safari.';
+            document.getElementById('card-ios').classList.remove('hidden');
+        } else if (isAndroid) {
+            badge.textContent = '🤖 Android';
+            hint.textContent = 'Pulsa el botón para instalar la app.';
+            document.getElementById('card-android').classList.remove('hidden');
+        } else if (isMobile) {
+            badge.textContent = '📱 Móvil';
+            hint.textContent = 'Pulsa el botón para instalar la app.';
+            document.getElementById('card-android').classList.remove('hidden');
+        } else {
+            badge.textContent = '💻 Escritorio';
+            hint.textContent = 'Para instalarla en la tablet del furgón, escanea el QR.';
+            document.getElementById('card-desktop').classList.remove('hidden');
+            document.getElementById('install-url').textContent = window.location.href;
+            drawQR(window.location.href);
+        }
+
+        // ===== beforeinstallprompt =====
+        var deferredPrompt = null;
+        var btnInstall = document.getElementById('btn-install');
+        var statusEl = document.getElementById('install-status');
+
+        window.addEventListener('beforeinstallprompt', function(e) {
+            e.preventDefault();
+            deferredPrompt = e;
+            btnInstall.disabled = false;
+            statusEl.textContent = 'Listo para instalar.';
+        });
+
+        btnInstall.addEventListener('click', async function() {
+            if (!deferredPrompt) {
+                statusEl.textContent = 'Usa el menú de Chrome → Instalar app.';
+                return;
+            }
+            deferredPrompt.prompt();
+            var choice = await deferredPrompt.userChoice;
+            if (choice.outcome === 'accepted') {
+                statusEl.textContent = '✅ Instalando...';
+                btnInstall.disabled = true;
+            } else {
+                statusEl.textContent = 'Instalación cancelada.';
+            }
+            deferredPrompt = null;
+        });
+
+        window.addEventListener('appinstalled', function() {
+            statusEl.textContent = '✅ App instalada. Abriéndola...';
+            setTimeout(function() { window.location.href = 'reparto.html'; }, 1200);
+        });
+
+        // ===== Tiny QR generator (no deps) — uses Google Charts as fallback image =====
+        function drawQR(url) {
+            var canvas = document.getElementById('qr-canvas');
+            var ctx = canvas.getContext('2d');
+            var img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = function() {
+                ctx.drawImage(img, 0, 0, 200, 200);
+            };
+            img.onerror = function() {
+                // Fallback: just show the URL big
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, 200, 200);
+                ctx.fillStyle = '#000';
+                ctx.font = 'bold 14px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('QR no disponible', 100, 95);
+                ctx.fillText('offline', 100, 115);
+            };
+            img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=' + encodeURIComponent(url);
+        }
+    </script>
+</body>
+</html>
