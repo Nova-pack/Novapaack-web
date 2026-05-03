@@ -273,11 +273,19 @@
         _initZonesAutocomplete();
     };
 
+    function _normalizeRoutePhone(p) {
+        let d = (p || '').toString().replace(/\D/g, '');
+        if (d.length > 9 && d.indexOf('0034') === 0) d = d.slice(4);
+        else if (d.length > 9 && d.indexOf('34') === 0) d = d.slice(2);
+        if (d.length > 9) d = d.slice(-9);
+        return d;
+    }
+
     window.savePhoneRoute = async () => {
         const docId = document.getElementById('phone-edit-docid').value;
         const data = {
             label: document.getElementById('phone-edit-label').value.trim(),
-            number: document.getElementById('phone-edit-number').value.trim(),
+            number: _normalizeRoutePhone(document.getElementById('phone-edit-number').value),
             driverName: document.getElementById('phone-edit-d1').value.trim(),
             driverName2: document.getElementById('phone-edit-d2').value.trim(),
             driverName3: document.getElementById('phone-edit-d3').value.trim(),

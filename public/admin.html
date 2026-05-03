@@ -13897,6 +13897,13 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                                     }
                                 }
                             }
+                            if (assignedPhone) {
+                                var _ap = (assignedPhone || '').toString().replace(/\D/g, '');
+                                if (_ap.length > 9 && _ap.indexOf('0034') === 0) _ap = _ap.slice(4);
+                                else if (_ap.length > 9 && _ap.indexOf('34') === 0) _ap = _ap.slice(2);
+                                if (_ap.length > 9) _ap = _ap.slice(-9);
+                                assignedPhone = _ap;
+                            }
 
                             const t = {
                                 id: cols[0]?.trim(),
@@ -17228,6 +17235,14 @@ window.importTarifas50 = async () => {
                     });
                 }
                 if (!driverPhone && rtList.length === 1) driverPhone = rtList[0].number;
+                // Normalize to canonical 9-digit form so it matches reparto.js listener query
+                if (driverPhone) {
+                    var _dp = (driverPhone || '').toString().replace(/\D/g, '');
+                    if (_dp.length > 9 && _dp.indexOf('0034') === 0) _dp = _dp.slice(4);
+                    else if (_dp.length > 9 && _dp.indexOf('34') === 0) _dp = _dp.slice(2);
+                    if (_dp.length > 9) _dp = _dp.slice(-9);
+                    driverPhone = _dp;
+                }
             } catch(e) { console.warn('Auto-route error:', e); }
 
             // Build package list
