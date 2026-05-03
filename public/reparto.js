@@ -3009,6 +3009,7 @@ function initApp() {
         document.getElementById('cooper-photo-input').value = '';
         document.getElementById('cooper-photo-status').textContent = 'Sin foto';
         document.getElementById('btn-cooper-send').style.display = 'none';
+        document.getElementById('btn-cooper-delete-photo').style.display = 'none';
         var noteEl = document.getElementById('cooper-note');
         if (noteEl) noteEl.value = '';
         modal.classList.add('active');
@@ -3029,9 +3030,22 @@ function initApp() {
                 document.getElementById('cooper-photo-preview').style.display = 'block';
                 document.getElementById('cooper-photo-status').textContent = 'Foto lista';
                 document.getElementById('btn-cooper-send').style.display = 'block';
+                document.getElementById('btn-cooper-delete-photo').style.display = 'block';
+                document.getElementById('btn-cooper-camera').innerHTML = '<span class="material-symbols-outlined">refresh</span> REPETIR FOTO';
             };
             reader.readAsDataURL(f);
         }
+    });
+
+    // Delete selected photo (re-take)
+    document.getElementById('btn-cooper-delete-photo').addEventListener('click', function() {
+        document.getElementById('cooper-photo-input').value = '';
+        document.getElementById('cooper-photo-preview').src = '';
+        document.getElementById('cooper-photo-preview').style.display = 'none';
+        document.getElementById('cooper-photo-status').textContent = 'Sin foto';
+        document.getElementById('btn-cooper-send').style.display = 'none';
+        document.getElementById('btn-cooper-delete-photo').style.display = 'none';
+        document.getElementById('btn-cooper-camera').innerHTML = '<span class="material-symbols-outlined">camera_alt</span> ABRIR CAMARA';
     });
 
     // Cancel
