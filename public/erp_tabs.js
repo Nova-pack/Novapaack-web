@@ -25,7 +25,8 @@
         'erp-tab-facturas-central', 'erp-tab-route-details', 'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment',
         'erp-tab-trash',
         'erp-tab-cooper',
-        'erp-tab-analytics'
+        'erp-tab-analytics',
+        'erp-tab-auto-assign'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -62,6 +63,7 @@
         'trash':           { wsId: 'erp-tab-trash',               title: 'Papelera',           icon: 'delete',             closeable: true },
         'cooper':          { wsId: 'erp-tab-cooper',              title: 'Cooper',             icon: 'local_shipping',     closeable: true },
         'analytics':       { wsId: 'erp-tab-analytics',           title: 'Analítica',          icon: 'monitoring',         closeable: true },
+        'auto-assign':     { wsId: 'erp-tab-auto-assign',         title: 'Auto-asignar',       icon: 'auto_awesome',       closeable: true },
     };
 
     // --- CORE API ---
