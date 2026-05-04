@@ -24,7 +24,8 @@
         'erp-tab-ticket-search', 'erp-tab-ficha-cliente', 'erp-tab-albaranes-central', 'erp-tab-mailbox',
         'erp-tab-facturas-central', 'erp-tab-route-details', 'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment',
         'erp-tab-trash',
-        'erp-tab-cooper'
+        'erp-tab-cooper',
+        'erp-tab-analytics'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -60,6 +61,7 @@
         'nif-enrichment':  { wsId: 'erp-tab-nif-enrichment',      title: 'Enriquecer NIF',     icon: 'badge',              closeable: true },
         'trash':           { wsId: 'erp-tab-trash',               title: 'Papelera',           icon: 'delete',             closeable: true },
         'cooper':          { wsId: 'erp-tab-cooper',              title: 'Cooper',             icon: 'local_shipping',     closeable: true },
+        'analytics':       { wsId: 'erp-tab-analytics',           title: 'Analítica',          icon: 'monitoring',         closeable: true },
     };
 
     // --- CORE API ---

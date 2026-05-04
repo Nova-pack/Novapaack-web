@@ -916,6 +916,7 @@
             <!-- Botonera -->
             <div style="margin-top:30px; display:flex; justify-content:flex-end; gap:15px; border-top:1px solid var(--border-glass); padding-top:20px; flex-wrap:wrap;">
                 <button class="btn btn-outline" onclick="copyPublicTrackingLink()" style="border-color:#FF9F0A; color:#FF9F0A;"><span class="material-symbols-outlined">link</span> COPIAR LINK PÚBLICO</button>
+                <button class="btn btn-outline" onclick="downloadSignedPOD()" style="border-color:#34C759; color:#34C759;"><span class="material-symbols-outlined">picture_as_pdf</span> DESCARGAR PDF FIRMADO</button>
                 <button class="btn btn-outline" onclick="emailPOD()" style="border-color:#2196F3; color:#2196F3;"><span class="material-symbols-outlined">mail</span> ENVIAR POR EMAIL</button>
                 <button class="btn btn-outline" onclick="printPOD()"><span class="material-symbols-outlined">print</span> IMPRIMIR JUSTIFICANTE</button>
             </div>
@@ -1069,6 +1070,123 @@
             }
         }
 
+        // Generate a downloadable, signed POD as PDF with embedded QR code
+        // pointing at the public tracking page. Uses html2pdf which is already
+        // loaded for invoice generation.
+        window.downloadSignedPOD = async function downloadSignedPOD() {
+            try {
+                var idEl = document.getElementById('pod-res-id');
+                var businessId = idEl ? (idEl.textContent || '').trim() : '';
+                if (!businessId) { alert('No hay albarán seleccionado.'); return; }
+                var origin = location.origin || ('https://' + location.hostname);
+                var trackUrl = origin + '/track.html?id=' + encodeURIComponent(businessId);
+                var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=' + encodeURIComponent(trackUrl);
+
+                var receiver = (document.getElementById('pod-res-receiver').textContent || '').trim();
+                var address = (document.getElementById('pod-res-address').textContent || '').trim();
+                var pkgs = (document.getElementById('pod-res-pkgs').textContent || '').trim();
+                var deliveryName = (document.getElementById('pod-res-delivery-name').textContent || '').trim();
+                var deliveryTime = (document.getElementById('pod-res-delivery-time').textContent || '').trim();
+                var gpsText = (document.getElementById('pod-res-gps').textContent || '').trim();
+                var sigImg = document.getElementById('pod-res-sig-img');
+                var photoImg = document.getElementById('pod-res-photo-img');
+                var sigSrc = (sigImg && sigImg.style.display !== 'none') ? sigImg.src : '';
+                var photoSrc = (photoImg && photoImg.style.display !== 'none') ? photoImg.src : '';
+                var sigAuditEl = document.getElementById('pod-res-sig-audit');
+                var sigRefusedEl = document.getElementById('pod-res-sig-refused');
+                var sigAuditText = (sigAuditEl && sigAuditEl.style.display !== 'none') ? sigAuditEl.textContent.trim() : '';
+                var sigRefusedText = (sigRefusedEl && sigRefusedEl.style.display !== 'none') ? sigRefusedEl.textContent.trim() : '';
+
+                function _eh(s) {
+                    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+                }
+                function _safeUrl(u) {
+                    return (typeof u === 'string' && /^(https?:|data:|blob:)/i.test(u)) ? u : '';
+                }
+                var safeSig = _safeUrl(sigSrc);
+                var safePhoto = _safeUrl(photoSrc);
+
+                var html = ''
+                    + '<div style="font-family:Arial,sans-serif;color:#222;padding:24px;max-width:780px;margin:0 auto;">'
+                    + '  <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #FF4D00;padding-bottom:14px;margin-bottom:20px;">'
+                    + '    <div>'
+                    + '      <div style="font-size:11px;color:#888;letter-spacing:2px;text-transform:uppercase;">NOVAPACK</div>'
+                    + '      <div style="font-size:22px;font-weight:900;color:#1a1a2e;margin-top:4px;">CERTIFICADO DE ENTREGA</div>'
+                    + '      <div style="font-size:14px;color:#333;margin-top:6px;">Albarán: <strong>' + _eh(businessId) + '</strong></div>'
+                    + '    </div>'
+                    + '    <div style="text-align:center;">'
+                    + (qrUrl ? '<img src="' + _eh(qrUrl) + '" crossorigin="anonymous" style="width:130px;height:130px;display:block;">' : '')
+                    + '      <div style="font-size:10px;color:#888;margin-top:4px;max-width:130px;line-height:1.3;">Escanea para seguir el envío en tiempo real</div>'
+                    + '    </div>'
+                    + '  </div>'
+                    + '  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px;">'
+                    + '    <div style="background:#f8f8f8;padding:14px;border-radius:8px;border:1px solid #e0e0e0;">'
+                    + '      <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Datos del envío</div>'
+                    + '      <div style="font-size:13px;line-height:1.7;">'
+                    + '        <div><strong>Destinatario:</strong> ' + _eh(receiver) + '</div>'
+                    + '        <div><strong>Dirección:</strong> ' + _eh(address) + '</div>'
+                    + '        <div><strong>Bultos:</strong> ' + _eh(pkgs) + '</div>'
+                    + '      </div>'
+                    + '    </div>'
+                    + '    <div style="background:#f0fff4;padding:14px;border-radius:8px;border:1px solid #c8e6c9;">'
+                    + '      <div style="font-size:11px;color:#2e7d32;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Confirmación de entrega</div>'
+                    + '      <div style="font-size:13px;line-height:1.7;">'
+                    + '        <div><strong>Entregado a:</strong> ' + _eh(deliveryName) + '</div>'
+                    + '        <div><strong>Fecha/Hora:</strong> ' + _eh(deliveryTime) + '</div>'
+                    + (gpsText ? '<div style="font-size:11px;color:#666;"><strong>GPS:</strong> ' + _eh(gpsText) + '</div>' : '')
+                    + (sigAuditText ? '<div style="font-size:11px;color:#666;margin-top:4px;">' + _eh(sigAuditText) + '</div>' : '')
+                    + '      </div>'
+                    + '    </div>'
+                    + '  </div>'
+                    + (sigRefusedText ? '<div style="background:#fff3e0;border:1px solid #FFB74D;border-radius:8px;padding:12px;margin-bottom:16px;color:#e65100;font-size:13px;font-weight:600;">' + _eh(sigRefusedText) + '</div>' : '')
+                    + (safeSig ? ''
+                        + '<div style="margin-bottom:16px;">'
+                        + '  <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Firma autorizada</div>'
+                        + '  <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px;text-align:center;">'
+                        + '    <img src="' + _eh(safeSig) + '" crossorigin="anonymous" style="max-width:100%;max-height:140px;display:inline-block;">'
+                        + '  </div>'
+                        + '</div>'
+                    : '')
+                    + (safePhoto ? ''
+                        + '<div style="margin-bottom:16px;">'
+                        + '  <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Evidencia fotográfica</div>'
+                        + '  <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px;text-align:center;">'
+                        + '    <img src="' + _eh(safePhoto) + '" crossorigin="anonymous" style="max-width:100%;max-height:280px;display:inline-block;">'
+                        + '  </div>'
+                        + '</div>'
+                    : '')
+                    + '  <div style="margin-top:24px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:10px;color:#888;text-align:center;line-height:1.5;">'
+                    + '    Documento generado automáticamente por NOVAPACK · ' + _eh(new Date().toLocaleString('es-ES'))
+                    + '<br>Verifica la autenticidad escaneando el QR o visitando ' + _eh(trackUrl)
+                    + '  </div>'
+                    + '</div>';
+
+                var element = document.createElement('div');
+                element.innerHTML = html;
+                document.body.appendChild(element);
+                element.style.position = 'fixed';
+                element.style.left = '-9999px';
+
+                showLoading();
+                try {
+                    await html2pdf().from(element).set({
+                        margin: 8,
+                        filename: 'POD_' + businessId.replace(/[^A-Za-z0-9_-]/g, '_') + '.pdf',
+                        image: { type: 'jpeg', quality: 0.95 },
+                        html2canvas: { scale: 2, useCORS: true, allowTaint: true, letterRendering: true },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    }).save();
+                } finally {
+                    document.body.removeChild(element);
+                    hideLoading();
+                }
+            } catch(e) {
+                hideLoading();
+                console.error('PDF POD error:', e);
+                alert('No se pudo generar el PDF: ' + e.message);
+            }
+        };
+
         // Build a shareable public tracking link for the currently-displayed POD.
         // Uses the business-id (NP-…) when available, else the doc id.
         window.copyPublicTrackingLink = async function copyPublicTrackingLink() {
@@ -1105,13 +1223,16 @@
             const _txt = (id) => _eh(document.getElementById(id) ? document.getElementById(id).textContent : '');
 
             const id = _txt('pod-res-id');
+            const businessIdRaw = (document.getElementById('pod-res-id').textContent || '').trim();
+            const trackUrl = (location.origin || ('https://' + location.hostname)) + '/track.html?id=' + encodeURIComponent(businessIdRaw);
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&margin=0&data=' + encodeURIComponent(trackUrl);
             const mywindow = window.open('', 'PRINT', 'height=800,width=600');
 
             mywindow.document.write('<html><head><title>Justificante POD - ' + id + '</title>');
-            mywindow.document.write('<style>body{font-family:sans-serif; color:#333;} .box{border:1px solid #ddd; padding:15px; margin-bottom:15px; border-radius:5px;} img{max-width:100%;}</style>');
+            mywindow.document.write('<style>body{font-family:sans-serif; color:#333;} .box{border:1px solid #ddd; padding:15px; margin-bottom:15px; border-radius:5px;} img{max-width:100%;} .header-row{display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid; padding-bottom:10px; margin-bottom:14px;} .qr-wrap{text-align:center; font-size:9px; color:#666;}</style>');
             mywindow.document.write('</head><body>');
 
-            mywindow.document.write('<h2 style="text-align:center; border-bottom:2px solid; padding-bottom:10px;">CERTIFICADO DE ENTREGA</h2>');
+            mywindow.document.write('<div class="header-row"><h2 style="margin:0;">CERTIFICADO DE ENTREGA</h2><div class="qr-wrap"><img src="' + _eh(qrUrl) + '" style="width:90px;height:90px;display:block;margin:0 auto;"><div>Seguimiento</div></div></div>');
             mywindow.document.write('<h3>ALBARÁN: ' + id + '</h3>');
 
             mywindow.document.write('<div class="box">');
@@ -1336,6 +1457,7 @@
                 <div class="adv-dropdown">
                     <button class="adv-dropdown-btn"><span class="material-symbols-outlined">bar_chart</span> Informes ▾</button>
                     <div class="adv-dropdown-menu">
+                        <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('analytics'); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#FF8A50;"><span class="material-symbols-outlined">monitoring</span> Dashboard analítica</button>
                         <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('reports'); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#00CED1;"><span class="material-symbols-outlined">bar_chart</span> Listados V4</button>
                         <button onclick="if(typeof window.erpOpenTab==='function'){window.erpOpenTab('albaranes-central');setTimeout(function(){window._albSetSubTab('pod')},300);} let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#4CAF50;"><span class="material-symbols-outlined">task</span> Justificantes POD</button>
                         <button id="btn-adv-conta-toggle" onclick="if(typeof window.toggleContabilidad==='function') window.toggleContabilidad(); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#E040FB;"><span class="material-symbols-outlined">menu_book</span> Contabilidad</button>
@@ -2016,6 +2138,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Tab wrapper: Config -->
 <div id="erp-tab-config" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
+
+<!-- Tab wrapper: Analytics dashboard -->
+<div id="erp-tab-analytics" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:24px;"></div>
 
 <!-- Tab wrapper: Maintenance -->
 <div id="erp-tab-maintenance" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;">
@@ -17631,6 +17756,7 @@ window.importTarifas50 = async () => {
 <script src="erp_tabs.js?v=20260404"></script>
 <script src="anti_extravio.js?v=20260504"></script>
 <script src="public_tickets_sync.js?v=20260504"></script>
+<script src="analytics.js?v=20260504"></script>
 
 </body>
 </html>
