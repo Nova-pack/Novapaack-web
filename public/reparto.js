@@ -1874,6 +1874,15 @@ function initApp() {
             (!isDelivered && addr ?
                 '<div id="modal-eta" style="display:none; background:rgba(33,150,243,0.10); border:1px solid rgba(33,150,243,0.30); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:0.85rem; color:#5DADE2;"></div>'
                 : '') +
+            // Chat per-ticket (idea 11)
+            '<details id="modal-chat-wrap" style="margin-bottom:12px; background:rgba(171,71,188,0.06); border:1px solid rgba(171,71,188,0.25); border-radius:8px;">'
+            + '<summary style="padding:10px 12px; cursor:pointer; font-size:0.88rem; font-weight:700; color:#CE93D8;"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">forum</span> Chat con el cliente</summary>'
+            + '<div id="modal-chat-thread" style="max-height:240px; overflow-y:auto; padding:8px 12px; display:flex; flex-direction:column; gap:6px; font-size:0.85rem;"></div>'
+            + '<div style="display:flex; gap:6px; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.06);">'
+            + '<input id="modal-chat-input" type="text" placeholder="Escribe un mensaje al cliente…" maxlength="500" style="flex:1; background:#0a0a0a; border:1px solid rgba(255,255,255,0.10); color:#fff; padding:8px 10px; border-radius:6px; font-size:0.85rem;">'
+            + '<button id="modal-chat-send" class="btn btn-sm" style="background:#AB47BC; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-weight:700;">Enviar</button>'
+            + '</div>'
+            + '</details>' +
             '<div style="display:flex; flex-direction:column; gap:8px;">' +
                 '<button class="btn btn-primary" id="modal-btn-gps"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">near_me</span> ABRIR EN GPS</button>' +
                 (!isDelivered ?
@@ -1922,6 +1931,86 @@ function initApp() {
                 closeModal();
                 openReassignModal(d);
             };
+        }
+
+        // Chat per-ticket (idea 11) — cliente, repartidor y admin pueden
+        // intercambiar mensajes cortos. Se carga on-demand al expandir el
+        // panel (un único onSnapshot mientras el modal esté abierto).
+        var _chatUnsub = null;
+        var chatWrap = document.getElementById('modal-chat-wrap');
+        if (chatWrap) {
+            chatWrap.addEventListener('toggle', function() {
+                if (chatWrap.open && !_chatUnsub) _attachChatThread(d);
+                else if (!chatWrap.open && _chatUnsub) { _chatUnsub(); _chatUnsub = null; }
+            }, { once: false });
+            // Detach when modal closes
+            var modalRef = document.getElementById('detail-modal');
+            var detachOnClose = function() {
+                if (!modalRef.classList.contains('active') && _chatUnsub) {
+                    _chatUnsub(); _chatUnsub = null;
+                    modalRef.removeEventListener('transitionend', detachOnClose);
+                }
+            };
+            modalRef.addEventListener('transitionend', detachOnClose);
+        }
+        function _attachChatThread(ticket) {
+            var thread = document.getElementById('modal-chat-thread');
+            var input = document.getElementById('modal-chat-input');
+            var send = document.getElementById('modal-chat-send');
+            if (!thread || !input || !send) return;
+            thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center;">Cargando…</div>';
+            _chatUnsub = db.collection('tickets').doc(ticket._id).collection('chat')
+                .orderBy('createdAt', 'asc').limit(100)
+                .onSnapshot(function(snap) {
+                    if (snap.empty) {
+                        thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center; padding:8px;">Aún no hay mensajes.</div>';
+                        return;
+                    }
+                    var html = '';
+                    snap.forEach(function(doc) {
+                        var m = doc.data();
+                        var mine = (m.senderRole === 'driver');
+                        var bubbleColor = mine
+                            ? 'background:rgba(255,77,0,0.18); align-self:flex-end; border:1px solid rgba(255,77,0,0.35);'
+                            : (m.senderRole === 'admin'
+                                ? 'background:rgba(171,71,188,0.18); align-self:flex-start; border:1px solid rgba(171,71,188,0.35);'
+                                : 'background:rgba(33,150,243,0.18); align-self:flex-start; border:1px solid rgba(33,150,243,0.35);');
+                        var ts = '';
+                        if (m.createdAt && m.createdAt.toDate) {
+                            try { ts = m.createdAt.toDate().toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' }); } catch(e) {}
+                        }
+                        html += '<div style="' + bubbleColor + ' padding:6px 10px; border-radius:10px; max-width:80%;">'
+                              + '<div style="font-size:0.7rem; color:#aaa; margin-bottom:2px;">' + escapeHtml(m.senderRole || '?') + (m.senderName ? ' · ' + escapeHtml(m.senderName) : '') + (ts ? ' · ' + ts : '') + '</div>'
+                              + '<div>' + escapeHtml(m.text || '') + '</div>'
+                              + '</div>';
+                    });
+                    thread.innerHTML = html;
+                    thread.scrollTop = thread.scrollHeight;
+                }, function(err) {
+                    thread.innerHTML = '<div style="color:#FF3B30; font-size:0.78rem;">Error: ' + escapeHtml(err.message) + '</div>';
+                });
+            send.onclick = async function() {
+                var text = (input.value || '').trim();
+                if (!text) return;
+                send.disabled = true;
+                try {
+                    await db.collection('tickets').doc(ticket._id).collection('chat').add({
+                        text: text.slice(0, 1500),
+                        senderRole: 'driver',
+                        senderName: currentDriverName || 'Repartidor',
+                        senderPhone: currentDriverPhone || '',
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    input.value = '';
+                } catch(e) {
+                    alert('Error enviando: ' + e.message);
+                } finally {
+                    send.disabled = false;
+                }
+            };
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.onclick(); }
+            });
         }
 
         // ETA dinámico (idea 6) — sólo si la entrega está pendiente, hay GPS

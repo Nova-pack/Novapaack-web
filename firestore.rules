@@ -63,6 +63,20 @@ service cloud.firestore {
                   'sender', 'senderAddress', 'senderPhone'
                 ]));
       allow delete: if isAdmin();
+
+      // ─── CHAT subcollection: per-ticket conversation between client,
+      // driver and admin. Authed-only. Messages are immutable once sent
+      // (admin can delete to moderate).
+      match /chat/{msgId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() < 2000
+          && request.resource.data.senderRole is string;
+        allow update: if isAdmin();
+        allow delete: if isAdmin();
+      }
     }
 
     // ─── INVOICES (admin-only write) ───

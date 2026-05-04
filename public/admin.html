@@ -888,6 +888,18 @@
                             <div id="pod-res-sig-audit" style="display:none; color:#888; font-size:0.72rem; margin-top:6px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.06);"></div>
                             <div id="pod-res-sig-refused" style="display:none; color:#FF9F0A; font-size:0.78rem; margin-top:6px; padding:6px 10px; background:rgba(255,159,10,0.08); border:1px solid rgba(255,159,10,0.25); border-radius:6px;"></div>
                         </div>
+                        <!-- Chat panel (idea 11) -->
+                        <div style="margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.06);">
+                            <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+                                <span class="material-symbols-outlined" style="color:#CE93D8; font-size:1.1rem;">forum</span>
+                                <strong style="color:#CE93D8; font-size:0.78rem; text-transform:uppercase; letter-spacing:1px;">Chat</strong>
+                            </div>
+                            <div id="pod-chat-thread" style="max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; font-size:0.82rem; padding:6px 0;"></div>
+                            <div style="display:flex; gap:6px; margin-top:8px;">
+                                <input id="pod-chat-input" type="text" placeholder="Mensaje al cliente / repartidor…" maxlength="500" style="flex:1; background:#0a0a0a; border:1px solid rgba(255,255,255,0.10); color:#fff; padding:8px 10px; border-radius:6px; font-size:0.85rem;">
+                                <button id="pod-chat-send" style="background:#AB47BC; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-weight:700; cursor:pointer;">Enviar</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1063,12 +1075,78 @@
                 document.getElementById('pod-loading').style.display = 'none';
                 document.getElementById('pod-result-container').style.display = 'block';
 
+                // Attach chat (idea 11). targetDoc is the ticket doc reference.
+                if (typeof window._attachPodChat === 'function') window._attachPodChat(targetDoc.id);
+
             } catch (err) {
                 console.error("Error buscando POD:", err);
                 document.getElementById('pod-loading').style.display = 'none';
                 alert("Error técnico al buscar: " + err.message);
             }
         }
+
+        // Chat thread for the POD viewer (idea 11). Single global listener
+        // that swaps target every time the admin opens a different POD.
+        (function() {
+            var _unsub = null;
+            var _currentTicketId = null;
+            window._attachPodChat = function(ticketId) {
+                if (_unsub) { try { _unsub(); } catch(e) {} _unsub = null; }
+                _currentTicketId = ticketId;
+                var thread = document.getElementById('pod-chat-thread');
+                var input = document.getElementById('pod-chat-input');
+                var send = document.getElementById('pod-chat-send');
+                if (!thread || !input || !send) return;
+                thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center;">Cargando…</div>';
+                _unsub = db.collection('tickets').doc(ticketId).collection('chat')
+                    .orderBy('createdAt', 'asc').limit(100)
+                    .onSnapshot(function(snap) {
+                        if (snap.empty) {
+                            thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center; padding:8px;">Aún no hay mensajes en este albarán.</div>';
+                            return;
+                        }
+                        var html = '';
+                        snap.forEach(function(doc) {
+                            var m = doc.data();
+                            var color, role = m.senderRole || '?';
+                            if (role === 'admin') color = 'background:rgba(171,71,188,0.18); align-self:flex-end; border:1px solid rgba(171,71,188,0.35);';
+                            else if (role === 'driver') color = 'background:rgba(255,77,0,0.18); align-self:flex-start; border:1px solid rgba(255,77,0,0.35);';
+                            else color = 'background:rgba(33,150,243,0.18); align-self:flex-start; border:1px solid rgba(33,150,243,0.35);';
+                            var ts = '';
+                            if (m.createdAt && m.createdAt.toDate) { try { ts = m.createdAt.toDate().toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' }); } catch(e) {} }
+                            html += '<div style="' + color + ' padding:6px 10px; border-radius:10px; max-width:80%;">'
+                                  + '<div style="font-size:0.7rem; color:#aaa; margin-bottom:2px;">' + escapeHtml(role) + (m.senderName ? ' · ' + escapeHtml(m.senderName) : '') + (ts ? ' · ' + ts : '') + '</div>'
+                                  + '<div>' + escapeHtml(m.text || '') + '</div>'
+                                  + '</div>';
+                        });
+                        thread.innerHTML = html;
+                        thread.scrollTop = thread.scrollHeight;
+                    }, function(err) {
+                        thread.innerHTML = '<div style="color:#FF3B30; font-size:0.78rem;">Error: ' + escapeHtml(err.message) + '</div>';
+                    });
+                send.onclick = async function() {
+                    var text = (input.value || '').trim();
+                    if (!text || !_currentTicketId) return;
+                    send.disabled = true;
+                    try {
+                        await db.collection('tickets').doc(_currentTicketId).collection('chat').add({
+                            text: text.slice(0, 1500),
+                            senderRole: 'admin',
+                            senderName: 'Administración',
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        input.value = '';
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                    } finally {
+                        send.disabled = false;
+                    }
+                };
+                input.onkeydown = function(e) {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.onclick(); }
+                };
+            };
+        })();
 
         // Generate a downloadable, signed POD as PDF with embedded QR code
         // pointing at the public tracking page. Uses html2pdf which is already
