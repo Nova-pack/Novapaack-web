@@ -1038,46 +1038,57 @@
         }
 
         function printPOD() {
-            const id = document.getElementById('pod-res-id').textContent;
+            // Helpers: escape HTML and sanitize URLs (block javascript: / vbscript:)
+            const _eh = (typeof escapeHtml === 'function')
+                ? escapeHtml
+                : (s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'));
+            const _safeUrl = (u) => (typeof u === 'string' && /^(https?:|data:|blob:)/i.test(u)) ? u : '';
+            const _txt = (id) => _eh(document.getElementById(id) ? document.getElementById(id).textContent : '');
+
+            const id = _txt('pod-res-id');
             const mywindow = window.open('', 'PRINT', 'height=800,width=600');
-            
+
             mywindow.document.write('<html><head><title>Justificante POD - ' + id + '</title>');
             mywindow.document.write('<style>body{font-family:sans-serif; color:#333;} .box{border:1px solid #ddd; padding:15px; margin-bottom:15px; border-radius:5px;} img{max-width:100%;}</style>');
             mywindow.document.write('</head><body>');
-            
+
             mywindow.document.write('<h2 style="text-align:center; border-bottom:2px solid; padding-bottom:10px;">CERTIFICADO DE ENTREGA</h2>');
             mywindow.document.write('<h3>ALBARÁN: ' + id + '</h3>');
-            
+
             mywindow.document.write('<div class="box">');
-            mywindow.document.write('<p><strong>Destinatario Original:</strong> ' + document.getElementById('pod-res-receiver').textContent + '</p>');
-            mywindow.document.write('<p><strong>Dirección:</strong> ' + document.getElementById('pod-res-address').textContent + '</p>');
-            mywindow.document.write('<p><strong>Bultos:</strong> ' + document.getElementById('pod-res-pkgs').textContent + '</p>');
+            mywindow.document.write('<p><strong>Destinatario Original:</strong> ' + _txt('pod-res-receiver') + '</p>');
+            mywindow.document.write('<p><strong>Dirección:</strong> ' + _txt('pod-res-address') + '</p>');
+            mywindow.document.write('<p><strong>Bultos:</strong> ' + _txt('pod-res-pkgs') + '</p>');
             mywindow.document.write('</div>');
 
             mywindow.document.write('<div class="box" style="background:#f9f9f9;">');
             mywindow.document.write('<h4>DATOS DE LA RECEPCIÓN</h4>');
-            mywindow.document.write('<p><strong>Entregado a:</strong> ' + document.getElementById('pod-res-delivery-name').textContent + '</p>');
-            mywindow.document.write('<p><strong>Fecha/Hora:</strong> ' + document.getElementById('pod-res-delivery-time').textContent + '</p>');
-            mywindow.document.write('<p><strong>GPS:</strong> ' + document.getElementById('pod-res-gps').textContent + '</p>');
+            mywindow.document.write('<p><strong>Entregado a:</strong> ' + _txt('pod-res-delivery-name') + '</p>');
+            mywindow.document.write('<p><strong>Fecha/Hora:</strong> ' + _txt('pod-res-delivery-time') + '</p>');
+            mywindow.document.write('<p><strong>GPS:</strong> ' + _txt('pod-res-gps') + '</p>');
             mywindow.document.write('</div>');
 
-            const sigStyle = document.getElementById('pod-res-sig-img').style.display !== 'none' ? '' : 'display:none;';
-            const sigUrl = document.getElementById('pod-res-sig-img').src;
-            if(sigStyle === '') {
-                mywindow.document.write('<div class="box"><h4>FIRMA:</h4>');
-                mywindow.document.write('<img src="' + sigUrl + '" style="max-height:150px; background:#fff;"></div>');
+            const sigEl = document.getElementById('pod-res-sig-img');
+            if (sigEl && sigEl.style.display !== 'none') {
+                const sigUrl = _safeUrl(sigEl.src);
+                if (sigUrl) {
+                    mywindow.document.write('<div class="box"><h4>FIRMA:</h4>');
+                    mywindow.document.write('<img src="' + _eh(sigUrl) + '" style="max-height:150px; background:#fff;"></div>');
+                }
             }
 
-            const photStyle = document.getElementById('pod-res-photo-img').style.display !== 'none' ? '' : 'display:none;';
-            const photUrl = document.getElementById('pod-res-photo-img').src;
-            if(photStyle === '') {
-                mywindow.document.write('<div class="box"><h4>FOTOGRAFÍA ADJUNTA:</h4>');
-                mywindow.document.write('<img src="' + photUrl + '" style="max-height:300px;"></div>');
+            const photEl = document.getElementById('pod-res-photo-img');
+            if (photEl && photEl.style.display !== 'none') {
+                const photUrl = _safeUrl(photEl.src);
+                if (photUrl) {
+                    mywindow.document.write('<div class="box"><h4>FOTOGRAFÍA ADJUNTA:</h4>');
+                    mywindow.document.write('<img src="' + _eh(photUrl) + '" style="max-height:300px;"></div>');
+                }
             }
 
             // Wait for images to load, then print
             mywindow.document.write('<script>window.onload = function() { setTimeout(function(){ window.print(); }, 200); }<\/script>');
-            
+
             mywindow.document.write('</body></html>');
             mywindow.document.close();
             mywindow.focus();
@@ -9674,23 +9685,26 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             window.routeCooperPrint = function(docId, photoURL) {
+                var _eh = (typeof escapeHtml === 'function') ? escapeHtml : function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');};
+                var _safeUrl = function(u){return (typeof u==='string' && /^(https?:|data:|blob:)/i.test(u)) ? u : '';};
                 var item = _routeCooperItems.find(function(i) { return i.docId === docId; });
                 var dateStr = '';
                 if (item && item.createdAt) {
                     var d = typeof item.createdAt.toDate === 'function' ? item.createdAt.toDate() : new Date(item.createdAt);
                     dateStr = d.toLocaleDateString('es-ES', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }) + ' ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
                 }
+                var safePhoto = _safeUrl(photoURL);
                 var w = window.open('', '_blank');
-                w.document.write('<html><head><title>Cooper - ' + (item ? item.route : '') + '</title><style>body{font-family:Arial,sans-serif;max-width:700px;margin:20px auto;text-align:center}img{max-width:100%;max-height:70vh;object-fit:contain}table{margin:16px auto;text-align:left;border-collapse:collapse}td{padding:4px 12px;font-size:14px}td:first-child{font-weight:bold;color:#555}@media print{body{margin:0}}</style></head><body>');
+                w.document.write('<html><head><title>Cooper - ' + _eh(item ? item.route : '') + '</title><style>body{font-family:Arial,sans-serif;max-width:700px;margin:20px auto;text-align:center}img{max-width:100%;max-height:70vh;object-fit:contain}table{margin:16px auto;text-align:left;border-collapse:collapse}td{padding:4px 12px;font-size:14px}td:first-child{font-weight:bold;color:#555}@media print{body{margin:0}}</style></head><body>');
                 w.document.write('<h2 style="margin-bottom:4px;">\ud83d\udce6 Foto Cooper</h2>');
-                w.document.write('<img src="' + photoURL + '">');
+                if (safePhoto) w.document.write('<img src="' + _eh(safePhoto) + '">');
                 w.document.write('<table>');
                 if (item) {
-                    w.document.write('<tr><td>Tipo</td><td>' + (item.type === 'recogida' ? 'Recogida' : 'Entrega') + '</td></tr>');
-                    w.document.write('<tr><td>Ruta</td><td>' + (item.route || '-') + '</td></tr>');
-                    w.document.write('<tr><td>Conductor</td><td>' + (item.driverName || '-') + '</td></tr>');
-                    w.document.write('<tr><td>Fecha</td><td>' + dateStr + '</td></tr>');
-                    if (item.note) w.document.write('<tr><td>Nota</td><td>' + item.note + '</td></tr>');
+                    w.document.write('<tr><td>Tipo</td><td>' + _eh(item.type === 'recogida' ? 'Recogida' : 'Entrega') + '</td></tr>');
+                    w.document.write('<tr><td>Ruta</td><td>' + _eh(item.route || '-') + '</td></tr>');
+                    w.document.write('<tr><td>Conductor</td><td>' + _eh(item.driverName || '-') + '</td></tr>');
+                    w.document.write('<tr><td>Fecha</td><td>' + _eh(dateStr) + '</td></tr>');
+                    if (item.note) w.document.write('<tr><td>Nota</td><td>' + _eh(item.note) + '</td></tr>');
                 }
                 w.document.write('</table>');
                 w.document.write('<script>setTimeout(function(){window.print()},500)<\/script>');
@@ -9704,9 +9718,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     var d = i.createdAt ? (typeof i.createdAt.toDate === 'function' ? i.createdAt.toDate() : new Date(i.createdAt)) : null;
                     return d ? d.toISOString().slice(0, 10) === _routeCooperOpenDay : false;
                 }) : _routeCooperItems;
+                var _eh = (typeof escapeHtml === 'function') ? escapeHtml : function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');};
+                var _safeUrl = function(u){return (typeof u==='string' && /^(https?:|data:|blob:)/i.test(u)) ? u : '';};
                 var w = window.open('', '_blank');
-                w.document.write('<html><head><title>Cooper - ' + _routeCooperRoute + '</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:20px auto}.photo{page-break-inside:avoid;margin-bottom:24px;border:1px solid #ddd;padding:12px;border-radius:8px}img{max-width:100%;max-height:50vh;object-fit:contain;display:block;margin:0 auto 8px}table{font-size:13px;border-collapse:collapse}td{padding:2px 10px}td:first-child{font-weight:bold;color:#555}@media print{.photo{page-break-inside:avoid}}</style></head><body>');
-                w.document.write('<h2>\ud83d\udce6 Cooper — ' + _routeCooperRoute + (_routeCooperOpenDay ? ' (' + _routeCooperOpenDay + ')' : '') + '</h2>');
+                w.document.write('<html><head><title>Cooper - ' + _eh(_routeCooperRoute) + '</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:20px auto}.photo{page-break-inside:avoid;margin-bottom:24px;border:1px solid #ddd;padding:12px;border-radius:8px}img{max-width:100%;max-height:50vh;object-fit:contain;display:block;margin:0 auto 8px}table{font-size:13px;border-collapse:collapse}td{padding:2px 10px}td:first-child{font-weight:bold;color:#555}@media print{.photo{page-break-inside:avoid}}</style></head><body>');
+                w.document.write('<h2>\ud83d\udce6 Cooper — ' + _eh(_routeCooperRoute) + (_routeCooperOpenDay ? ' (' + _eh(_routeCooperOpenDay) + ')' : '') + '</h2>');
                 w.document.write('<p style="color:#555;">' + items.length + ' fotos</p>');
                 items.forEach(function(item) {
                     var dateStr = '';
@@ -9714,9 +9730,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         var d = typeof item.createdAt.toDate === 'function' ? item.createdAt.toDate() : new Date(item.createdAt);
                         dateStr = d.toLocaleDateString('es-ES') + ' ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
                     }
+                    var safePhoto = _safeUrl(item.photoURL || '');
                     w.document.write('<div class="photo">');
-                    w.document.write('<img src="' + (item.photoURL || '') + '">');
-                    w.document.write('<table><tr><td>' + (item.type === 'recogida' ? '\ud83d\udce5 Recogida' : '\ud83d\udce4 Entrega') + '</td><td>' + dateStr + '</td><td>' + (item.driverName || '-') + '</td>' + (item.note ? '<td>\ud83d\udcdd ' + item.note + '</td>' : '') + '</tr></table>');
+                    if (safePhoto) w.document.write('<img src="' + _eh(safePhoto) + '">');
+                    w.document.write('<table><tr><td>' + (item.type === 'recogida' ? '\ud83d\udce5 Recogida' : '\ud83d\udce4 Entrega') + '</td><td>' + _eh(dateStr) + '</td><td>' + _eh(item.driverName || '-') + '</td>' + (item.note ? '<td>\ud83d\udcdd ' + _eh(item.note) + '</td>' : '') + '</tr></table>');
                     w.document.write('</div>');
                 });
                 w.document.write('<script>setTimeout(function(){window.print()},800)<\/script>');

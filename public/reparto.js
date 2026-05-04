@@ -451,12 +451,14 @@ function compressImage(file, maxWidth, quality) {
 // --- HELPERS ---
 function showLoading() { document.getElementById('loading-overlay').classList.add('active'); }
 function hideLoading() { document.getElementById('loading-overlay').classList.remove('active'); }
+// Use shared canonicalizer if loaded by firebase-app.js, else inline fallback
 function normalizePhone(p) {
+    if (typeof window !== 'undefined' && typeof window.normalizePhone === 'function' && window.normalizePhone !== normalizePhone) {
+        return window.normalizePhone(p);
+    }
     var digits = (p || '').toString().replace(/\D/g, '');
-    // Strip Spanish country prefixes: 0034, 34
     if (digits.length > 9 && digits.indexOf('0034') === 0) digits = digits.slice(4);
     else if (digits.length > 9 && digits.indexOf('34') === 0) digits = digits.slice(2);
-    // Canonical: last 9 digits (Spanish national number length)
     if (digits.length > 9) digits = digits.slice(-9);
     return digits;
 }

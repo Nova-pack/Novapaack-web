@@ -58,12 +58,22 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
         console.warn('[CONTA] Error checking existing entry:', e);
     }
     
-    // Obtener número secuencial de asiento
+    // Atomic sequential journal number — prevents collisions when two admins
+    // post entries concurrently. Falls back to last-row scan only on first run.
     let asientoNum = 1;
-    try {
-        const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-        if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-    } catch(e) { /* first entry */ }
+    if (typeof window.allocSequentialNumber === 'function') {
+        try {
+            asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+            });
+        } catch(e) { console.warn('[CONTA] allocSequentialNumber failed, falling back:', e); }
+    } else {
+        try {
+            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+        } catch(e) { /* first entry */ }
+    }
 
     const subtotal = invoiceData.subtotal || 0;
     const ivaAmount = invoiceData.iva || 0;
@@ -166,10 +176,19 @@ window.generatePaymentJournalEntry = async function(invoiceData, invoiceDocId) {
     } catch(e) { /* proceed */ }
 
     let asientoNum = 1;
-    try {
-        const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-        if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-    } catch(e) { /* first entry */ }
+    if (typeof window.allocSequentialNumber === 'function') {
+        try {
+            asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+            });
+        } catch(e) { console.warn('[CONTA] allocSequentialNumber failed:', e); }
+    } else {
+        try {
+            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+        } catch(e) { /* first entry */ }
+    }
 
     const total = invoiceData.total || 0;
     const clientName = invoiceData.clientName || 'Cliente';
@@ -1262,11 +1281,20 @@ window.contaSaveGasto = async function() {
         // DEBE: 600 Gastos (Base) + 472 IVA Soportado (IVA)
         // HABER: 400 Proveedores (Total)
         let asientoNum = 1;
-        try {
-            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-        } catch(e) { /* first */ }
-        
+        if (typeof window.allocSequentialNumber === 'function') {
+            try {
+                asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                    const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                    return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+                });
+            } catch(e) { console.warn('[CONTA] allocSequentialNumber failed:', e); }
+        } else {
+            try {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+            } catch(e) { /* first */ }
+        }
+
         const entries = [
             {
                 account: '600',

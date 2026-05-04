@@ -703,31 +703,35 @@ document.getElementById('btn-adv-save').onclick = async () => {
         const invYear = finalDate.getFullYear();
         const invYY = String(invYear).slice(-2);
 
-        // Year-based invoice numbering: FAC-YY-SEQ, resets each year
-        const yearStart = new Date(invYear, 0, 1);
-        const yearEnd = new Date(invYear + 1, 0, 1);
-        const invSnap = await db.collection('invoices')
-            .where('date', '>=', yearStart)
-            .where('date', '<', yearEnd)
-            .orderBy('date', 'desc')
-            .limit(10000)
-            .get();
-        let nextNum = 0;
-        invSnap.forEach(doc => {
-            const d = doc.data();
-            const iid = d.invoiceId || '';
-            const match = iid.match(/^FAC-\d{2}-(\d+)$/);
-            if (match) {
-                const seq = parseInt(match[1], 10);
-                if (!isNaN(seq) && seq >= nextNum) nextNum = seq + 1;
-            }
-        });
-        // Fallback: also check the global number field
-        if (nextNum === 0 && !invSnap.empty) {
+        // Atomic invoice number: prevents collisions when two admins emit at once.
+        const _seedInvFromHistory = async () => {
+            const yearStart = new Date(invYear, 0, 1);
+            const yearEnd = new Date(invYear + 1, 0, 1);
+            const invSnap = await db.collection('invoices')
+                .where('date', '>=', yearStart)
+                .where('date', '<', yearEnd)
+                .orderBy('date', 'desc')
+                .limit(10000)
+                .get();
+            let max = 0;
             invSnap.forEach(doc => {
-                const n = doc.data().number || 0;
-                if (n >= nextNum) nextNum = n + 1;
+                const d = doc.data();
+                const iid = d.invoiceId || '';
+                const m = iid.match(/^FAC-\d{2}-(\d+)$/);
+                if (m) {
+                    const seq = parseInt(m[1], 10);
+                    if (!isNaN(seq) && seq > max) max = seq;
+                }
+                const n = d.number || 0;
+                if (n > max) max = n;
             });
+            return max;
+        };
+        let nextNum;
+        if (typeof window.allocSequentialNumber === 'function') {
+            nextNum = await window.allocSequentialNumber('sequence_counters/invoices_' + invYear, _seedInvFromHistory);
+        } else {
+            nextNum = (await _seedInvFromHistory()) + 1;
         }
 
         // Extraer tickets afectados

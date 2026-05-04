@@ -503,28 +503,31 @@
             // Get next invoice number
             const currentYear = new Date().getFullYear();
             const currentYY = String(currentYear).slice(-2);
-            const yearStart = new Date(currentYear, 0, 1);
-            const yearEnd = new Date(currentYear + 1, 0, 1);
-            const invYearSnap = await db.collection('invoices')
-                .where('date', '>=', yearStart)
-                .where('date', '<', yearEnd)
-                .orderBy('date', 'desc')
-                .get();
-            let currentInvNumber = 0;
-            invYearSnap.forEach(doc => {
-                const iid = doc.data().invoiceId || '';
-                const match = iid.match(/^FAC-\d{2}-(\d+)$/);
-                if (match) {
-                    const seq = parseInt(match[1], 10);
-                    if (!isNaN(seq) && seq >= currentInvNumber) currentInvNumber = seq + 1;
-                }
-            });
-            if (currentInvNumber === 0 && !invYearSnap.empty) {
-                invYearSnap.forEach(doc => {
+
+            // Atomic per-year invoice counter. Seeds from highest existing FAC-YY-N
+            // on first use, then increments transactionally for every invoice we add.
+            const _invCounterPath = 'sequence_counters/invoices_' + currentYear;
+            const _seedInvFromHistory = async () => {
+                const yearStart = new Date(currentYear, 0, 1);
+                const yearEnd = new Date(currentYear + 1, 0, 1);
+                const snap = await db.collection('invoices')
+                    .where('date', '>=', yearStart)
+                    .where('date', '<', yearEnd)
+                    .orderBy('date', 'desc')
+                    .get();
+                let max = 0;
+                snap.forEach(doc => {
+                    const iid = doc.data().invoiceId || '';
+                    const m = iid.match(/^FAC-\d{2}-(\d+)$/);
+                    if (m) {
+                        const seq = parseInt(m[1], 10);
+                        if (!isNaN(seq) && seq > max) max = seq;
+                    }
                     const n = doc.data().number || 0;
-                    if (n >= currentInvNumber) currentInvNumber = n + 1;
+                    if (n > max) max = n;
                 });
-            }
+                return max;
+            };
 
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             const invoiceDate = new Date();
@@ -553,10 +556,18 @@
                 });
 
                 const irpfRate = parseFloat(client.irpf) || 0;
-                const invoiceIdStr = `FAC-${currentYY}-${currentInvNumber}`;
+                // Reserve next number atomically for THIS invoice only.
+                let nextInvNumber;
+                if (typeof window.allocSequentialNumber === 'function') {
+                    nextInvNumber = await window.allocSequentialNumber(_invCounterPath, _seedInvFromHistory);
+                } else {
+                    // Should not happen, but degrade gracefully.
+                    nextInvNumber = (await _seedInvFromHistory()) + 1;
+                }
+                const invoiceIdStr = `FAC-${currentYY}-${nextInvNumber}`;
 
                 const invoiceData = {
-                    number: currentInvNumber,
+                    number: nextInvNumber,
                     invoiceId: invoiceIdStr,
                     date: invoiceDate,
                     clientId: client.id,
@@ -595,8 +606,7 @@
                     total: group.total,
                     senderData: _mbSenderData
                 });
-
-                currentInvNumber++;
+                // (No manual increment: each iteration calls allocSequentialNumber.)
             }
 
             // Done — go to SEPA step

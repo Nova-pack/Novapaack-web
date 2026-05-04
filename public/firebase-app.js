@@ -6,6 +6,42 @@ function escapeHtml(str) {
     if (str == null) return '';
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
+
+// Atomic sequential counter via Firestore transaction. Use for invoice/journal/etc.
+// numbering to prevent collisions when multiple admins act concurrently.
+//   counterPath: e.g. 'sequence_counters/invoices_2026' or 'sequence_counters/journal'
+//   seedFn (optional): async () => number, returns the highest existing seq when
+//                      the counter doc doesn't exist yet (one-time bootstrap).
+// Returns the freshly reserved next integer.
+window.allocSequentialNumber = async function allocSequentialNumber(counterPath, seedFn) {
+    if (!counterPath || typeof counterPath !== 'string') throw new Error('counterPath required');
+    const ref = db.doc(counterPath);
+    return await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        let next;
+        if (snap.exists && typeof snap.data().currentMax === 'number') {
+            next = snap.data().currentMax + 1;
+        } else {
+            const seed = (typeof seedFn === 'function') ? await seedFn() : 0;
+            next = (parseInt(seed, 10) || 0) + 1;
+        }
+        tx.set(ref, {
+            currentMax: next,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        return next;
+    });
+};
+
+// Canonicalize a Spanish phone number to its 9-digit form.
+// Tolerates +34, 0034, spaces, dashes, parentheses. MUST stay in sync with reparto.js.
+window.normalizePhone = function normalizePhone(p) {
+    var d = (p == null ? '' : p).toString().replace(/\D/g, '');
+    if (d.length > 9 && d.indexOf('0034') === 0) d = d.slice(4);
+    else if (d.length > 9 && d.indexOf('34') === 0) d = d.slice(2);
+    if (d.length > 9) d = d.slice(-9);
+    return d;
+};
 const DEBUG_MODE = location.hostname === 'localhost';
 
 // --- RATE LIMITER: client-side throttle for critical operations ---
@@ -2042,13 +2078,9 @@ async function handleFormSubmit(e) {
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
         };
 
-        function normalizePhoneUtil(phone) {
-            if(!phone) return '';
-            return phone.toString().replace(/\D/g, '').replace(/^34/, '');
-        }
-
-        if(targetDriverPhone) {
-            data.driverPhone = normalizePhoneUtil(targetDriverPhone);
+        // resolveDriverPhone already returns the canonical 9-digit form
+        if (targetDriverPhone) {
+            data.driverPhone = window.normalizePhone(targetDriverPhone);
         }
 
         if (editingId) {
@@ -5616,7 +5648,8 @@ async function resolveDriverPhone(cp, localidad, province) {
         }
         // Priority 3: single route default
         if (!target && routeList.length === 1) { target = routeList[0].number; targetLabel = routeList[0].label; }
-        return { driverPhone: target, routeLabel: targetLabel };
+        // Always return the canonical 9-digit form so all consumers compare equal.
+        return { driverPhone: window.normalizePhone(target), routeLabel: targetLabel };
     } catch(e) {
         console.error('resolveDriverPhone error:', e);
         return { driverPhone: '', routeLabel: '' };

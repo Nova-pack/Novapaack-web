@@ -449,13 +449,19 @@
         }
     };
 
-    // Auto-load PINs after rendering
-    const _origLoad = window.loadPhonesManager;
-    window.loadPhonesManager = async () => {
-        await _origLoad();
-        loadMasterPins();
-        loadConductorPin();
-    };
+    // Auto-load PINs after rendering. Idempotent: a re-run of phones_manager.js
+    // (for instance via hot-reload) MUST NOT re-wrap the function or each refresh
+    // would multiply PIN-loader calls.
+    if (!window.loadPhonesManager._withPins) {
+        const _origLoad = window.loadPhonesManager;
+        const _wrapped = async () => {
+            await _origLoad();
+            loadMasterPins();
+            loadConductorPin();
+        };
+        _wrapped._withPins = true;
+        window.loadPhonesManager = _wrapped;
+    }
 
     // ============ COVERAGE ZONES AUTOCOMPLETE ============
 
