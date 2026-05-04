@@ -25,7 +25,7 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600&family=Inter:wght@300;400;500&display=swap"
         rel="stylesheet">
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCE39TSVCQMIyWVP2Kk8givggrq0vU-R5A&libraries=marker" async></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCE39TSVCQMIyWVP2Kk8givggrq0vU-R5A&libraries=marker,visualization" async></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
@@ -1458,6 +1458,7 @@
                     <button class="adv-dropdown-btn"><span class="material-symbols-outlined">bar_chart</span> Informes ▾</button>
                     <div class="adv-dropdown-menu">
                         <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('analytics'); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#FF8A50;"><span class="material-symbols-outlined">monitoring</span> Dashboard analítica</button>
+                        <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('heatmap'); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#FF3B30;"><span class="material-symbols-outlined">whatshot</span> Heatmap retrasos</button>
                         <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('reports'); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#00CED1;"><span class="material-symbols-outlined">bar_chart</span> Listados V4</button>
                         <button onclick="if(typeof window.erpOpenTab==='function'){window.erpOpenTab('albaranes-central');setTimeout(function(){window._albSetSubTab('pod')},300);} let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#4CAF50;"><span class="material-symbols-outlined">task</span> Justificantes POD</button>
                         <button id="btn-adv-conta-toggle" onclick="if(typeof window.toggleContabilidad==='function') window.toggleContabilidad(); let m=this.closest('.adv-dropdown-menu'); if(m) m.classList.remove('show');" style="color:#E040FB;"><span class="material-symbols-outlined">menu_book</span> Contabilidad</button>
@@ -2145,6 +2146,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Tab wrapper: Auto-assign unassigned tickets -->
 <div id="erp-tab-auto-assign" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:24px;"></div>
+
+<!-- Tab wrapper: Heatmap of delivery delays -->
+<div id="erp-tab-heatmap" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:0;"></div>
 
 <!-- Tab wrapper: Maintenance -->
 <div id="erp-tab-maintenance" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;">
@@ -17762,6 +17766,7 @@ window.importTarifas50 = async () => {
 <script src="public_tickets_sync.js?v=20260504"></script>
 <script src="analytics.js?v=20260504"></script>
 <script src="auto_assign.js?v=20260504"></script>
+<script src="heatmap.js?v=20260504"></script>
 
 </body>
 </html>

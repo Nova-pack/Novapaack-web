@@ -26,7 +26,8 @@
         'erp-tab-trash',
         'erp-tab-cooper',
         'erp-tab-analytics',
-        'erp-tab-auto-assign'
+        'erp-tab-auto-assign',
+        'erp-tab-heatmap'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -64,6 +65,7 @@
         'cooper':          { wsId: 'erp-tab-cooper',              title: 'Cooper',             icon: 'local_shipping',     closeable: true },
         'analytics':       { wsId: 'erp-tab-analytics',           title: 'Analítica',          icon: 'monitoring',         closeable: true },
         'auto-assign':     { wsId: 'erp-tab-auto-assign',         title: 'Auto-asignar',       icon: 'auto_awesome',       closeable: true },
+        'heatmap':         { wsId: 'erp-tab-heatmap',             title: 'Heatmap retrasos',   icon: 'whatshot',           closeable: true },
     };
 
     // --- CORE API ---
