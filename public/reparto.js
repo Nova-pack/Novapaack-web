@@ -1871,6 +1871,9 @@ function initApp() {
                 (d.cod ? '<b>Reembolso:</b> ' + escapeHtml(d.cod) + '€<br>' : '') +
                 (d.deliveryReceiverName ? '<b>Recibido por:</b> ' + escapeHtml(d.deliveryReceiverName) + '<br>' : '') +
             '</div>' +
+            (!isDelivered && addr ?
+                '<div id="modal-eta" style="display:none; background:rgba(33,150,243,0.10); border:1px solid rgba(33,150,243,0.30); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:0.85rem; color:#5DADE2;"></div>'
+                : '') +
             '<div style="display:flex; flex-direction:column; gap:8px;">' +
                 '<button class="btn btn-primary" id="modal-btn-gps"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">near_me</span> ABRIR EN GPS</button>' +
                 (!isDelivered ?
@@ -1919,6 +1922,45 @@ function initApp() {
                 closeModal();
                 openReassignModal(d);
             };
+        }
+
+        // ETA dinámico (idea 6) — sólo si la entrega está pendiente, hay GPS
+        // reciente y Maps cargado. Distance Matrix usa la posición del chófer
+        // como origen y la dirección de la entrega como destino.
+        var etaEl = document.getElementById('modal-eta');
+        if (etaEl && _gpsLastCoords && (Date.now() - _gpsLastCoords.ts) < 120000
+            && window.google && google.maps && google.maps.DistanceMatrixService && addr) {
+            etaEl.style.display = 'block';
+            etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> Calculando ETA…';
+            try {
+                var svc = new google.maps.DistanceMatrixService();
+                svc.getDistanceMatrix({
+                    origins: [{ lat: _gpsLastCoords.lat, lng: _gpsLastCoords.lng }],
+                    destinations: [addr + ', España'],
+                    travelMode: 'DRIVING',
+                    unitSystem: google.maps.UnitSystem.METRIC
+                }, function(resp, status) {
+                    if (status !== 'OK' || !resp || !resp.rows || !resp.rows[0] || !resp.rows[0].elements || !resp.rows[0].elements[0]) {
+                        etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA no disponible.';
+                        return;
+                    }
+                    var el = resp.rows[0].elements[0];
+                    if (el.status !== 'OK') {
+                        etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA no disponible (' + escapeHtml(el.status) + ')';
+                        return;
+                    }
+                    var arrival = new Date(Date.now() + (el.duration.value * 1000));
+                    var arrivalStr = arrival.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+                    etaEl.innerHTML =
+                        '<div style="display:flex; gap:14px; flex-wrap:wrap;">'
+                        + '<div><b>🕒 ' + escapeHtml(el.duration.text) + '</b> en coche</div>'
+                        + '<div>📍 ' + escapeHtml(el.distance.text) + '</div>'
+                        + '<div>Llegada estimada <b>' + arrivalStr + '</b></div>'
+                        + '</div>';
+                });
+            } catch(e) {
+                etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA: ' + escapeHtml(e.message || 'error');
+            }
         }
     }
 
