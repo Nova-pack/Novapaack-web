@@ -563,6 +563,24 @@ async function main() {
         console.error('[MAIL ENGINE] Auth setup error:', e.message);
     }
 
+    // Pause switch (managed from admin UI). When config/admin.mailEngineEnabled
+    // is explicitly false, exit early without touching IMAP or Firestore writes.
+    try {
+        const cfgDoc = await firebase.firestore().collection('config').doc('admin').get();
+        const cfg = cfgDoc.exists ? cfgDoc.data() : {};
+        if (cfg.mailEngineEnabled === false) {
+            console.log('[MAIL ENGINE] Pausado por admin (config/admin.mailEngineEnabled=false). Saliendo sin procesar correos.');
+            try { await firebase.firestore().collection('config').doc('admin').set({
+                mailEngineLastSkippedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                mailEngineLastReason: 'paused_by_admin'
+            }, { merge: true }); } catch(e) {}
+            try { await firebase.auth().signOut(); } catch(e) {}
+            return;
+        }
+    } catch(e) {
+        console.warn('[MAIL ENGINE] No pude leer flag de pausa:', e.message);
+    }
+
     let lastError = null;
     for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
         try {

@@ -642,10 +642,73 @@ window.saveMailboxNotes = async function() {
     }
 };
 
+// ============ PAUSE TOGGLE (kill-switch for the mail engine + POD authorize) ============
+
+window._mailEnginePaused = false;
+window._mailEnginePausedLoaded = false;
+
+window.refreshMailEngineStatus = async function() {
+    try {
+        const doc = await window.db.collection('config').doc('admin').get();
+        window._mailEnginePaused = doc.exists && doc.data().mailEngineEnabled === false;
+        window._mailEnginePausedLoaded = true;
+        const btn = document.getElementById('btn-mailbox-pause');
+        const lbl = document.getElementById('btn-mailbox-pause-label');
+        const banner = document.getElementById('mailbox-paused-banner');
+        if (btn && lbl) {
+            if (window._mailEnginePaused) {
+                btn.style.background = '#FF9F0A';
+                btn.style.color = '#000';
+                btn.style.borderColor = '#FF9F0A';
+                lbl.textContent = 'Reanudar';
+            } else {
+                btn.style.background = '';
+                btn.style.color = '#FF9F0A';
+                btn.style.borderColor = '#FF9F0A';
+                lbl.textContent = 'Pausar';
+            }
+        }
+        if (banner) banner.style.display = window._mailEnginePaused ? 'block' : 'none';
+    } catch(e) {
+        console.warn('[MAILBOX] No pude leer estado de pausa:', e.message);
+    }
+};
+
+window.toggleMailEngine = async function() {
+    const next = !window._mailEnginePaused;
+    const verb = next ? 'pausar' : 'reanudar';
+    if (!confirm('¿Seguro que quieres ' + verb + ' el buzón inteligente?\n\nEn pausa: el motor no procesará nuevos correos ni se podrán autorizar envíos POD.')) return;
+    try {
+        await window.db.collection('config').doc('admin').set({
+            mailEngineEnabled: !next,
+            mailEnginePauseUpdatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        await window.refreshMailEngineStatus();
+        if (typeof showMailboxToast === 'function') {
+            showMailboxToast(next ? '⏸ Buzón inteligente en pausa' : '▶ Buzón inteligente reanudado', 'success', 4000);
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+    }
+};
+
+// Refresh on first mailbox load
+(function() {
+    var prev = window.loadMailbox;
+    window.loadMailbox = function() {
+        if (typeof prev === 'function') prev.apply(this, arguments);
+        if (typeof window.refreshMailEngineStatus === 'function') window.refreshMailEngineStatus();
+    };
+})();
+
 /**
  * Authorize POD email send
  */
 window.authorizePODSend = async function() {
+    if (window._mailEnginePaused) {
+        showMailboxToast('Buzón en pausa: reactívalo para autorizar envíos POD', 'warning', 5000);
+        return;
+    }
     const modalEl = document.getElementById('mailbox-modal');
     const id = modalEl?.getAttribute('data-active-id');
     if (!id) return;

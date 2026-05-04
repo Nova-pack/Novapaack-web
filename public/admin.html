@@ -2370,7 +2370,16 @@ window.runPublicTicketsBackfill = async function() {
             <button class="btn btn-outline" onclick="openCreateMailboxEntry()" style="display:flex; align-items:center; gap:5px; border-color:#4CAF50; color:#4CAF50;">
                 <span class="material-symbols-outlined" style="font-size:1.2rem;">note_add</span> Crear Asunto
             </button>
+            <!-- Pause toggle (idea: kill switch for mail engine + POD authorize) -->
+            <button id="btn-mailbox-pause" onclick="toggleMailEngine()" class="btn btn-outline" style="display:flex; align-items:center; gap:5px; border-color:#FF9F0A; color:#FF9F0A;" title="Pausar/reanudar el motor de buzón inteligente">
+                <span class="material-symbols-outlined" style="font-size:1.2rem;">pause_circle</span> <span id="btn-mailbox-pause-label">Pausar</span>
+            </button>
         </div>
+    </div>
+    <!-- Banner mostrado cuando el motor está en pausa -->
+    <div id="mailbox-paused-banner" style="display:none; max-width:1400px; margin:0 auto 16px; background:rgba(255,159,10,0.10); border:1px solid rgba(255,159,10,0.35); color:#FF9F0A; padding:12px 16px; border-radius:8px; font-size:0.9rem;">
+        <span class="material-symbols-outlined" style="vertical-align:middle; font-size:1.1rem;">pause_circle</span>
+        <strong>Buzón inteligente en pausa.</strong> El motor no procesará nuevos correos ni autorizará envíos hasta reactivarlo.
     </div>
 
     <!-- Kanban/List Layout -->
