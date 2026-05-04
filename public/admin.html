@@ -7887,7 +7887,7 @@ window.runPublicTicketsBackfill = async function() {
 
                 showLoading();
                 try {
-                    console.log(`[CASCADE DELETE] Iniciando borrado de ${uData.name} (UID: ${id}, ID_NUM: ${uData.idNum})`);
+                    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log(`[CASCADE DELETE] Iniciando borrado UID ${id}`);
                     let batch = db.batch();
                     let operationsCount = 0;
 
@@ -16222,7 +16222,7 @@ window.importTarifas50 = async () => {
                 }
 
                 if (foundEmail) {
-                    console.log(`[Rastreador] ¡Encontrado! ${c.name} -> ${foundEmail} (${source})`);
+                    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log(`[Rastreador] ¡Encontrado! ${c.name} -> ${foundEmail} (${source})`);
                     await db.collection('users').doc(c.id).update({ 
                         email: foundEmail.toLowerCase().trim(),
                         emailFoundBy: source,

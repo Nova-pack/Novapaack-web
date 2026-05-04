@@ -115,6 +115,9 @@ window.loadMailbox = function() {
             console.error("[MAILBOX] Error leyendo correos:", error);
             if (error.code === 'permission-denied' || error.code === 'failed-precondition' || error.message.includes('permissions') || error.message.includes('index')) {
                 console.log("[MAILBOX] Retrying without orderBy...");
+                // Tear down the failing primary listener BEFORE installing the
+                // fallback, otherwise both run in parallel and we leak snapshots.
+                if (_mailboxUnsubscribe) { try { _mailboxUnsubscribe(); } catch(e) {} _mailboxUnsubscribe = null; }
                 _mailboxUnsubscribe = window.db.collection('mailbox')
                     .limit(200)
                     .onSnapshot((snapshot) => {

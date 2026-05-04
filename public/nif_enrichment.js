@@ -172,7 +172,7 @@
             // Try top candidate
             if (candidates.length > 0) {
                 _globalUserUid = candidates[0].uid;
-                console.log('[NIF] Auto-detected global user: ' + candidates[0].name + ' (' + _globalUserUid + ')');
+                if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log('[NIF] Auto-detected global user: ' + candidates[0].name + ' (' + _globalUserUid + ')');
             }
 
             // 4. If auto-detect found something, try loading its destinations
@@ -192,7 +192,7 @@
                             .collection('destinations').limit(5).get();
                         if (testSnap.size >= 5) {
                             _globalUserUid = uid;
-                            console.log('[NIF] Found user with destinations: ' + (userMap[uid].name || uid) + ' (' + uid + ')');
+                            if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log('[NIF] Found user with destinations: ' + (userMap[uid].name || uid) + ' (' + uid + ')');
                             await _loadGlobalDestinations();
                             break;
                         }

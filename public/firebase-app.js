@@ -198,7 +198,7 @@ auth.onAuthStateChanged(async (user) => {
         let profile = null;
         // 1. Buscar si hay algún documento en la colección 'users' con este email (creado por el Admin)
         if (user.email) {
-            console.log("Buscando cuenta maestra por Email...", user.email);
+            if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log("Buscando cuenta maestra por Email...", user.email);
             try {
                 // Fetch all matching docs, remove limit(1) to prevent race conditions with the clone
                 const emailSnap = await db.collection('users').where('email', '==', user.email.toLowerCase()).get();
