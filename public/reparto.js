@@ -1465,6 +1465,7 @@ function initApp() {
             var typeColor = '#2196F3';
             if (a.type === 'recogida') { typeIcon = '\ud83d\udce5'; typeLabel = 'Recogida'; typeColor = '#FF9800'; }
             else if (a.type === 'entrega_urgente') { typeIcon = '\ud83d\udea8'; typeLabel = 'Entrega urgente'; typeColor = '#FF3B30'; }
+            else if (a.kind === 'extravio') { typeIcon = '\ud83d\udea8'; typeLabel = 'Posible extrav\u00edo'; typeColor = '#FF3B30'; }
 
             var dateStr = '';
             if (a.createdAt) {
@@ -1482,6 +1483,10 @@ function initApp() {
             html += '<span style="color:' + typeColor + '; font-weight:800; font-size:0.82rem; letter-spacing:0.5px;">' + typeIcon + ' ' + escapeHtml(typeLabel).toUpperCase() + '</span>';
             html += '<span style="color:#888; font-size:0.72rem;">' + escapeHtml(dateStr) + '</span>';
             html += '</div>';
+            // Title (used by alerts that don't have an address \u2014 e.g. anti-extrav\u00edo)
+            if (a.title && !a.address) {
+                html += '<div style="color:#fff; font-weight:700; font-size:0.92rem; margin-bottom:6px;">' + escapeHtml(a.title) + '</div>';
+            }
             // Address
             if (a.address) {
                 html += '<div style="display:flex; align-items:start; gap:6px; margin-bottom:6px; color:#eee; font-size:0.9rem; line-height:1.5;">';
@@ -1489,12 +1494,17 @@ function initApp() {
                 html += '<span style="font-weight:600;">' + escapeHtml(a.address) + '</span>';
                 html += '</div>';
             }
-            // Notes
-            if (a.notes) {
+            // Notes (or alert body when notes absent)
+            var bodyText = a.notes || a.body || '';
+            if (bodyText) {
                 html += '<div style="display:flex; align-items:start; gap:6px; margin-bottom:6px; color:#aaa; font-size:0.82rem; line-height:1.4;">';
                 html += '<span style="font-size:0.9rem; flex-shrink:0;">\ud83d\udcdd</span>';
-                html += '<span>' + escapeHtml(a.notes) + '</span>';
+                html += '<span>' + escapeHtml(bodyText) + '</span>';
                 html += '</div>';
+            }
+            // Ticket reference for extrav\u00edo alerts
+            if (a.ticketBusinessId) {
+                html += '<div style="color:#FF8A50; font-size:0.72rem; margin-bottom:6px;">\ud83d\udce6 Albar\u00e1n <strong>' + escapeHtml(a.ticketBusinessId) + '</strong></div>';
             }
             // Sent by
             if (a.sentBy) {
