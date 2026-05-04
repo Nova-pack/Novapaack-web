@@ -220,6 +220,7 @@
     <!-- App Logic -->
     <script src="reparto.js" defer></script>
     <script src="copiloto.js" defer></script>
+    <script src="ocr.js" defer></script>
 </head>
 <body>
 
@@ -495,6 +496,11 @@
                     <input type="text" id="manual-id-input" class="form-control" placeholder="ID albarán o nombre...">
                     <button class="btn btn-primary btn-sm" id="btn-manual-search" style="white-space:nowrap;"><span class="material-symbols-outlined" style="font-size:1rem;">search</span></button>
                 </div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <input type="file" id="ocr-photo-input" accept="image/*" capture="environment" style="display:none;">
+                    <button class="btn btn-outline btn-sm" id="btn-ocr-scan" style="flex:1; color:#5DADE2; border-color:rgba(93,173,226,0.3);"><span class="material-symbols-outlined" style="font-size:1rem;">document_scanner</span> OCR Etiqueta (si el QR no lee)</button>
+                </div>
+                <div id="ocr-status" style="font-size:0.78rem; color:var(--text-dim); margin-top:6px; min-height:1em;"></div>
             </div>
 
             <!-- Scan Result -->
