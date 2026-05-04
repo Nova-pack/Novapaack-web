@@ -885,6 +885,8 @@
                                 <span class="material-symbols-outlined" style="font-size:1rem; color:var(--text-dim);">location_on</span>
                                 <span id="pod-res-gps" style="color:#888;"></span>
                             </div>
+                            <div id="pod-res-sig-audit" style="display:none; color:#888; font-size:0.72rem; margin-top:6px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.06);"></div>
+                            <div id="pod-res-sig-refused" style="display:none; color:#FF9F0A; font-size:0.78rem; margin-top:6px; padding:6px 10px; background:rgba(255,159,10,0.08); border:1px solid rgba(255,159,10,0.25); border-radius:6px;"></div>
                         </div>
                     </div>
                 </div>
@@ -989,8 +991,34 @@
 
                 if (data.deliveryGPS) {
                     document.getElementById('pod-res-gps').textContent = `${data.deliveryGPS.latitude}, ${data.deliveryGPS.longitude}`;
+                } else if (data.signatureMeta && typeof data.signatureMeta.lat === 'number') {
+                    document.getElementById('pod-res-gps').textContent = `${data.signatureMeta.lat.toFixed(5)}, ${data.signatureMeta.lng.toFixed(5)}` + (data.signatureMeta.accuracy ? ` (±${data.signatureMeta.accuracy}m)` : '');
                 } else {
                     document.getElementById('pod-res-gps').textContent = 'GPS no registrado';
+                }
+
+                // Signature audit trail (timestamp, GPS, refusal)
+                const auditEl = document.getElementById('pod-res-sig-audit');
+                const refusedEl = document.getElementById('pod-res-sig-refused');
+                if (auditEl) auditEl.style.display = 'none';
+                if (refusedEl) refusedEl.style.display = 'none';
+                if (data.signatureRefused) {
+                    if (refusedEl) {
+                        refusedEl.style.display = 'block';
+                        refusedEl.textContent = '⚠️ Receptor rehusó firmar — motivo: ' + (data.signatureRefusedReason || 'no indicado');
+                    }
+                } else if (data.signatureMeta && auditEl) {
+                    const sm = data.signatureMeta;
+                    let parts = [];
+                    if (sm.signedAt) {
+                        try { parts.push('🖋 ' + new Date(sm.signedAt).toLocaleString('es-ES')); } catch(e) {}
+                    }
+                    if (typeof sm.durationMs === 'number') parts.push((sm.durationMs / 1000).toFixed(1) + ' s firmando');
+                    if (typeof sm.strokes === 'number') parts.push(sm.strokes + ' trazo' + (sm.strokes === 1 ? '' : 's'));
+                    if (parts.length) {
+                        auditEl.style.display = 'block';
+                        auditEl.textContent = parts.join(' · ');
+                    }
                 }
 
                 const sigImg = document.getElementById('pod-res-sig-img');
@@ -1008,6 +1036,9 @@
                 } else {
                     sigImg.style.display = 'none';
                     sigEmpty.style.display = 'block';
+                    sigEmpty.innerHTML = data.signatureRefused
+                        ? '<span style="color:#FF9F0A;">⚠️ Receptor rehusó firmar</span>'
+                        : 'No se adjuntó firma';
                 }
 
                 const photoImg = document.getElementById('pod-res-photo-img');

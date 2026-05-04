@@ -40,6 +40,7 @@ var _GPS_MAX_RETRIES = 5;
 var _GPS_RETRY_DELAYS = [3000, 5000, 10000, 20000, 30000]; // Escalating retry delays
 var _gpsTrackingEnabled = false; // Flag: should tracking be active?
 var _gpsLastPosition = null; // Last known good position timestamp
+var _gpsLastCoords = null;   // { lat, lng, accuracy, ts } — for stamping POD signatures
 var _gpsHealthCheckTimer = null;
 var _GPS_HEALTH_INTERVAL = 60000; // Check GPS health every 60 seconds
 var _GPS_STALE_THRESHOLD = 120000; // Position stale after 2 minutes
@@ -77,6 +78,12 @@ function _startGPSWatch() {
             // Reset retry count on successful position
             _gpsRetryCount = 0;
             _gpsLastPosition = Date.now();
+            _gpsLastCoords = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                accuracy: Math.round(pos.coords.accuracy),
+                ts: _gpsLastPosition
+            };
 
             var now = Date.now();
             if (now - _gpsLastSent < _GPS_SEND_INTERVAL) {
@@ -2506,9 +2513,27 @@ function initApp() {
             document.getElementById('confirm-receiver').focus();
             return;
         }
-        if (isSignatureEmpty()) {
-            showToast('Se necesita la firma del receptor.', 'warning');
-            return;
+
+        // Signature gate: must be a real signature, not blank or single-pixel.
+        // Driver may explicitly mark "rehúsa firmar" to bypass — that flags
+        // the delivery as not billing-ready and stores the reason.
+        var signatureRefused = false;
+        var signatureRefusedReason = '';
+        if (!isSignatureValid()) {
+            if (isSignatureEmpty()) {
+                var reason = prompt('No hay firma. Si el receptor rehúsa firmar, escribe el motivo (ej. "buzón", "rehúsa", "ausente").\n\nDeja vacío y cancela para volver a pedir firma.');
+                if (reason == null) return; // cancelled
+                reason = String(reason).trim();
+                if (!reason) {
+                    showToast('Se necesita firma o motivo.', 'warning');
+                    return;
+                }
+                signatureRefused = true;
+                signatureRefusedReason = reason.slice(0, 200);
+            } else {
+                showToast('La firma es muy pequeña. Pide una firma completa.', 'warning');
+                return;
+            }
         }
 
         var btn = document.getElementById('btn-confirm-delivery');
@@ -2530,6 +2555,10 @@ function initApp() {
         try {
             var docId = currentScanDoc._id;
             var docRef = currentScanDoc._ref || db.collection('tickets').doc(docId);
+            // Capture signature audit trail BEFORE async work — ensures the
+            // timestamp/GPS reflect the moment of physical delivery.
+            var sigMeta = signatureRefused ? null : getSignatureMeta();
+
             var deliveryData = {
                 status: 'Entregado',
                 delivered: true,
@@ -2537,7 +2566,10 @@ function initApp() {
                 distributedAt: firebase.firestore.FieldValue.serverTimestamp(),
                 deliveryReceiverName: receiverName,
                 deliveredByDriver: currentDriverName,
-                deliveredByPhone: currentDriverPhone
+                deliveredByPhone: currentDriverPhone,
+                signatureRefused: signatureRefused,
+                signatureRefusedReason: signatureRefusedReason || null,
+                signatureMeta: sigMeta
             };
 
             // Auto-asignación de cargo según tipo de porte
@@ -2576,7 +2608,7 @@ function initApp() {
 
             // --- OFFLINE PATH: queue everything for later sync ---
             if (!navigator.onLine) {
-                var sigB64 = getSignatureDataURL();
+                var sigB64 = signatureRefused ? null : getSignatureDataURL();
                 // Remove serverTimestamp (not serializable) — will be set on sync
                 var offlineDeliveryData = Object.assign({}, deliveryData);
                 offlineDeliveryData.deliveredAt = new Date().toISOString();
@@ -2624,13 +2656,15 @@ function initApp() {
             }
 
             // --- ONLINE PATH: upload + save normally ---
-            // Upload signature (MANDATORY — abort delivery if fails)
-            var sigData = getSignatureDataURL();
-            if (sigData) {
-                var sigBlob = await (await fetch(sigData)).blob();
-                var sigRef = storage.ref('deliveries/' + docId + '/signature.png');
-                await withTimeout(sigRef.put(sigBlob, { contentType: 'image/png' }), 15000, 'Firma');
-                deliveryData.signatureURL = await withTimeout(sigRef.getDownloadURL(), 5000, 'Firma URL');
+            // Upload signature only if the receiver actually signed.
+            if (!signatureRefused) {
+                var sigData = getSignatureDataURL();
+                if (sigData) {
+                    var sigBlob = await (await fetch(sigData)).blob();
+                    var sigRef = storage.ref('deliveries/' + docId + '/signature.png');
+                    await withTimeout(sigRef.put(sigBlob, { contentType: 'image/png' }), 15000, 'Firma');
+                    deliveryData.signatureURL = await withTimeout(sigRef.getDownloadURL(), 5000, 'Firma URL');
+                }
             }
 
             // Upload photo (optional, non-blocking on failure)
@@ -2655,6 +2689,9 @@ function initApp() {
             archiveData.billingTarget = deliveryData.billingTarget || null;
             archiveData.billingName = deliveryData.billingName || null;
             archiveData.billingReady = deliveryData.billingReady || false;
+            archiveData.signatureRefused = deliveryData.signatureRefused || false;
+            archiveData.signatureRefusedReason = deliveryData.signatureRefusedReason || null;
+            archiveData.signatureMeta = deliveryData.signatureMeta || null;
             archiveData.deliveredAt = firebase.firestore.FieldValue.serverTimestamp();
             archiveData.archivedAt = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -2710,20 +2747,51 @@ function initApp() {
         }
     });
 
-    // --- SIGNATURE CANVAS (responsive) ---
+    // --- SIGNATURE CANVAS (responsive, smoothed, with pixel-density check) ---
+    var _sigState = {
+        startedAt: 0,
+        endedAt: 0,
+        strokes: 0,
+        bbox: null   // { minX, minY, maxX, maxY }
+    };
+    function _resetSigState() {
+        _sigState.startedAt = 0;
+        _sigState.endedAt = 0;
+        _sigState.strokes = 0;
+        _sigState.bbox = null;
+    }
+    function _bumpBbox(x, y) {
+        if (!_sigState.bbox) _sigState.bbox = { minX: x, minY: y, maxX: x, maxY: y };
+        else {
+            if (x < _sigState.bbox.minX) _sigState.bbox.minX = x;
+            if (y < _sigState.bbox.minY) _sigState.bbox.minY = y;
+            if (x > _sigState.bbox.maxX) _sigState.bbox.maxX = x;
+            if (y > _sigState.bbox.maxY) _sigState.bbox.maxY = y;
+        }
+    }
+
     (function() {
         var canvas = document.getElementById('sig-canvas');
         if (!canvas) return;
         var ctx = canvas.getContext('2d');
-        var drawing = false, lx = 0, ly = 0;
+        var drawing = false;
+        var pts = [];      // quadratic-smoothing buffer
 
         function resizeCanvas() {
             var wrap = canvas.parentElement;
             var w = wrap ? wrap.clientWidth : 300;
-            var h = Math.round(w * 0.35); // ~35% aspect ratio
+            var h = Math.round(w * 0.35);
             if (canvas.width !== w || canvas.height !== h) {
+                // Preserve drawing across resizes if possible
+                var prev;
+                try { prev = canvas.toDataURL(); } catch(e) {}
                 canvas.width = w;
                 canvas.height = h;
+                if (prev) {
+                    var img = new Image();
+                    img.onload = function() { ctx.drawImage(img, 0, 0, w, h); };
+                    img.src = prev;
+                }
             }
         }
         resizeCanvas();
@@ -2735,15 +2803,52 @@ function initApp() {
             var t = e.touches ? e.touches[0] : e;
             return { x: (t.clientX - r.left) * sx, y: (t.clientY - r.top) * sy };
         }
-        function start(e) { e.preventDefault(); drawing = true; var p = pos(e); lx = p.x; ly = p.y; }
-        function draw(e) {
-            if (!drawing) return; e.preventDefault();
+        function start(e) {
+            e.preventDefault();
+            drawing = true;
             var p = pos(e);
-            ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(p.x, p.y);
-            ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke();
-            lx = p.x; ly = p.y;
+            pts = [p];
+            _sigState.strokes++;
+            if (!_sigState.startedAt) _sigState.startedAt = Date.now();
+            _bumpBbox(p.x, p.y);
         }
-        function stop() { drawing = false; }
+        function draw(e) {
+            if (!drawing) return;
+            e.preventDefault();
+            var p = pos(e);
+            pts.push(p);
+            _bumpBbox(p.x, p.y);
+            // Quadratic smoothing: draw a curve through midpoints
+            if (pts.length >= 3) {
+                var n = pts.length;
+                var p0 = pts[n - 3];
+                var p1 = pts[n - 2];
+                var p2 = pts[n - 1];
+                var midA = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+                var midB = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+                ctx.beginPath();
+                ctx.moveTo(midA.x, midA.y);
+                ctx.quadraticCurveTo(p1.x, p1.y, midB.x, midB.y);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2.2;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+            } else if (pts.length === 2) {
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                ctx.lineTo(pts[1].x, pts[1].y);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2.2;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+        }
+        function stop() {
+            if (drawing) _sigState.endedAt = Date.now();
+            drawing = false;
+            pts = [];
+        }
 
         canvas.addEventListener('mousedown', start);
         canvas.addEventListener('mousemove', draw);
@@ -2757,20 +2862,62 @@ function initApp() {
     function clearSignature() {
         var c = document.getElementById('sig-canvas');
         if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+        _resetSigState();
     }
     document.getElementById('btn-clear-sig').addEventListener('click', clearSignature);
 
-    function isSignatureEmpty() {
+    // Counts non-transparent pixels. A real signature has hundreds of inked
+    // pixels even for a small scrawl; a stray tap leaves <50.
+    function getSignaturePixelCount() {
         var c = document.getElementById('sig-canvas');
-        if (!c) return true;
-        var b = document.createElement('canvas');
-        b.width = c.width; b.height = c.height;
-        return c.toDataURL() === b.toDataURL();
+        if (!c) return 0;
+        try {
+            var ctx = c.getContext('2d');
+            var img = ctx.getImageData(0, 0, c.width, c.height);
+            var data = img.data;
+            var count = 0;
+            for (var i = 3; i < data.length; i += 4) { if (data[i] > 0) count++; }
+            return count;
+        } catch(e) { return 0; }
     }
+
+    function isSignatureValid() {
+        if (getSignaturePixelCount() < 200) return false;
+        if (!_sigState.bbox) return false;
+        var w = _sigState.bbox.maxX - _sigState.bbox.minX;
+        var h = _sigState.bbox.maxY - _sigState.bbox.minY;
+        // Reject "single dot" or unreasonably tiny bounding box
+        if (w < 30 || h < 10) return false;
+        return true;
+    }
+
+    function isSignatureEmpty() { return getSignaturePixelCount() === 0; }
 
     function getSignatureDataURL() {
         var c = document.getElementById('sig-canvas');
         return c ? c.toDataURL('image/png') : null;
+    }
+
+    // Try to capture a fresh GPS coord at signing time. Falls back to the
+    // last known driver position if available, or returns null.
+    function getSignatureMeta() {
+        var meta = {
+            signedAt: new Date().toISOString(),
+            pixelCount: getSignaturePixelCount(),
+            strokes: _sigState.strokes,
+            bbox: _sigState.bbox ? Object.assign({}, _sigState.bbox) : null,
+            startedAt: _sigState.startedAt || null,
+            endedAt: _sigState.endedAt || null,
+            durationMs: _sigState.endedAt && _sigState.startedAt ? (_sigState.endedAt - _sigState.startedAt) : null
+        };
+        // Best-effort GPS — use the last known driver coords (kept fresh by the
+        // GPS watcher). Only stamp if it's recent (< 2 min).
+        if (_gpsLastCoords && (Date.now() - _gpsLastCoords.ts) < 120000) {
+            meta.lat = _gpsLastCoords.lat;
+            meta.lng = _gpsLastCoords.lng;
+            meta.accuracy = _gpsLastCoords.accuracy;
+        }
+        return meta;
     }
 
     // --- PHOTO ---
