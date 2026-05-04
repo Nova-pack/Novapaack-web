@@ -915,6 +915,7 @@
 
             <!-- Botonera -->
             <div style="margin-top:30px; display:flex; justify-content:flex-end; gap:15px; border-top:1px solid var(--border-glass); padding-top:20px; flex-wrap:wrap;">
+                <button class="btn btn-outline" onclick="copyPublicTrackingLink()" style="border-color:#FF9F0A; color:#FF9F0A;"><span class="material-symbols-outlined">link</span> COPIAR LINK PÚBLICO</button>
                 <button class="btn btn-outline" onclick="emailPOD()" style="border-color:#2196F3; color:#2196F3;"><span class="material-symbols-outlined">mail</span> ENVIAR POR EMAIL</button>
                 <button class="btn btn-outline" onclick="printPOD()"><span class="material-symbols-outlined">print</span> IMPRIMIR JUSTIFICANTE</button>
             </div>
@@ -1067,6 +1068,33 @@
                 alert("Error técnico al buscar: " + err.message);
             }
         }
+
+        // Build a shareable public tracking link for the currently-displayed POD.
+        // Uses the business-id (NP-…) when available, else the doc id.
+        window.copyPublicTrackingLink = async function copyPublicTrackingLink() {
+            try {
+                var idEl = document.getElementById('pod-res-id');
+                var idText = idEl ? (idEl.textContent || '').trim() : '';
+                if (!idText) { alert('No hay albarán seleccionado.'); return; }
+                var origin = location.origin || ('https://' + location.hostname);
+                var url = origin + '/track.html?id=' + encodeURIComponent(idText);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(url);
+                    alert('Link copiado al portapapeles:\n\n' + url);
+                } else {
+                    // Fallback for older browsers
+                    var ta = document.createElement('textarea');
+                    ta.value = url;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand('copy'); } catch(e) {}
+                    document.body.removeChild(ta);
+                    alert('Link público:\n\n' + url);
+                }
+            } catch(e) {
+                alert('No se pudo copiar. Link: ' + (location.origin + '/track.html?id=' + encodeURIComponent((document.getElementById('pod-res-id').textContent || '').trim())));
+            }
+        };
 
         function printPOD() {
             // Helpers: escape HTML and sanitize URLs (block javascript: / vbscript:)
@@ -1990,7 +2018,45 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="erp-tab-config" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
 
 <!-- Tab wrapper: Maintenance -->
-<div id="erp-tab-maintenance" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
+<div id="erp-tab-maintenance" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;">
+    <div style="max-width:720px; margin:0 auto;">
+        <h2 style="color:#FF4D00; font-size:1.1rem; letter-spacing:1px; margin-bottom:14px;">DB · Mantenimiento</h2>
+
+        <div style="background:#161616; border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:18px; margin-bottom:16px;">
+            <h3 style="font-size:0.95rem; color:#FF8A50; margin-bottom:8px;">Tracking público</h3>
+            <p style="color:#aaa; font-size:0.85rem; margin-bottom:12px;">
+                Sincroniza la colección espejo <code style="color:#FF9F0A;">public_tickets</code> a partir de <code style="color:#FF9F0A;">tickets</code>. Sólo se exponen campos seguros (id, estado, ciudad de destino, ruta, fechas). Necesario tras importar tickets antiguos para que aparezcan en el seguimiento público.
+            </p>
+            <div id="pt-backfill-status" style="font-size:0.82rem; color:#999; margin-bottom:10px;"></div>
+            <button id="pt-backfill-btn" onclick="runPublicTicketsBackfill()" style="background:#FF4D00; color:#000; border:0; padding:10px 18px; border-radius:6px; font-weight:700; cursor:pointer;">
+                Reconstruir tracking público
+            </button>
+        </div>
+    </div>
+</div>
+<script>
+window.runPublicTicketsBackfill = async function() {
+    if (typeof publicTicketsBackfill !== 'function') {
+        alert('Sync no inicializado. Recarga la página.');
+        return;
+    }
+    var btn = document.getElementById('pt-backfill-btn');
+    var status = document.getElementById('pt-backfill-status');
+    btn.disabled = true; btn.textContent = 'Procesando…';
+    try {
+        var n = await publicTicketsBackfill({
+            onProgress: function(msg) { status.textContent = msg; status.style.color = '#FF9F0A'; }
+        });
+        status.style.color = '#34C759';
+        status.textContent = '✅ ' + n + ' tickets sincronizados.';
+    } catch(e) {
+        status.style.color = '#FF3B30';
+        status.textContent = '❌ Error: ' + e.message;
+    } finally {
+        btn.disabled = false; btn.textContent = 'Reconstruir tracking público';
+    }
+};
+</script>
 
 <!-- Tab wrapper: POD -->
 <div id="erp-tab-pod" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
@@ -17564,6 +17630,7 @@ window.importTarifas50 = async () => {
 <script src="nif_enrichment.js?v=20260404"></script>
 <script src="erp_tabs.js?v=20260404"></script>
 <script src="anti_extravio.js?v=20260504"></script>
+<script src="public_tickets_sync.js?v=20260504"></script>
 
 </body>
 </html>

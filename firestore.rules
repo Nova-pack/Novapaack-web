@@ -229,5 +229,26 @@ service cloud.firestore {
       allow create: if isAuth();
       allow update, delete: if isAdmin();
     }
+
+    // ─── PUBLIC TICKETS (denormalized, safe-fields-only mirror for tracking) ───
+    // Anyone with a ticket id can read its public tracking record (no PII like
+    // sender data, prices, billing). Only authenticated callers can write — the
+    // mirror is maintained by public_tickets_sync.js running in admin sessions.
+    match /public_tickets/{docId} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create, update: if isAuth()
+        // Block obvious data leaks: never allow these fields in the public mirror
+        && !request.resource.data.keys().hasAny([
+              'price', 'total', 'tariff', 'cod', 'irpf', 'iva',
+              'invoiceId', 'invoiceNum', 'invoiceRef',
+              'senderPhone', 'senderAddress',
+              'companyId', 'clientIdNum', 'uid', 'authUid',
+              'clientName', 'clientCIF',
+              'signatureURL', 'signatureMeta',
+              'photoURL'
+           ]);
+      allow delete: if isAdmin();
+    }
   }
 }
