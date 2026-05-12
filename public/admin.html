@@ -1265,6 +1265,74 @@
             }
         };
 
+        // Compose welcome email — opens the admin's mail client with a pre-
+        // filled template containing the client's login credentials. Used by
+        // the new-user modal right after creation, and reusable from the user
+        // list to re-send if needed (admin must re-enter the password, since
+        // it's never stored in plaintext).
+        window.composeWelcomeEmail = async function composeWelcomeEmail(opts) {
+            opts = opts || {};
+            var to = (opts.email || '').trim();
+            if (!to) { alert('Falta el email del cliente.'); return; }
+            var pwd = (opts.password || '').trim();
+            if (!pwd) {
+                pwd = prompt('Introduce (o pega) la contraseña que quieres incluir en el correo:\n\n(Si el cliente debe restablecerla, deja vacío y enviaremos sólo el link de reset oficial de Firebase.)');
+                if (pwd === null) return; // cancel
+                pwd = pwd.trim();
+            }
+            // If no password supplied, trigger Firebase password reset so the
+            // user receives an official email from Firebase with a working
+            // reset link. The mailto: that we open below mentions this.
+            var firebaseResetSent = false;
+            if (!pwd) {
+                try {
+                    await firebase.auth().sendPasswordResetEmail(to);
+                    firebaseResetSent = true;
+                } catch(e) {
+                    alert('No pude enviar el reset de Firebase: ' + e.message + '\nSe abrirá el email igualmente sin link de reset funcional.');
+                }
+            }
+            var loginUrl = (location.origin || 'https://novapaack.com') + '/index.html';
+
+            var subject = encodeURIComponent('Bienvenido a NOVAPACK — Tus credenciales de acceso');
+
+            var greet = opts.name ? 'Estimado/a ' + opts.name : 'Hola';
+            var idLine = opts.idNum ? '· ID Cliente: ' + opts.idNum : '';
+
+            var body = '';
+            body += greet + ',\n\n';
+            body += 'Ya tienes acceso a la plataforma NOVAPACK CLOUD para gestionar tus envíos online.\n';
+            body += '\n';
+            body += '═══════════════════════════════════════\n';
+            body += '   DATOS DE ACCESO\n';
+            body += '═══════════════════════════════════════\n';
+            body += 'Email:        ' + to + '\n';
+            if (pwd) body += 'Contraseña:   ' + pwd + '\n';
+            if (idLine) body += idLine + '\n';
+            body += '\n';
+            body += 'Acceso a la plataforma: ' + loginUrl + '\n';
+            body += '\n';
+            if (pwd) {
+                body += 'Por seguridad te recomendamos cambiar la contraseña tras tu primer acceso.\n\n';
+            } else if (firebaseResetSent) {
+                body += 'Recibirás un segundo email automático de Firebase con un enlace para establecer tu contraseña.\n\n';
+            } else {
+                body += 'Contacta con administración para recibir tus credenciales.\n\n';
+            }
+            body += 'Qué puedes hacer ya:\n';
+            body += '  • Generar albaranes con tu tarifa configurada\n';
+            body += '  • Solicitar recogidas a domicilio\n';
+            body += '  • Consultar el estado de tus envíos en tiempo real\n';
+            body += '  • Descargar tus facturas y justificantes de entrega\n';
+            body += '\n';
+            body += 'Si necesitas ayuda escribe a administracion@novapack.info o llámanos al teléfono de oficina.\n';
+            body += '\n';
+            body += 'Un saludo,\n';
+            body += 'Equipo NOVAPACK\n';
+
+            window.open('mailto:' + encodeURIComponent(to) + '?subject=' + subject + '&body=' + encodeURIComponent(body));
+        };
+
         // Build a shareable public tracking link for the currently-displayed POD.
         // Uses the business-id (NP-…) when available, else the doc id.
         window.copyPublicTrackingLink = async function copyPublicTrackingLink() {
@@ -7504,6 +7572,7 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-primary btn-sm" onclick="openEditUserModal('${escapeHtml(data.id)}')" title="Editar Cliente">✏️</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageCompaniesModal('${escapeHtml(data.id)}')" title="Sedes/Empresas">🏢</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
+                                    <button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail({email:'${escapeHtml(data.email || '')}', name:'${escapeHtml((data.name || '').replace(/'/g, ''))}', idNum:'${escapeHtml(String(data.idNum || ''))}'})" title="Enviar email de bienvenida con credenciales">✉️</button>
                                     <button class="btn btn-secondary btn-sm" onclick="sendWhatsApp('${escapeHtml(data.senderPhone || '')}', 'Hola ${escapeHtml(data.name)}')" title="WhatsApp">💬</button>
                                     <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(data.id)}')" title="Eliminar">🗑️</button>
                                     `}
@@ -7774,9 +7843,41 @@ window.runPublicTicketsBackfill = async function() {
                         // For existing users, we update. For new users, we set/merge.
                         await db.collection('users').doc(targetDocId).collection('companies').doc('comp_main').set(mainCompData, { merge: true });
 
+                        // ───── HUECO #3: validar tarifa antes de cerrar ─────
+                        // Si el cliente no tiene tariffId asignado o la tarifa
+                        // global no tiene items, el user no podrá generar
+                        // tickets. Aviso (no bloqueante).
+                        try {
+                            if (!tariffId) {
+                                alert('⚠️ Aviso: este cliente no tiene tarifa asignada. No podrá generar albaranes hasta que le asignes una desde Tarifas → Cliente.');
+                            } else {
+                                const tariffDoc = await db.collection('tariffs').doc('GLOBAL_' + tariffId).get();
+                                if (!tariffDoc.exists) {
+                                    alert('⚠️ Aviso: la tarifa "' + tariffId + '" no existe en GLOBAL_. El cliente podrá entrar pero no podrá generar tickets con artículos. Créala primero en Tarifas o asigna una existente.');
+                                } else {
+                                    const tdata = tariffDoc.data() || {};
+                                    const itemCount = tdata.items ? Object.keys(tdata.items).length : 0;
+                                    if (itemCount === 0) {
+                                        alert('⚠️ Aviso: la tarifa "' + tariffId + '" existe pero está vacía (sin artículos). El cliente verá un editor vacío al intentar facturar.');
+                                    }
+                                }
+                            }
+                        } catch(e) { console.warn('Tariff validation skipped:', e); }
+
                         addUserModal.style.display = 'none';
                         loadUsers();
-                        alert(userId ? "✅ Cliente actualizado correctamente." : "✅ Cliente creado con éxito en la nube.");
+
+                        // ───── HUECO #1: ofrecer email de bienvenida ─────
+                        // Sólo en creación (no edición). El admin elige si
+                        // quiere mandar las credenciales por correo ahora.
+                        if (!userId && email && password) {
+                            const sendWelcome = confirm('✅ Cliente creado con éxito.\n\n¿Quieres enviarle un email de bienvenida con sus credenciales y el link de acceso?\n\n[Aceptar] abrirá tu cliente de correo con un mensaje pre-rellenado.\n[Cancelar] guardará sin enviar — podrás comunicar manualmente.');
+                            if (sendWelcome && typeof window.composeWelcomeEmail === 'function') {
+                                window.composeWelcomeEmail({ email: email, password: password, name: name, idNum: idNumStr });
+                            }
+                        } else {
+                            alert(userId ? "✅ Cliente actualizado correctamente." : "✅ Cliente creado con éxito en la nube.");
+                        }
                     } catch (err) {
                         console.error(err);
                         alert('Error al procesar el usuario: ' + err.message);
