@@ -1293,6 +1293,7 @@
             if (!c) { alert('Cliente no encontrado en cache. Recarga la lista.'); return; }
             window.composeWelcomeEmail({
                 email: c.email || '',
+                adminEmail: c.adminEmail || '',
                 loginEmail: c.loginEmail || '',
                 name: c.name || '',
                 idNum: c.idNum || ''
@@ -1395,9 +1396,16 @@
             //   Solo si Firebase rechaza con "email-already-in-use" (caso
             //   típico: sucursales que comparten el mismo email real) le
             //   ofrecemos al admin generar un sintético único.
-            const realEmail = (data.email || '').trim().toLowerCase();
+            //   Cadena de fallback: data.email → data.adminEmail.
+            let realEmail = (data.email || '').trim().toLowerCase();
+            if (!realEmail && data.adminEmail) {
+                const adm = data.adminEmail.trim().toLowerCase();
+                if (confirm('El cliente no tiene "Email principal" pero sí "Email Administración":\n\n  ' + adm + '\n\n¿Quieres usarlo como email de login?')) {
+                    realEmail = adm;
+                }
+            }
             if (!realEmail) {
-                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero — necesitamos un email para crear el acceso.');
+                alert('❌ Este cliente no tiene ningún email en su ficha.\n\nEdita la ficha primero — añade al menos el "Email" principal o el "Email Administración".');
                 return;
             }
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(realEmail)) {
@@ -1476,6 +1484,7 @@
                 if (send && typeof window.composeWelcomeEmail === 'function') {
                     await window.composeWelcomeEmail({
                         email: realEmail,
+                        adminEmail: data.adminEmail || '',
                         loginEmail: loginEmail,
                         password: password,
                         name: data.name || '',
@@ -1569,6 +1578,7 @@
                 if (send && typeof window.composeWelcomeEmail === 'function') {
                     await window.composeWelcomeEmail({
                         email: data.email,
+                        adminEmail: data.adminEmail || '',
                         loginEmail: newLoginEmail,
                         password: password,
                         name: data.name || '',
@@ -1594,11 +1604,23 @@
         // it's never stored in plaintext).
         window.composeWelcomeEmail = async function composeWelcomeEmail(opts) {
             opts = opts || {};
-            // Email DESTINO del correo (donde se manda el welcome) = email real
-            // de la ficha. Email de LOGIN (usuario para entrar) = loginEmail
-            // sintético si lo hay, si no fallback al real.
+            // Email DESTINO: cadena de fallback opts.email → opts.adminEmail →
+            // loginEmail. Algunos clientes (típicamente importados o legacy)
+            // tienen el "Email" principal vacío pero sí el "Email
+            // Administración" relleno — antes la función abortaba; ahora
+            // detecta la mejor alternativa y avisa al admin si va al de
+            // administración.
             var to = (opts.email || '').trim();
-            if (!to) { alert('Falta el email real del cliente (ficha).'); return; }
+            var fellBack = false;
+            if (!to && opts.adminEmail) { to = opts.adminEmail.trim(); fellBack = 'adminEmail'; }
+            if (!to && opts.loginEmail) { to = opts.loginEmail.trim(); fellBack = 'loginEmail'; }
+            if (!to) {
+                alert('Este cliente no tiene ningún email registrado (ni principal ni Administración).\nEdita la ficha primero y añade al menos uno.');
+                return;
+            }
+            if (fellBack === 'adminEmail') {
+                if (!confirm('El cliente NO tiene email principal — usaremos el de Administración:\n\n  ' + to + '\n\n¿Continuar?')) return;
+            }
             var loginCredential = (opts.loginEmail || opts.email || '').trim();
             var pwd = (opts.password || '').trim();
             if (!pwd) {
@@ -7974,7 +7996,8 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
                                     ${data.authUid
                                         ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>
-                                           <button class="btn btn-outline btn-sm" onclick="openChangeLoginModal('${escapeHtml(data.id)}')" title="Cambiar email de login (crea nuevo Auth, el anterior se debe borrar en Console)" style="border-color:#FFB300; color:#FFB300;">🔄</button>`
+                                           <button class="btn btn-outline btn-sm" onclick="openChangeLoginModal('${escapeHtml(data.id)}')" title="Cambiar email de login (crea nuevo Auth, el anterior se debe borrar en Console)" style="border-color:#FFB300; color:#FFB300;">🔄</button>
+                                           <button class="btn btn-outline btn-sm" onclick="openLinkAuthModal('${escapeHtml(data.id)}')" title="Re-vincular a otra cuenta Auth ya existente (UID conocido)" style="border-color:#5DADE2; color:#5DADE2;">🔗</button>`
                                         : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>
                                            <button class="btn btn-outline btn-sm" onclick="openLinkAuthModal('${escapeHtml(data.id)}')" title="Vincular cuenta Auth ya existente (UID conocido)" style="border-color:#5DADE2; color:#5DADE2;">🔗</button>`}
                                     <button class="btn btn-outline btn-sm" onclick="impersonateClient('${escapeHtml(data.id)}')" title="Entrar como este cliente (super-admin)" style="border-color:#AB47BC; color:#AB47BC;">👁️</button>
@@ -8330,7 +8353,7 @@ window.runPublicTicketsBackfill = async function() {
                         if (!userId && email && password) {
                             const sendWelcome = confirm('✅ Cliente creado con éxito.\n\n¿Quieres enviarle un email de bienvenida con sus credenciales y el link de acceso?\n\n[Aceptar] abrirá tu cliente de correo con un mensaje pre-rellenado.\n[Cancelar] guardará sin enviar — podrás comunicar manualmente.');
                             if (sendWelcome && typeof window.composeWelcomeEmail === 'function') {
-                                window.composeWelcomeEmail({ email: email, password: password, name: name, idNum: idNumStr });
+                                window.composeWelcomeEmail({ email: email, adminEmail: adminEmail, password: password, name: name, idNum: idNumStr });
                             }
                         } else {
                             alert(userId ? "✅ Cliente actualizado correctamente." : "✅ Cliente creado con éxito en la nube.");
@@ -16803,6 +16826,8 @@ window.importTarifas50 = async () => {
                 // closure variables in the onclick attribute string).
                 if (c.authUid) {
                     html += '<button onclick="advClientWelcome(\'' + c.id + '\')" style="background:transparent; border:1px solid #34C759; color:#34C759; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Reenviar email de bienvenida (acceso activado)">✉️</button>';
+                    html += '<button onclick="openChangeLoginModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FFB300; color:#FFB300; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Cambiar email de login">🔄</button>';
+                    html += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Re-vincular a otra cuenta Auth">🔗</button>';
                 } else {
                     html += '<button onclick="openActivateAccessModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FF9F0A; color:#FF9F0A; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Activar acceso online a este cliente">🔓</button>';
                     html += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Vincular Auth ya existente">🔗</button>';
