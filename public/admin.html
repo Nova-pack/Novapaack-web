@@ -1265,6 +1265,22 @@
             }
         };
 
+        // Lookup wrapper for the V4 "Clientes" table — reads the cached
+        // client by id and forwards to composeWelcomeEmail. Avoids inlining
+        // user data inside an HTML onclick attribute, which would be fragile
+        // with quotes/apostrophes.
+        window.advClientWelcome = function advClientWelcome(docId) {
+            const c = (window._advClientsCache || []).find(x => x.id === docId)
+                   || (window.userMap && window.userMap[docId])
+                   || null;
+            if (!c) { alert('Cliente no encontrado en cache. Recarga la lista.'); return; }
+            window.composeWelcomeEmail({
+                email: c.email || '',
+                name: c.name || '',
+                idNum: c.idNum || ''
+            });
+        };
+
         // SUPER-ADMIN: enter as a client to debug / fix issues on their behalf.
         // Opens app.html?adminAs={docId} in a new tab. firebase-app.js detects
         // the param, verifies that the current Firebase user IS the admin
@@ -16404,6 +16420,15 @@ window.importTarifas50 = async () => {
                 html += '<button onclick="advImportGlobalClient(' + gIdx + ')" style="background:#FF9800; border:none; color:#fff; padding:3px 10px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Importar a mi agenda">📥 Importar</button>';
             } else {
                 html += '<button onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" style="background:linear-gradient(135deg,#1a237e,#283593); border:none; color:#fff; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Abrir Ficha Cliente">📂</button>';
+                // Onboarding controls: read the client by id at click-time (no
+                // closure variables in the onclick attribute string).
+                if (c.authUid) {
+                    html += '<button onclick="advClientWelcome(\'' + c.id + '\')" style="background:transparent; border:1px solid #34C759; color:#34C759; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Reenviar email de bienvenida (acceso activado)">✉️</button>';
+                } else {
+                    html += '<button onclick="openActivateAccessModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FF9F0A; color:#FF9F0A; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Activar acceso online a este cliente">🔓</button>';
+                    html += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Vincular Auth ya existente">🔗</button>';
+                }
+                html += '<button onclick="impersonateClient(\'' + c.id + '\')" style="background:transparent; border:1px solid #AB47BC; color:#AB47BC; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Entrar como este cliente (super-admin)">👁️</button>';
                 html += '<button onclick="advDeleteClient(\'' + c.id + '\', \'' + (c.name || '').replace(/'/g, '') + '\')" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Eliminar cliente">🗑️</button>';
             }
             html += '</td></tr>';
@@ -18079,7 +18104,6 @@ window.importTarifas50 = async () => {
 
 
 <script src="export_engine.js?v=20260402"></script>
-<script src="ticket_search_v2.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260402_1445"></script>
 <script src="ficha_cliente.js?v=20260402_1201"></script>
