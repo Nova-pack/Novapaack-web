@@ -81,11 +81,18 @@ window.addEventListener('unhandledrejection', function(event) {
 window.getOperatorStamp = function() {
     var user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
     var identity = sessionStorage.getItem('adminActiveIdentity') || (user && user.email) || 'sistema';
-    return {
+    var stamp = {
         _operadoPor: identity,
         _operadoAt: new Date().toISOString(),
         _operadorUid: user ? user.uid : null
     };
+    // Audit: when super-admin is impersonating a client, tag the write so we
+    // can trace it back. Visible in any ticket / company / destination doc.
+    if (window._adminImpersonating) {
+        stamp._actingAsClient = window._adminImpersonating;
+        stamp._actingByAdmin = user ? user.email : 'admin';
+    }
+    return stamp;
 };
 // ======================================================
 
@@ -255,6 +262,44 @@ auth.onAuthStateChanged(async (user) => {
         // CRITICAL FIX: effectiveStorageUid MUST be the user.uid to comply with Firestore security rules.
         // It cannot be the email, otherwise the user is denied permission to save their own companies and tariffs.
         effectiveStorageUid = user.uid;
+
+        // ───── SUPER-ADMIN: modo "Entrar como cliente" ─────
+        // El admin abre app.html?adminAs={docId}. Verificamos que el user
+        // actual sea el admin del sistema (config/admin.uid) y, si todo cuadra,
+        // re-escribimos userData y effectiveStorageUid apuntando al cliente
+        // objetivo. El resto del código carga sus albaranes, sedes, agenda y
+        // tarifa como si fuera él.
+        try {
+            const _urlAA = new URLSearchParams(window.location.search).get('adminAs');
+            if (_urlAA) {
+                const _adminCheck = await db.collection('config').doc('admin').get();
+                const isCurrentAdmin = _adminCheck.exists && _adminCheck.data().uid === user.uid;
+                if (!isCurrentAdmin) {
+                    alert('No tienes permisos para usar el modo super-admin.');
+                } else {
+                    const _targetDoc = await db.collection('users').doc(_urlAA).get();
+                    if (!_targetDoc.exists) {
+                        alert('Cliente no encontrado: ' + _urlAA);
+                    } else {
+                        userData = { id: _targetDoc.id, ..._targetDoc.data() };
+                        effectiveStorageUid = userData.authUid || _targetDoc.id;
+                        window._adminImpersonating = userData.id;
+                        // Banner naranja persistente
+                        const _bnr = document.createElement('div');
+                        _bnr.id = 'admin-impersonate-banner';
+                        _bnr.style.cssText = 'position:fixed; top:0; left:0; right:0; background:linear-gradient(90deg,#FF9F0A,#FF6B00); color:#000; text-align:center; padding:8px 16px; z-index:99999; font-weight:800; font-size:0.85rem; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+                        _bnr.innerHTML = '👁️ SUPER-ADMIN — actuando como <strong>' + (userData.name || userData.id) + '</strong> (#' + (userData.idNum || '?') + ') · <a href="#" onclick="window.close();return false;" style="color:#000;text-decoration:underline;">Cerrar pestaña</a>';
+                        document.body.appendChild(_bnr);
+                        // Empuja el cuerpo hacia abajo para no tapar contenido
+                        document.body.style.paddingTop = (document.body.style.paddingTop || '0px');
+                        document.body.style.marginTop = '36px';
+                        console.warn('[SUPER-ADMIN] Impersonando a', userData.id, userData.name);
+                    }
+                }
+            }
+        } catch(e) { console.warn('SUPER-ADMIN setup error:', e.message); }
+        // ───── fin super-admin ─────
+
         console.log("[SYNC] Effective Storage UID set to:", effectiveStorageUid);
 
         if (userData) {

@@ -1265,6 +1265,21 @@
             }
         };
 
+        // SUPER-ADMIN: enter as a client to debug / fix issues on their behalf.
+        // Opens app.html?adminAs={docId} in a new tab. firebase-app.js detects
+        // the param, verifies that the current Firebase user IS the admin
+        // recorded in config/admin.uid, and then loads the target client's
+        // profile/companies/agenda transparently. All writes during the
+        // impersonation are tagged with _actingAsClient + _actingByAdmin via
+        // getOperatorStamp() so the audit trail survives.
+        window.impersonateClient = function impersonateClient(docId) {
+            const data = (window.userMap && window.userMap[docId]) || {};
+            const label = (data.name || docId);
+            if (!confirm('⚠️ Vas a abrir la app de cliente como SUPER-ADMIN actuando en nombre de:\n\n  ' + label + '\n\nVerás exactamente lo que ve el cliente. Cualquier cambio o albarán que crees se guardará a SU nombre, pero quedará registrado que lo hiciste tú.\n\n¿Continuar?')) return;
+            const url = (location.origin || 'https://novapaack.com') + '/app.html?adminAs=' + encodeURIComponent(docId);
+            window.open(url, '_blank');
+        };
+
         // Activate online access for an EXISTING client that's already in the
         // users collection but has no Firebase Auth credentials yet. Common
         // workflow: clients already on the books (created historically or
@@ -7641,6 +7656,7 @@ window.runPublicTicketsBackfill = async function() {
                                     ${data.authUid
                                         ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>`
                                         : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>`}
+                                    <button class="btn btn-outline btn-sm" onclick="impersonateClient('${escapeHtml(data.id)}')" title="Entrar como este cliente (super-admin)" style="border-color:#AB47BC; color:#AB47BC;">👁️</button>
                                     <button class="btn btn-secondary btn-sm" onclick="sendWhatsApp('${escapeHtml(data.senderPhone || '')}', 'Hola ${escapeHtml(data.name)}')" title="WhatsApp">💬</button>
                                     <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(data.id)}')" title="Eliminar">🗑️</button>
                                     `}
