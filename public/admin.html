@@ -6210,6 +6210,60 @@ window.runPublicTicketsBackfill = async function() {
                         </div>
                     </div>
 
+                    <!-- ───── Configuración albarán & acceso online ───── -->
+                    <h3 style="margin:25px 0 15px 0; font-size:1rem; color:var(--brand-primary); border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px; text-transform:uppercase; letter-spacing:1px; display:flex; align-items:center; gap:8px;">
+                        <span class="material-symbols-outlined">manage_accounts</span>
+                        Configuración albarán & acceso online
+                    </h3>
+
+                    <!-- Estado del acceso -->
+                    <div id="access-status-panel" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:12px 14px; margin-bottom:14px; font-size:0.85rem;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                            <div id="access-status-label" style="display:flex; align-items:center; gap:8px; color:#aaa;">
+                                <span style="font-size:1rem;">🔴</span> Acceso online no activado
+                            </div>
+                            <div id="access-status-actions" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+                        </div>
+                        <div id="access-login-info" style="display:none; font-size:0.75rem; color:#888; margin-top:6px; font-family:monospace; word-break:break-all;"></div>
+                    </div>
+
+                    <!-- Activo / Inactivo + Activar al guardar -->
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
+                        <div class="form-group">
+                            <label style="display:flex; align-items:center; gap:8px; color:#aaa; font-size:0.8rem; margin-bottom:5px;">
+                                <input type="checkbox" id="new-user-access-active" checked style="scale:1.2;">
+                                Cuenta activa (puede loguearse)
+                            </label>
+                            <p style="color:#888; font-size:0.7rem; margin:4px 0 0; line-height:1.3;">Si lo desactivas, el cliente verá un aviso al intentar entrar.</p>
+                        </div>
+                        <div class="form-group" id="new-user-activate-on-save-container">
+                            <label style="display:flex; align-items:center; gap:8px; color:#FF9F0A; font-size:0.8rem; margin-bottom:5px;">
+                                <input type="checkbox" id="new-user-activate-on-save" style="scale:1.2;">
+                                Activar acceso al guardar
+                            </label>
+                            <p style="color:#888; font-size:0.7rem; margin:4px 0 0; line-height:1.3;">Crea la cuenta Auth con el email + clave de arriba.</p>
+                        </div>
+                    </div>
+
+                    <!-- Prefijo + Próximo número + Preview -->
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 2fr; gap:15px; margin-bottom:15px;">
+                        <div class="form-group">
+                            <label style="display:block; color:#aaa; font-size:0.8rem; margin-bottom:5px;">Prefijo albarán</label>
+                            <input type="text" id="new-user-prefix" maxlength="6" placeholder="NP" oninput="this.value = this.value.toUpperCase(); window._updateAlbaranPreview && window._updateAlbaranPreview();" style="width:100%; padding:10px; background:rgba(0,0,0,0.3); border:1px solid var(--border-glass); color:white; border-radius:8px; text-transform:uppercase; font-family:monospace; letter-spacing:1px;">
+                            <p style="color:#888; font-size:0.7rem; margin:4px 0 0;">2-6 chars en mayúscula. Por defecto = primeras 3 del ID.</p>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:block; color:#aaa; font-size:0.8rem; margin-bottom:5px;">Próximo nº albarán</label>
+                            <input type="number" id="new-user-startnum" min="1" step="1" placeholder="1001" oninput="window._updateAlbaranPreview && window._updateAlbaranPreview();" style="width:100%; padding:10px; background:rgba(0,0,0,0.3); border:1px solid var(--border-glass); color:white; border-radius:8px; font-family:monospace;">
+                            <p style="color:#888; font-size:0.7rem; margin:4px 0 0;">Solo afecta a nuevos albaranes.</p>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:block; color:#aaa; font-size:0.8rem; margin-bottom:5px;">Vista previa del siguiente ID</label>
+                            <div id="albaran-preview" style="padding:10px; background:rgba(76,175,80,0.06); border:1px solid rgba(76,175,80,0.25); border-radius:8px; font-family:monospace; font-size:1rem; color:#4CAF50; font-weight:700; text-align:center; letter-spacing:1px;">—</div>
+                            <p style="color:#888; font-size:0.7rem; margin:4px 0 0;">Se actualiza al teclear arriba.</p>
+                        </div>
+                    </div>
+
                     <div style="display:flex; justify-content:flex-end; gap:15px; margin-top:30px; border-top:1px solid rgba(255,255,255,0.1); padding-top:20px;">
                         <button type="button" id="btn-close-modal" class="btn" style="background:transparent; color:#aaa; border:1px solid #555; padding:10px 25px; border-radius:8px; cursor:pointer;">Cancelar</button>
                         <button type="submit" class="btn" style="background:var(--brand-primary); color:white; border:none; padding:10px 35px; border-radius:8px; font-weight:bold; cursor:pointer;">Guardar Cliente</button>
@@ -6217,6 +6271,20 @@ window.runPublicTicketsBackfill = async function() {
                 </form>
             </div>
         </div>
+
+        <script>
+        // Preview en vivo del siguiente albarán según prefijo + nº introducidos
+        window._updateAlbaranPreview = function() {
+            var pfx = (document.getElementById('new-user-prefix') || {}).value || '';
+            var nxt = (document.getElementById('new-user-startnum') || {}).value || '';
+            var prev = document.getElementById('albaran-preview');
+            if (!prev) return;
+            var p = (pfx || 'NP').toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'NP';
+            var n = parseInt(nxt, 10);
+            if (isNaN(n) || n < 1) n = 1001;
+            prev.textContent = p + '-' + n;
+        };
+        </script>
 
         <!-- BULK DELETE MODAL (Admin: eliminar albaranes de Excel erróneos) -->
         <div id="modal-bulk-delete" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:1010; justify-content:center; align-items:center; padding:20px;">
@@ -8161,6 +8229,10 @@ window.runPublicTicketsBackfill = async function() {
                         }
 
                         // 3. ACTUALIZAR SEDE PRINCIPAL (comp_main) - Siempre sincronizada con la ficha maestra
+                        // Lee prefijo y nº de albarán de la nueva sección de la ficha (si están)
+                        const _formPrefix = (document.getElementById('new-user-prefix')?.value || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+                        const _formStartNum = parseInt(document.getElementById('new-user-startnum')?.value, 10);
+                        const _defaultPrefix = (idNum || 'NP').toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3) || 'NP';
                         const mainCompData = {
                             name: name,
                             idNum: parseInt(idNumStr) || null,
@@ -8172,13 +8244,61 @@ window.runPublicTicketsBackfill = async function() {
                             cp: cp || '',
                             province: province || '',
                             phone: senderPhone || '',
-                            prefix: (idNum || "NP").substring(0, 3).toUpperCase(),
-                            startNum: 1001,
+                            prefix: _formPrefix || _defaultPrefix,
+                            startNum: (!isNaN(_formStartNum) && _formStartNum > 0) ? _formStartNum : 1001,
                             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                         };
 
                         // For existing users, we update. For new users, we set/merge.
                         await db.collection('users').doc(targetDocId).collection('companies').doc('comp_main').set(mainCompData, { merge: true });
+
+                        // 3b. Actualizar flag de "cuenta activa" en la ficha maestra
+                        try {
+                            const _accessActive = document.getElementById('new-user-access-active')
+                                ? document.getElementById('new-user-access-active').checked
+                                : true;
+                            await db.collection('users').doc(targetDocId).update({
+                                accessActive: _accessActive,
+                                accessActiveUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                            if (window.userMap && window.userMap[targetDocId]) {
+                                window.userMap[targetDocId].accessActive = _accessActive;
+                            }
+                        } catch(e) { console.warn('Could not write accessActive flag:', e); }
+
+                        // 3c. Si el admin marcó "Activar acceso al guardar" en el modal Y es
+                        //     un cliente existente sin authUid (o nuevo), creamos la cuenta Auth ahora.
+                        try {
+                            const wantActivate = document.getElementById('new-user-activate-on-save')
+                                ? document.getElementById('new-user-activate-on-save').checked
+                                : false;
+                            if (wantActivate && password && email) {
+                                // Comprueba si ya tiene authUid antes de duplicar
+                                const _check = await db.collection('users').doc(targetDocId).get();
+                                if (_check.exists && !_check.data().authUid) {
+                                    if (typeof window.openActivateAccessModal === 'function') {
+                                        // Forzar email + clave actuales en lugar de pedir
+                                        // de nuevo en otro prompt → llamada directa.
+                                        const secApp = firebase.apps.find(a => a.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
+                                        try {
+                                            const cred = await secApp.auth().createUserWithEmailAndPassword(email, password);
+                                            await secApp.auth().signOut();
+                                            await db.collection('users').doc(targetDocId).update({
+                                                loginEmail: email,
+                                                authUid: cred.user.uid,
+                                                accessActivatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                                            });
+                                        } catch(authErr) {
+                                            if (authErr.code === 'auth/email-already-in-use') {
+                                                alert('⚠️ El email ' + email + ' ya tiene Auth. Pulsa 🔓 en la fila para gestionarlo con email sintético si es una sucursal.');
+                                            } else {
+                                                alert('No se pudo activar el acceso ahora: ' + authErr.message + '\n\nPuedes intentarlo con 🔓 en la fila después.');
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch(e) { console.warn('Activate-on-save skipped:', e); }
 
                         // ───── HUECO #3: validar tarifa antes de cerrar ─────
                         // Si el cliente no tiene tariffId asignado o la tarifa
@@ -8268,6 +8388,55 @@ window.runPublicTicketsBackfill = async function() {
                     });
                     bSel.value = data.billingCompanyId || '';
                 }
+
+                // ── Configuración albarán & acceso online ──
+                // Estado access flag (por defecto true si nunca se ha tocado)
+                const accActive = (data.accessActive === undefined) ? true : !!data.accessActive;
+                if (document.getElementById('new-user-access-active')) {
+                    document.getElementById('new-user-access-active').checked = accActive;
+                }
+                // El checkbox "Activar al guardar" sólo tiene sentido si NO hay acceso ya activado
+                const acContainer = document.getElementById('new-user-activate-on-save-container');
+                if (acContainer) acContainer.style.display = data.authUid ? 'none' : 'block';
+                const acCheckbox = document.getElementById('new-user-activate-on-save');
+                if (acCheckbox) acCheckbox.checked = false;
+
+                // Cargar prefix + startNum desde comp_main
+                (async () => {
+                    try {
+                        const compDoc = await db.collection('users').doc(uid).collection('companies').doc('comp_main').get();
+                        const c = compDoc.exists ? compDoc.data() : {};
+                        const pfx = (c.prefix || (data.idNum || 'NP').toString().toUpperCase().slice(0, 3));
+                        const sn = c.startNum || 1001;
+                        if (document.getElementById('new-user-prefix')) document.getElementById('new-user-prefix').value = pfx;
+                        if (document.getElementById('new-user-startnum')) document.getElementById('new-user-startnum').value = sn;
+                        if (typeof window._updateAlbaranPreview === 'function') window._updateAlbaranPreview();
+                    } catch(e) { console.warn('comp_main load:', e); }
+                })();
+
+                // Pintar estado de acceso + acciones contextuales
+                const statusLabel = document.getElementById('access-status-label');
+                const statusActions = document.getElementById('access-status-actions');
+                const statusInfo = document.getElementById('access-login-info');
+                if (statusLabel && statusActions) {
+                    if (data.authUid) {
+                        statusLabel.innerHTML = '<span style="font-size:1rem;">🟢</span> <strong>Acceso activo</strong>';
+                        statusActions.innerHTML =
+                            '<button type="button" onclick="openChangeLoginModal(\'' + escapeHtml(uid) + '\')" style="background:rgba(255,179,0,0.10); border:1px solid #FFB300; color:#FFB300; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">🔄 Cambiar login</button>'
+                          + '<button type="button" onclick="composeWelcomeEmail(userMap[\'' + escapeHtml(uid) + '\'])" style="background:rgba(52,199,89,0.10); border:1px solid #34C759; color:#34C759; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">✉️ Reenviar bienvenida</button>';
+                        if (statusInfo) {
+                            statusInfo.style.display = 'block';
+                            statusInfo.textContent = 'Login: ' + (data.loginEmail || data.email || '?') + ' · UID: ' + data.authUid;
+                        }
+                    } else {
+                        statusLabel.innerHTML = '<span style="font-size:1rem;">🔴</span> Acceso online <strong>no activado</strong>';
+                        statusActions.innerHTML =
+                            '<button type="button" onclick="openActivateAccessModal(\'' + escapeHtml(uid) + '\')" style="background:rgba(255,159,10,0.10); border:1px solid #FF9F0A; color:#FF9F0A; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">🔓 Activar ahora</button>'
+                          + '<button type="button" onclick="openLinkAuthModal(\'' + escapeHtml(uid) + '\')" style="background:rgba(93,173,226,0.10); border:1px solid #5DADE2; color:#5DADE2; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">🔗 Vincular Auth</button>';
+                        if (statusInfo) statusInfo.style.display = 'none';
+                    }
+                }
+
                 addUserModal.style.display = 'flex';
                 window.scrollTo(0, 0);
                 addUserModal.scrollTop = 0;
@@ -8297,6 +8466,34 @@ window.runPublicTicketsBackfill = async function() {
             window.openNewUserModal = function() {
                 if (typeof origOpenNewUser === 'function') origOpenNewUser();
                 populateParentClientSelect('');
+                // Defaults para los nuevos campos de "Configuración albarán & acceso"
+                if (document.getElementById('new-user-access-active')) document.getElementById('new-user-access-active').checked = true;
+                const acContainer = document.getElementById('new-user-activate-on-save-container');
+                if (acContainer) acContainer.style.display = 'block';
+                if (document.getElementById('new-user-activate-on-save')) document.getElementById('new-user-activate-on-save').checked = true;
+                if (document.getElementById('new-user-prefix')) document.getElementById('new-user-prefix').value = '';
+                if (document.getElementById('new-user-startnum')) document.getElementById('new-user-startnum').value = '1001';
+                // Estado de acceso visual: "no activado aún"
+                const statusLabel = document.getElementById('access-status-label');
+                const statusActions = document.getElementById('access-status-actions');
+                const statusInfo = document.getElementById('access-login-info');
+                if (statusLabel) statusLabel.innerHTML = '<span style="font-size:1rem;">🟡</span> Pendiente: se creará al guardar';
+                if (statusActions) statusActions.innerHTML = '';
+                if (statusInfo) statusInfo.style.display = 'none';
+                if (typeof window._updateAlbaranPreview === 'function') window._updateAlbaranPreview();
+                // Auto-prefix tras teclear el ID
+                const idNumInput = document.getElementById('new-user-id-num');
+                if (idNumInput && !idNumInput._autoPrefixWired) {
+                    idNumInput._autoPrefixWired = true;
+                    idNumInput.addEventListener('input', function() {
+                        const pfxEl = document.getElementById('new-user-prefix');
+                        if (pfxEl && !pfxEl.value) {
+                            const v = (this.value || 'NP').toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3);
+                            pfxEl.placeholder = v || 'NP';
+                        }
+                        if (typeof window._updateAlbaranPreview === 'function') window._updateAlbaranPreview();
+                    });
+                }
             };
 
             // --- HELPER: Find child users of a parent ---

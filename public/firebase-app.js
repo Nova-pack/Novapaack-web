@@ -283,6 +283,23 @@ auth.onAuthStateChanged(async (user) => {
         }
 
         userData = profile;
+
+        // ───── Acceso bloqueado por admin ─────
+        // Si la ficha tiene accessActive === false, el admin ha desactivado
+        // el acceso. Se le muestra al cliente un mensaje claro y se le saca.
+        // (Solo aplica si NO estamos en modo super-admin impersonando.)
+        try {
+            const _urlAA = new URLSearchParams(window.location.search).get('adminAs');
+            if (!_urlAA && profile && profile.accessActive === false) {
+                hideLoading();
+                await new Promise(r => setTimeout(r, 200));
+                alert('⛔ Acceso desactivado por administración.\n\nTu cuenta está marcada como INACTIVA. Contacta con NOVAPACK para reactivarla.');
+                try { await auth.signOut(); } catch(e) {}
+                window.location.href = 'index.html';
+                return;
+            }
+        } catch(e) { console.warn('accessActive check:', e); }
+
         // CRITICAL FIX: effectiveStorageUid MUST be the user.uid to comply with Firestore security rules.
         // It cannot be the email, otherwise the user is denied permission to save their own companies and tariffs.
         effectiveStorageUid = user.uid;
