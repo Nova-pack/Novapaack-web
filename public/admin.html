@@ -1265,6 +1265,23 @@
             }
         };
 
+        // Generates a synthetic login email guaranteed to be unique across
+        // Firebase Auth, so multiple sucursales of the same parent client can
+        // each have their own login even when they share the real client email.
+        // Format: c{idNum}_{slug}_{rand}@novapack.com
+        //   - idNum: stripped of non-alphanumerics
+        //   - slug:  first 12 chars of the name, ASCII lowercase
+        //   - rand:  4 chars base36 from Date.now() ensuring uniqueness
+        window.generateLoginEmail = function generateLoginEmail(data) {
+            data = data || {};
+            const idNum = (data.idNum || 'x').toString().replace(/[^A-Za-z0-9]/g, '').toLowerCase() || 'x';
+            const slug = (data.name || 'user').toString().toLowerCase()
+                .normalize('NFD').replace(/[̀-ͯ]/g, '')
+                .replace(/[^a-z0-9]/g, '').slice(0, 12) || 'user';
+            const rand = Date.now().toString(36).slice(-4);
+            return 'c' + idNum + '_' + slug + '_' + rand + '@novapack.com';
+        };
+
         // Lookup wrapper for the V4 "Clientes" table — reads the cached
         // client by id and forwards to composeWelcomeEmail. Avoids inlining
         // user data inside an HTML onclick attribute, which would be fragile
@@ -1276,6 +1293,7 @@
             if (!c) { alert('Cliente no encontrado en cache. Recarga la lista.'); return; }
             window.composeWelcomeEmail({
                 email: c.email || '',
+                loginEmail: c.loginEmail || '',
                 name: c.name || '',
                 idNum: c.idNum || ''
             });
@@ -1310,23 +1328,24 @@
             if (data.authUid) {
                 if (!confirm('Este cliente YA tiene authUid vinculado (' + data.authUid + ').\n\n¿Quieres reescribirlo con otro UID?')) return;
             }
-            // ★ Usa siempre el email de la ficha. Si el admin viene del flujo
-            //   de activate con un email distinto, prevalece la ficha y
-            //   avisamos del conflicto para que decida cuál es el correcto.
+            // El email de la ficha (data.email) es el email REAL del cliente —
+            // se usa solo para comunicaciones. El login en Firebase Auth puede
+            // ser distinto (sintético si tiene sucursales). Admin pega ambos:
+            // el email con el que se creó el Auth + el UID.
             const fichaEmail = (data.email || '').trim().toLowerCase();
             if (!fichaEmail) {
-                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero y añade el email real. Es el que se usará para vincular el Auth.');
+                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero y añade el email real (es donde mandaremos las comunicaciones).');
                 return;
             }
-            const emailClean = fichaEmail;
-            if (prefillEmail && prefillEmail.trim().toLowerCase() !== fichaEmail) {
-                if (!confirm('⚠️ Conflicto de email:\n\n  Ficha del cliente: ' + fichaEmail + '\n  Email que llegaste a teclear: ' + prefillEmail + '\n\nPrevalece el de la ficha (' + fichaEmail + '). Si el email correcto es otro, cancela y edita la ficha primero.\n\n¿Continuar vinculando con el email de la ficha?')) return;
-            }
-            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
-                alert('El email registrado en la ficha (' + emailClean + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
+            const promptDefault = prefillEmail || data.loginEmail || '';
+            const loginAuth = prompt('Email con el que se creó la cuenta en Firebase Auth:\n\nPuede ser:\n  • El email REAL del cliente (' + fichaEmail + ')\n  • Un email sintético interno (ej. c123_acme_xyz@novapack.com)\n\nMira en Firebase Console → Authentication → Users.', promptDefault);
+            if (!loginAuth) return;
+            const loginEmailClean = loginAuth.trim().toLowerCase();
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(loginEmailClean)) {
+                alert('El email del Auth (' + loginEmailClean + ') no tiene formato válido.');
                 return;
             }
-            const helpMsg = 'Pega el UID de la cuenta Auth.\n\nCómo obtenerlo:\n  1. Abre Firebase Console → Authentication → pestaña Users.\n  2. Busca el email: ' + emailClean + '\n  3. Copia el "User UID" (es una cadena tipo abc123XYZ…).\n  4. Pégalo aquí.';
+            const helpMsg = 'Pega el UID de la cuenta Auth.\n\nCómo obtenerlo:\n  1. Abre Firebase Console → Authentication → pestaña Users.\n  2. Busca el email del Auth: ' + loginEmailClean + '\n  3. Copia el "User UID" (cadena tipo abc123XYZ…).\n  4. Pégalo aquí.';
             const uid = prompt(helpMsg);
             if (!uid) return;
             const uidClean = uid.trim();
@@ -1334,22 +1353,26 @@
                 alert('Ese UID parece demasiado corto. Verifica que has copiado el valor correcto desde Firebase Console.');
                 return;
             }
-            if (!confirm('¿Vincular?\n\n  Cliente: ' + (data.name || docId) + '\n  Email:   ' + emailClean + '\n  UID Auth: ' + uidClean + '\n\nEsto NO crea ni borra cuentas; sólo escribe el campo authUid en la ficha del cliente.')) return;
+            if (!confirm('¿Vincular?\n\n  Cliente: ' + (data.name || docId) + '\n  Email ficha (real): ' + fichaEmail + '\n  Email login (Auth):  ' + loginEmailClean + '\n  UID Auth:           ' + uidClean + '\n\nEsto NO crea ni borra cuentas; sólo escribe loginEmail + authUid en la ficha del cliente.')) return;
 
             showLoading();
             try {
                 await db.collection('users').doc(docId).update({
-                    email: emailClean,
+                    loginEmail: loginEmailClean,
                     authUid: uidClean,
                     accessLinkedAt: firebase.firestore.FieldValue.serverTimestamp(),
                     accessLinkedBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
                 });
                 if (window.userMap && window.userMap[docId]) {
-                    window.userMap[docId].email = emailClean;
+                    window.userMap[docId].loginEmail = loginEmailClean;
                     window.userMap[docId].authUid = uidClean;
                 }
+                if (window._advClientsCache) {
+                    const cached = window._advClientsCache.find(c => c.id === docId);
+                    if (cached) { cached.loginEmail = loginEmailClean; cached.authUid = uidClean; }
+                }
                 hideLoading();
-                alert('✅ Cuenta Auth vinculada al cliente.\n\nLa próxima vez que el usuario haga login con ' + emailClean + ', la app encontrará su ficha y cargará sus datos.');
+                alert('✅ Cuenta Auth vinculada al cliente.\n\nLa próxima vez que el usuario haga login con ' + loginEmailClean + ', la app encontrará su ficha (por authUid) y cargará sus datos.');
                 if (typeof loadUsers === 'function') loadUsers('current');
             } catch(e) {
                 hideLoading();
@@ -1368,20 +1391,24 @@
             if (data.authUid) {
                 if (!confirm('Este cliente ya tiene acceso activado.\n\n¿Quieres reasignarle credenciales nuevas? (creará una segunda cuenta Auth — la antigua deberá borrarse manualmente desde Firebase Console).')) return;
             }
-            // ★ El email de la ficha es la fuente de verdad. Si no hay email
-            // en la ficha, admin tiene que editarla antes — NO se permite
-            // crear un Auth con un email que no figure en la ficha.
-            const emailClean = (data.email || '').trim().toLowerCase();
-            if (!emailClean) {
-                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero y añade un email válido. El acceso al portal SIEMPRE usa el email de la ficha como identidad de login.');
+            // ★ El email de la ficha es la fuente de verdad para COMUNICACIONES.
+            //   Pero el login NO usa el email de la ficha: usamos un email
+            //   sintético único (loginEmail) para que clientes con varias
+            //   sucursales que comparten un email real puedan tener un login
+            //   distinto cada uno. Firebase Auth exige email único.
+            const realEmail = (data.email || '').trim().toLowerCase();
+            if (!realEmail) {
+                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero — el email real es donde mandaremos el correo de bienvenida (aunque el login interno sea sintético).');
                 return;
             }
-            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
-                alert('El email registrado en la ficha (' + emailClean + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(realEmail)) {
+                alert('El email registrado en la ficha (' + realEmail + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
                 return;
             }
-            if (!confirm('Vas a crear el acceso online para:\n\n  Cliente: ' + (data.name || docId) + '\n  Email:   ' + emailClean + '\n\nEste email procede de la ficha del cliente. Si no es correcto, cancela y edita la ficha primero.\n\n¿Continuar?')) return;
-            const password = prompt('Contraseña inicial (mínimo 6 caracteres):\n\nPodrás reenviársela por email tras crearla. El cliente puede cambiarla cuando entre.');
+            // Usar loginEmail existente si lo hay (reactivación), o generar uno nuevo
+            const loginEmail = (data.loginEmail || window.generateLoginEmail(data)).toLowerCase();
+            if (!confirm('Vas a crear el acceso online para:\n\n  Cliente: ' + (data.name || docId) + '\n  Email de comunicaciones: ' + realEmail + '\n  Login interno (auto-generado): ' + loginEmail + '\n\nEl cliente recibirá el email de bienvenida en su email real, y ahí le indicaremos el usuario+contraseña que debe usar para entrar.\n\n¿Continuar?')) return;
+            const password = prompt('Contraseña inicial (mínimo 6 caracteres):\n\nLa incluiremos en el email de bienvenida. El cliente puede cambiarla cuando entre.');
             if (!password) return;
             if (password.length < 6) { alert('La contraseña debe tener al menos 6 caracteres (requisito de Firebase).'); return; }
 
@@ -1389,27 +1416,33 @@
             try {
                 // 1. Crear Auth en una app secundaria para no expulsar al admin
                 const secApp = firebase.apps.find(app => app.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
-                const cred = await secApp.auth().createUserWithEmailAndPassword(emailClean, password);
+                const cred = await secApp.auth().createUserWithEmailAndPassword(loginEmail, password);
                 const newUid = cred.user.uid;
                 try { await secApp.auth().signOut(); } catch(e) {}
 
-                // 2. Vincular el doc maestro existente — actualiza email + authUid
-                //    sin reescribir datos comerciales que ya tenga.
+                // 2. Vincular el doc maestro existente — solo añade loginEmail
+                //    + authUid + audit. NO toca data.email (real) ni datos
+                //    comerciales.
                 await db.collection('users').doc(docId).update({
-                    email: emailClean,
+                    loginEmail: loginEmail,
                     authUid: newUid,
                     accessActivatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
                 if (window.userMap && window.userMap[docId]) {
-                    window.userMap[docId].email = emailClean;
+                    window.userMap[docId].loginEmail = loginEmail;
                     window.userMap[docId].authUid = newUid;
+                }
+                if (window._advClientsCache) {
+                    const cached = window._advClientsCache.find(c => c.id === docId);
+                    if (cached) { cached.loginEmail = loginEmail; cached.authUid = newUid; }
                 }
 
                 hideLoading();
-                const send = confirm('✅ Acceso activado correctamente.\n\nEmail: ' + emailClean + '\nUID auth: ' + newUid + '\n\n¿Enviar email de bienvenida al cliente con sus credenciales?');
+                const send = confirm('✅ Acceso activado correctamente.\n\nEmail real:        ' + realEmail + '\nLogin interno:    ' + loginEmail + '\nUID auth:         ' + newUid + '\n\n¿Enviar email de bienvenida al cliente con sus credenciales?');
                 if (send && typeof window.composeWelcomeEmail === 'function') {
                     await window.composeWelcomeEmail({
-                        email: emailClean,
+                        email: realEmail,
+                        loginEmail: loginEmail,
                         password: password,
                         name: data.name || '',
                         idNum: data.idNum || ''
@@ -1419,10 +1452,15 @@
             } catch (e) {
                 hideLoading();
                 if (e.code === 'auth/email-already-in-use') {
-                    if (confirm('❌ Ese email ya tiene una cuenta Auth en Firebase.\n\n¿Pertenece a este mismo cliente y quieres vincularla?\n\n[Aceptar] te abriré el modo "Vincular Auth existente" — necesitarás copiar el UID desde Firebase Console → Authentication.\n[Cancelar] no hace nada.')) {
-                        if (typeof window.openLinkAuthModal === 'function') {
-                            window.openLinkAuthModal(docId, emailClean);
+                    // No debería pasar con loginEmail sintético, pero por si acaso
+                    if (confirm('⚠️ El loginEmail generado colisionó (' + loginEmail + ').\n\n¿Reintentar con otro sintético? (Aceptar = regenera)')) {
+                        // Limpiar para forzar regenerar
+                        if (window.userMap && window.userMap[docId]) delete window.userMap[docId].loginEmail;
+                        if (window._advClientsCache) {
+                            const cc = window._advClientsCache.find(c => c.id === docId);
+                            if (cc) delete cc.loginEmail;
                         }
+                        return window.openActivateAccessModal(docId);
                     }
                 } else if (e.code === 'auth/invalid-email') {
                     alert('Email inválido.');
@@ -1441,8 +1479,12 @@
         // it's never stored in plaintext).
         window.composeWelcomeEmail = async function composeWelcomeEmail(opts) {
             opts = opts || {};
+            // Email DESTINO del correo (donde se manda el welcome) = email real
+            // de la ficha. Email de LOGIN (usuario para entrar) = loginEmail
+            // sintético si lo hay, si no fallback al real.
             var to = (opts.email || '').trim();
-            if (!to) { alert('Falta el email del cliente.'); return; }
+            if (!to) { alert('Falta el email real del cliente (ficha).'); return; }
+            var loginCredential = (opts.loginEmail || opts.email || '').trim();
             var pwd = (opts.password || '').trim();
             if (!pwd) {
                 pwd = prompt('Introduce (o pega) la contraseña que quieres incluir en el correo:\n\n(Si el cliente debe restablecerla, deja vacío y enviaremos sólo el link de reset oficial de Firebase.)');
@@ -1451,15 +1493,16 @@
             }
             // If no password supplied, trigger Firebase password reset so the
             // user receives an official email from Firebase with a working
-            // reset link. The mailto: that we open below mentions this.
+            // reset link. NOTE: el reset de Firebase va al email del Auth (que
+            // es loginCredential, el sintético) — no llegará al cliente real.
+            // En este caso el admin tendrá que generar una nueva contraseña.
             var firebaseResetSent = false;
             if (!pwd) {
-                try {
-                    await firebase.auth().sendPasswordResetEmail(to);
-                    firebaseResetSent = true;
-                } catch(e) {
-                    alert('No pude enviar el reset de Firebase: ' + e.message + '\nSe abrirá el email igualmente sin link de reset funcional.');
-                }
+                alert('⚠️ Sin contraseña — el reset automático de Firebase iría al email sintético interno (no al cliente).\n\nIntroduce una contraseña en el siguiente prompt para que se la podamos comunicar al cliente.');
+                pwd = prompt('Por favor, introduce una contraseña a comunicar al cliente:');
+                if (!pwd) return;
+                pwd = pwd.trim();
+                if (pwd.length < 6) { alert('Mínimo 6 caracteres.'); return; }
             }
             var loginUrl = (location.origin || 'https://novapaack.com') + '/index.html';
 
@@ -1467,6 +1510,7 @@
 
             var greet = opts.name ? 'Estimado/a ' + opts.name : 'Hola';
             var idLine = opts.idNum ? '· ID Cliente: ' + opts.idNum : '';
+            var usingSynthetic = loginCredential !== to;
 
             var body = '';
             body += greet + ',\n\n';
@@ -1475,10 +1519,13 @@
             body += '═══════════════════════════════════════\n';
             body += '   DATOS DE ACCESO\n';
             body += '═══════════════════════════════════════\n';
-            body += 'Email:        ' + to + '\n';
+            body += 'Usuario:      ' + loginCredential + '\n';
             if (pwd) body += 'Contraseña:   ' + pwd + '\n';
             if (idLine) body += idLine + '\n';
             body += '\n';
+            if (usingSynthetic) {
+                body += 'IMPORTANTE: el "Usuario" indicado arriba es un identificador interno asignado por NOVAPACK. Úsalo tal cual para entrar — no es una dirección de email a la que se pueda escribir. Toda la comunicación seguirá llegándote a este buzón (' + to + ').\n\n';
+            }
             body += 'Acceso a la plataforma: ' + loginUrl + '\n';
             body += '\n';
             if (pwd) {

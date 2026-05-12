@@ -224,7 +224,26 @@ auth.onAuthStateChanged(async (user) => {
             }
         }
 
-        // 2. Fallback: Si no se encontró por email, leer documento del UID propio
+        // 2a. Fallback: si el login es un email sintético (clientes con
+        // sucursales comparten email real, así que el admin les creó un
+        // loginEmail único @novapack.com), busca por authUid.
+        if (!profile) {
+            try {
+                const authUidSnap = await db.collection('users').where('authUid', '==', user.uid).limit(1).get();
+                if (!authUidSnap.empty) {
+                    const masterDoc = authUidSnap.docs[0];
+                    profile = { id: masterDoc.id, ...masterDoc.data() };
+                    profile.isLinked = true;
+                    // Clona al docId del uid para acelerar futuros logins
+                    await db.collection('users').doc(user.uid).set({ ...profile, authUid: user.uid }, { merge: true });
+                }
+            } catch(err) {
+                console.warn('Fallo búsqueda where authUid:', err.message);
+            }
+        }
+
+        // 2b. Fallback: leer documento del UID propio (caso normal de
+        // cliente cuya cuenta auth se creó con su email real).
         if (!profile) {
              let userDoc = await db.collection('users').doc(user.uid).get();
              if (userDoc.exists) {
