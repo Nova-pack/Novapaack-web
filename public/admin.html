@@ -1304,15 +1304,26 @@
         // No new Auth account is created — admin pastes the UID from Firebase
         // Console (Authentication → search by email → copy UID).
         window.openLinkAuthModal = async function openLinkAuthModal(docId, prefillEmail) {
-            const data = (window.userMap && window.userMap[docId]) || {};
+            const data = (window.userMap && window.userMap[docId])
+                      || (window._advClientsCache && window._advClientsCache.find(c => c.id === docId))
+                      || {};
             if (data.authUid) {
                 if (!confirm('Este cliente YA tiene authUid vinculado (' + data.authUid + ').\n\n¿Quieres reescribirlo con otro UID?')) return;
             }
-            const email = prompt('Email de la cuenta Auth que vas a vincular:', prefillEmail || data.email || '');
-            if (!email) return;
-            const emailClean = email.trim().toLowerCase();
+            // ★ Usa siempre el email de la ficha. Si el admin viene del flujo
+            //   de activate con un email distinto, prevalece la ficha y
+            //   avisamos del conflicto para que decida cuál es el correcto.
+            const fichaEmail = (data.email || '').trim().toLowerCase();
+            if (!fichaEmail) {
+                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero y añade el email real. Es el que se usará para vincular el Auth.');
+                return;
+            }
+            const emailClean = fichaEmail;
+            if (prefillEmail && prefillEmail.trim().toLowerCase() !== fichaEmail) {
+                if (!confirm('⚠️ Conflicto de email:\n\n  Ficha del cliente: ' + fichaEmail + '\n  Email que llegaste a teclear: ' + prefillEmail + '\n\nPrevalece el de la ficha (' + fichaEmail + '). Si el email correcto es otro, cancela y edita la ficha primero.\n\n¿Continuar vinculando con el email de la ficha?')) return;
+            }
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
-                alert('Email inválido.');
+                alert('El email registrado en la ficha (' + emailClean + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
                 return;
             }
             const helpMsg = 'Pega el UID de la cuenta Auth.\n\nCómo obtenerlo:\n  1. Abre Firebase Console → Authentication → pestaña Users.\n  2. Busca el email: ' + emailClean + '\n  3. Copia el "User UID" (es una cadena tipo abc123XYZ…).\n  4. Pégalo aquí.';
@@ -1351,18 +1362,25 @@
         // workflow: clients already on the books (created historically or
         // imported) who now want access to the customer portal.
         window.openActivateAccessModal = async function openActivateAccessModal(docId) {
-            const data = (window.userMap && window.userMap[docId]) || {};
+            const data = (window.userMap && window.userMap[docId])
+                      || (window._advClientsCache && window._advClientsCache.find(c => c.id === docId))
+                      || {};
             if (data.authUid) {
                 if (!confirm('Este cliente ya tiene acceso activado.\n\n¿Quieres reasignarle credenciales nuevas? (creará una segunda cuenta Auth — la antigua deberá borrarse manualmente desde Firebase Console).')) return;
             }
-            const prefillEmail = (data.email || '').trim();
-            const email = prompt('Email de acceso del cliente:\n\nÉste será el email con el que se logueará en la app de cliente.', prefillEmail);
-            if (!email) return;
-            const emailClean = email.trim().toLowerCase();
-            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
-                alert('Formato de email inválido.');
+            // ★ El email de la ficha es la fuente de verdad. Si no hay email
+            // en la ficha, admin tiene que editarla antes — NO se permite
+            // crear un Auth con un email que no figure en la ficha.
+            const emailClean = (data.email || '').trim().toLowerCase();
+            if (!emailClean) {
+                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero y añade un email válido. El acceso al portal SIEMPRE usa el email de la ficha como identidad de login.');
                 return;
             }
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
+                alert('El email registrado en la ficha (' + emailClean + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
+                return;
+            }
+            if (!confirm('Vas a crear el acceso online para:\n\n  Cliente: ' + (data.name || docId) + '\n  Email:   ' + emailClean + '\n\nEste email procede de la ficha del cliente. Si no es correcto, cancela y edita la ficha primero.\n\n¿Continuar?')) return;
             const password = prompt('Contraseña inicial (mínimo 6 caracteres):\n\nPodrás reenviársela por email tras crearla. El cliente puede cambiarla cuando entre.');
             if (!password) return;
             if (password.length < 6) { alert('La contraseña debe tener al menos 6 caracteres (requisito de Firebase).'); return; }
