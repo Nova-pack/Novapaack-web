@@ -1389,40 +1389,71 @@
                       || (window._advClientsCache && window._advClientsCache.find(c => c.id === docId))
                       || {};
             if (data.authUid) {
-                if (!confirm('Este cliente ya tiene acceso activado.\n\n¿Quieres reasignarle credenciales nuevas? (creará una segunda cuenta Auth — la antigua deberá borrarse manualmente desde Firebase Console).')) return;
+                if (!confirm('Este cliente ya tiene acceso activado.\n\nPara CAMBIAR el email/clave de login usa el botón 🔄 (es más limpio).\n\nSi continúas aquí, crearemos una SEGUNDA cuenta Auth — la antigua quedará huérfana y deberás borrarla manualmente desde Firebase Console.\n\n¿Seguir adelante?')) return;
             }
-            // ★ El email de la ficha es la fuente de verdad para COMUNICACIONES.
-            //   Pero el login NO usa el email de la ficha: usamos un email
-            //   sintético único (loginEmail) para que clientes con varias
-            //   sucursales que comparten un email real puedan tener un login
-            //   distinto cada uno. Firebase Auth exige email único.
+            // ★ Por defecto usamos el EMAIL DE LA FICHA como email de login.
+            //   Solo si Firebase rechaza con "email-already-in-use" (caso
+            //   típico: sucursales que comparten el mismo email real) le
+            //   ofrecemos al admin generar un sintético único.
             const realEmail = (data.email || '').trim().toLowerCase();
             if (!realEmail) {
-                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero — el email real es donde mandaremos el correo de bienvenida (aunque el login interno sea sintético).');
+                alert('❌ Este cliente no tiene email en su ficha.\n\nEdita la ficha primero — necesitamos un email para crear el acceso.');
                 return;
             }
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(realEmail)) {
                 alert('El email registrado en la ficha (' + realEmail + ') no tiene formato válido. Corrígelo en la ficha del cliente y vuelve a intentarlo.');
                 return;
             }
-            // Usar loginEmail existente si lo hay (reactivación), o generar uno nuevo
-            const loginEmail = (data.loginEmail || window.generateLoginEmail(data)).toLowerCase();
-            if (!confirm('Vas a crear el acceso online para:\n\n  Cliente: ' + (data.name || docId) + '\n  Email de comunicaciones: ' + realEmail + '\n  Login interno (auto-generado): ' + loginEmail + '\n\nEl cliente recibirá el email de bienvenida en su email real, y ahí le indicaremos el usuario+contraseña que debe usar para entrar.\n\n¿Continuar?')) return;
+            if (!confirm('Vas a crear el acceso online para:\n\n  Cliente: ' + (data.name || docId) + '\n  Email de login: ' + realEmail + '\n\n(Es el email que figura en la ficha del cliente. Si tiene varias sucursales con el mismo email, en el siguiente paso te ofreceremos un email sintético único.)\n\n¿Continuar?')) return;
             const password = prompt('Contraseña inicial (mínimo 6 caracteres):\n\nLa incluiremos en el email de bienvenida. El cliente puede cambiarla cuando entre.');
             if (!password) return;
             if (password.length < 6) { alert('La contraseña debe tener al menos 6 caracteres (requisito de Firebase).'); return; }
 
-            showLoading();
-            try {
-                // 1. Crear Auth en una app secundaria para no expulsar al admin
+            // ★ Intentamos primero con el email real; solo si está en uso,
+            //   le proponemos al admin el sintético.
+            async function _createAuthWith(emailToUse) {
                 const secApp = firebase.apps.find(app => app.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
-                const cred = await secApp.auth().createUserWithEmailAndPassword(loginEmail, password);
+                const cred = await secApp.auth().createUserWithEmailAndPassword(emailToUse, password);
                 const newUid = cred.user.uid;
                 try { await secApp.auth().signOut(); } catch(e) {}
+                return newUid;
+            }
 
-                // 2. Vincular el doc maestro existente — solo añade loginEmail
-                //    + authUid + audit. NO toca data.email (real) ni datos
-                //    comerciales.
+            showLoading();
+            let loginEmail = realEmail;
+            let newUid = null;
+            try {
+                newUid = await _createAuthWith(loginEmail);
+            } catch(e) {
+                hideLoading();
+                if (e.code === 'auth/email-already-in-use') {
+                    const synth = window.generateLoginEmail(data);
+                    const useSynthetic = confirm('⚠️ El email "' + realEmail + '" ya tiene una cuenta Auth en Firebase.\n\nEsto ocurre cuando varias sucursales comparten el mismo email real.\n\n¿Quieres generar un email sintético único para este cliente?\n\n  Sintético propuesto: ' + synth + '\n\n[Aceptar] crea Auth con el sintético — el cliente seguirá recibiendo emails en ' + realEmail + ', pero su usuario para entrar será el sintético.\n[Cancelar] no hace nada (puedes usar 🔗 para vincular al Auth ya existente).');
+                    if (!useSynthetic) return;
+                    loginEmail = synth.toLowerCase();
+                    showLoading();
+                    try {
+                        newUid = await _createAuthWith(loginEmail);
+                    } catch(e2) {
+                        hideLoading();
+                        alert('Error con sintético también: ' + (e2.message || e2));
+                        return;
+                    }
+                } else if (e.code === 'auth/invalid-email') {
+                    alert('Email inválido.');
+                    return;
+                } else if (e.code === 'auth/weak-password') {
+                    alert('Contraseña demasiado débil. Usa mínimo 6 caracteres.');
+                    return;
+                } else {
+                    alert('Error activando acceso: ' + (e.message || e));
+                    return;
+                }
+            }
+            if (!newUid) { hideLoading(); return; }
+
+            // Persistir vínculo en la ficha y notificar
+            try {
                 await db.collection('users').doc(docId).update({
                     loginEmail: loginEmail,
                     authUid: newUid,
@@ -1436,9 +1467,12 @@
                     const cached = window._advClientsCache.find(c => c.id === docId);
                     if (cached) { cached.loginEmail = loginEmail; cached.authUid = newUid; }
                 }
-
                 hideLoading();
-                const send = confirm('✅ Acceso activado correctamente.\n\nEmail real:        ' + realEmail + '\nLogin interno:    ' + loginEmail + '\nUID auth:         ' + newUid + '\n\n¿Enviar email de bienvenida al cliente con sus credenciales?');
+                const usedSynthetic = loginEmail !== realEmail;
+                const summary = '✅ Acceso activado.\n\n  Email real (comunicaciones): ' + realEmail
+                    + (usedSynthetic ? '\n  Login sintético: ' + loginEmail : '\n  Login (= email): ' + loginEmail)
+                    + '\n  UID auth: ' + newUid;
+                const send = confirm(summary + '\n\n¿Enviar email de bienvenida ahora?');
                 if (send && typeof window.composeWelcomeEmail === 'function') {
                     await window.composeWelcomeEmail({
                         email: realEmail,
@@ -1449,25 +1483,106 @@
                     });
                 }
                 if (typeof loadUsers === 'function') loadUsers('current');
-            } catch (e) {
+            } catch(persistErr) {
+                hideLoading();
+                alert('La cuenta Auth se creó (' + newUid + ') pero falló al guardar el vínculo: ' + persistErr.message + '\nEntra a Firebase Console para borrar la cuenta huérfana si es necesario.');
+            }
+        };
+
+        // Cambiar el email/clave de login de un cliente que YA tiene acceso.
+        // Crea una NUEVA cuenta Auth, actualiza loginEmail+authUid en la
+        // ficha, y avisa al admin de que la cuenta Auth antigua queda
+        // huérfana (recordatorio para borrarla en Firebase Console).
+        window.openChangeLoginModal = async function openChangeLoginModal(docId) {
+            const data = (window.userMap && window.userMap[docId])
+                      || (window._advClientsCache && window._advClientsCache.find(c => c.id === docId))
+                      || {};
+            if (!data.authUid) {
+                alert('Este cliente aún no tiene acceso activado. Usa primero el botón 🔓.');
+                return;
+            }
+            const currentLogin = data.loginEmail || data.email || '(desconocido)';
+            const fichaEmail = (data.email || '').trim().toLowerCase();
+            const choice = prompt(
+                'Cambiar email de login de "' + (data.name || docId) + '"\n\n' +
+                '  Login actual: ' + currentLogin + '\n' +
+                '  Email ficha:  ' + fichaEmail + '\n  authUid:      ' + data.authUid + '\n\n' +
+                'Elige una opción y pulsa Aceptar:\n\n' +
+                '  1 = Usar el email de la ficha (' + fichaEmail + ')\n' +
+                '  2 = Introducir un email personalizado\n' +
+                '  3 = Generar un email sintético nuevo\n\n' +
+                'Escribe 1, 2 o 3:'
+            );
+            if (!choice) return;
+            let newLoginEmail;
+            if (choice.trim() === '1') {
+                if (!fichaEmail) { alert('La ficha no tiene email. Edítala primero.'); return; }
+                newLoginEmail = fichaEmail;
+            } else if (choice.trim() === '2') {
+                const custom = prompt('Nuevo email de login:', fichaEmail);
+                if (!custom) return;
+                newLoginEmail = custom.trim().toLowerCase();
+            } else if (choice.trim() === '3') {
+                newLoginEmail = window.generateLoginEmail(data).toLowerCase();
+            } else {
+                alert('Opción no reconocida.');
+                return;
+            }
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(newLoginEmail)) { alert('Email inválido.'); return; }
+            const password = prompt('Contraseña inicial para la NUEVA cuenta (mínimo 6 caracteres):');
+            if (!password) return;
+            if (password.length < 6) { alert('Mínimo 6 caracteres.'); return; }
+            if (!confirm(
+                '¿Confirmar cambio de login?\n\n' +
+                '  Login NUEVO:   ' + newLoginEmail + '\n' +
+                '  Login ANTIGUO: ' + currentLogin + '\n\n' +
+                '⚠️ Se creará una nueva cuenta en Firebase Auth.\n' +
+                '⚠️ La cuenta antigua (' + currentLogin + ') quedará huérfana —\n' +
+                '   ve a Firebase Console → Authentication → busca y bórrala\n' +
+                '   manualmente para limpiar.\n\n' +
+                '¿Continuar?'
+            )) return;
+            showLoading();
+            try {
+                const secApp = firebase.apps.find(app => app.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
+                const cred = await secApp.auth().createUserWithEmailAndPassword(newLoginEmail, password);
+                const newUid = cred.user.uid;
+                try { await secApp.auth().signOut(); } catch(e) {}
+                await db.collection('users').doc(docId).update({
+                    loginEmail: newLoginEmail,
+                    authUid: newUid,
+                    previousLoginEmail: currentLogin,
+                    previousAuthUid: data.authUid,
+                    accessChangedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    accessChangedBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
+                });
+                if (window.userMap && window.userMap[docId]) {
+                    window.userMap[docId].loginEmail = newLoginEmail;
+                    window.userMap[docId].authUid = newUid;
+                }
+                if (window._advClientsCache) {
+                    const cached = window._advClientsCache.find(c => c.id === docId);
+                    if (cached) { cached.loginEmail = newLoginEmail; cached.authUid = newUid; }
+                }
+                hideLoading();
+                const send = confirm('✅ Login cambiado.\n\n  Nuevo login: ' + newLoginEmail + '\n  Nueva contraseña: ' + password + '\n\n¿Enviar email de bienvenida con las nuevas credenciales?');
+                if (send && typeof window.composeWelcomeEmail === 'function') {
+                    await window.composeWelcomeEmail({
+                        email: data.email,
+                        loginEmail: newLoginEmail,
+                        password: password,
+                        name: data.name || '',
+                        idNum: data.idNum || ''
+                    });
+                }
+                alert('RECORDATORIO: borra la cuenta antigua "' + currentLogin + '" desde Firebase Console → Authentication → Users.');
+                if (typeof loadUsers === 'function') loadUsers('current');
+            } catch(e) {
                 hideLoading();
                 if (e.code === 'auth/email-already-in-use') {
-                    // No debería pasar con loginEmail sintético, pero por si acaso
-                    if (confirm('⚠️ El loginEmail generado colisionó (' + loginEmail + ').\n\n¿Reintentar con otro sintético? (Aceptar = regenera)')) {
-                        // Limpiar para forzar regenerar
-                        if (window.userMap && window.userMap[docId]) delete window.userMap[docId].loginEmail;
-                        if (window._advClientsCache) {
-                            const cc = window._advClientsCache.find(c => c.id === docId);
-                            if (cc) delete cc.loginEmail;
-                        }
-                        return window.openActivateAccessModal(docId);
-                    }
-                } else if (e.code === 'auth/invalid-email') {
-                    alert('Email inválido.');
-                } else if (e.code === 'auth/weak-password') {
-                    alert('Contraseña demasiado débil. Usa mínimo 6 caracteres.');
+                    alert('Ese email ya tiene una cuenta Auth. Elige otro o usa "Generar sintético" (opción 3).');
                 } else {
-                    alert('Error activando acceso: ' + (e.message || e));
+                    alert('Error: ' + (e.message || e));
                 }
             }
         };
@@ -7790,7 +7905,8 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-outline btn-sm" onclick="openManageCompaniesModal('${escapeHtml(data.id)}')" title="Sedes/Empresas">🏢</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
                                     ${data.authUid
-                                        ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>`
+                                        ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>
+                                           <button class="btn btn-outline btn-sm" onclick="openChangeLoginModal('${escapeHtml(data.id)}')" title="Cambiar email de login (crea nuevo Auth, el anterior se debe borrar en Console)" style="border-color:#FFB300; color:#FFB300;">🔄</button>`
                                         : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>
                                            <button class="btn btn-outline btn-sm" onclick="openLinkAuthModal('${escapeHtml(data.id)}')" title="Vincular cuenta Auth ya existente (UID conocido)" style="border-color:#5DADE2; color:#5DADE2;">🔗</button>`}
                                     <button class="btn btn-outline btn-sm" onclick="impersonateClient('${escapeHtml(data.id)}')" title="Entrar como este cliente (super-admin)" style="border-color:#AB47BC; color:#AB47BC;">👁️</button>
