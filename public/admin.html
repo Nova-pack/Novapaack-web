@@ -1265,6 +1265,72 @@
             }
         };
 
+        // Activate online access for an EXISTING client that's already in the
+        // users collection but has no Firebase Auth credentials yet. Common
+        // workflow: clients already on the books (created historically or
+        // imported) who now want access to the customer portal.
+        window.openActivateAccessModal = async function openActivateAccessModal(docId) {
+            const data = (window.userMap && window.userMap[docId]) || {};
+            if (data.authUid) {
+                if (!confirm('Este cliente ya tiene acceso activado.\n\n¿Quieres reasignarle credenciales nuevas? (creará una segunda cuenta Auth — la antigua deberá borrarse manualmente desde Firebase Console).')) return;
+            }
+            const prefillEmail = (data.email || '').trim();
+            const email = prompt('Email de acceso del cliente:\n\nÉste será el email con el que se logueará en la app de cliente.', prefillEmail);
+            if (!email) return;
+            const emailClean = email.trim().toLowerCase();
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
+                alert('Formato de email inválido.');
+                return;
+            }
+            const password = prompt('Contraseña inicial (mínimo 6 caracteres):\n\nPodrás reenviársela por email tras crearla. El cliente puede cambiarla cuando entre.');
+            if (!password) return;
+            if (password.length < 6) { alert('La contraseña debe tener al menos 6 caracteres (requisito de Firebase).'); return; }
+
+            showLoading();
+            try {
+                // 1. Crear Auth en una app secundaria para no expulsar al admin
+                const secApp = firebase.apps.find(app => app.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
+                const cred = await secApp.auth().createUserWithEmailAndPassword(emailClean, password);
+                const newUid = cred.user.uid;
+                try { await secApp.auth().signOut(); } catch(e) {}
+
+                // 2. Vincular el doc maestro existente — actualiza email + authUid
+                //    sin reescribir datos comerciales que ya tenga.
+                await db.collection('users').doc(docId).update({
+                    email: emailClean,
+                    authUid: newUid,
+                    accessActivatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                if (window.userMap && window.userMap[docId]) {
+                    window.userMap[docId].email = emailClean;
+                    window.userMap[docId].authUid = newUid;
+                }
+
+                hideLoading();
+                const send = confirm('✅ Acceso activado correctamente.\n\nEmail: ' + emailClean + '\nUID auth: ' + newUid + '\n\n¿Enviar email de bienvenida al cliente con sus credenciales?');
+                if (send && typeof window.composeWelcomeEmail === 'function') {
+                    await window.composeWelcomeEmail({
+                        email: emailClean,
+                        password: password,
+                        name: data.name || '',
+                        idNum: data.idNum || ''
+                    });
+                }
+                if (typeof loadUsers === 'function') loadUsers('current');
+            } catch (e) {
+                hideLoading();
+                if (e.code === 'auth/email-already-in-use') {
+                    alert('❌ Ese email ya tiene una cuenta Auth en Firebase.\n\nSi pertenece a este cliente, sólo necesitas vincularla: pídeme la opción de "vincular Auth existente" o usa Firebase Console para ver el UID y pega aquí el valor.');
+                } else if (e.code === 'auth/invalid-email') {
+                    alert('Email inválido.');
+                } else if (e.code === 'auth/weak-password') {
+                    alert('Contraseña demasiado débil. Usa mínimo 6 caracteres.');
+                } else {
+                    alert('Error activando acceso: ' + (e.message || e));
+                }
+            }
+        };
+
         // Compose welcome email — opens the admin's mail client with a pre-
         // filled template containing the client's login credentials. Used by
         // the new-user modal right after creation, and reusable from the user
@@ -7572,7 +7638,9 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-primary btn-sm" onclick="openEditUserModal('${escapeHtml(data.id)}')" title="Editar Cliente">✏️</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageCompaniesModal('${escapeHtml(data.id)}')" title="Sedes/Empresas">🏢</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
-                                    <button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail({email:'${escapeHtml(data.email || '')}', name:'${escapeHtml((data.name || '').replace(/'/g, ''))}', idNum:'${escapeHtml(String(data.idNum || ''))}'})" title="Enviar email de bienvenida con credenciales">✉️</button>
+                                    ${data.authUid
+                                        ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>`
+                                        : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>`}
                                     <button class="btn btn-secondary btn-sm" onclick="sendWhatsApp('${escapeHtml(data.senderPhone || '')}', 'Hola ${escapeHtml(data.name)}')" title="WhatsApp">💬</button>
                                     <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(data.id)}')" title="Eliminar">🗑️</button>
                                     `}
