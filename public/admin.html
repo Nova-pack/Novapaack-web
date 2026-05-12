@@ -7778,6 +7778,7 @@ window.runPublicTicketsBackfill = async function() {
                             <td>
                                 <div style="font-weight:700">${escapeHtml(data.name || 'Sin Nombre')}</div>
                                 <div style="font-size:0.8rem; color:#888">${escapeHtml(data.email || data.nif || '')}</div>
+                                ${data.loginEmail ? `<div style="font-size:0.68rem; color:#FF9F0A; margin-top:2px; font-family:monospace;" title="Usuario sintético para login Firebase Auth"><span class="material-symbols-outlined" style="font-size:0.75rem; vertical-align:middle;">login</span> ${escapeHtml(data.loginEmail)}</div>` : ''}
                                 ${data.parentClientId ? `<div style="font-size:0.7rem; color:#2196F3; margin-top:2px;"><span class="material-symbols-outlined" style="font-size:0.75rem; vertical-align:middle;">account_tree</span> ↳ Hijo de #${escapeHtml((userMap[data.parentClientId] || {}).idNum || '?')} (${escapeHtml((userMap[data.parentClientId] || {}).name || data.parentClientId)})</div>` : ''}
                             </td>
                             <td><span class="chip" style="${data.isGlobal ? 'background:#FF9800' : (data.parentClientId ? 'background:#2196F3' : '')}">${data.isGlobal ? 'Nube' : (data.parentClientId ? 'Filial' : 'Activo')}</span></td>

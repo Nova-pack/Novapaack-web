@@ -150,6 +150,11 @@ function cleanPrintArea() {
         window.removeEventListener('afterprint', _currentAfterPrintHandler);
         _currentAfterPrintHandler = null;
     }
+    // Quita la regla @page inyectada para que un Ctrl+P posterior fuera
+    // del flujo no herede un tamaño concreto. Cada print job vuelve a
+    // declarar el suyo en setPrintPageSize().
+    const styleEl = document.getElementById('print-page-size');
+    if (styleEl) styleEl.remove();
 }
 
 function registerAfterPrint(handler) {
@@ -4285,13 +4290,16 @@ async function printLabelShiftBatch(slot) {
             const area = document.getElementById('print-area');
             window.printingTickets = tickets;
             
-            if (paperMode === 'a4') {
+            if (paperMode === 'a4' || paperMode === 'pdf') {
                 setPrintPageSize('A4 portrait');
             } else {
                 setPrintPageSize('60mm 90mm');
             }
-            
-            const isA4 = (paperMode === 'a4');
+
+            // PDF reusa el mismo renderizado que A4 (grid 2x2) — sale como
+            // PDF descargable que el cliente abre en su visor preferido y
+            // donde sí puede afinar exactamente el tamaño desde Adobe/Edge.
+            const isA4 = (paperMode === 'a4' || paperMode === 'pdf');
 
             let labelsHtml = [];
             tickets.forEach(t => {
@@ -4299,7 +4307,7 @@ async function printLabelShiftBatch(slot) {
                 for (let i = 0; i < totalPkgs; i++) labelsHtml.push(generateLabelHTML(t, i, totalPkgs, null, isA4));
             });
 
-            renderLabelsInA4Grid(area, labelsHtml, paperMode);
+            renderLabelsInA4Grid(area, labelsHtml, isA4 ? 'a4' : 'label');
 
             document.body.classList.add('printing-labels');
 
@@ -4311,7 +4319,24 @@ async function printLabelShiftBatch(slot) {
             });
             renderTicketsList();
 
-            setTimeout(() => {
+            setTimeout(async () => {
+                if (paperMode === 'pdf' && typeof html2pdf === 'function') {
+                    try {
+                        await html2pdf().from(area).set({
+                            margin: 0,
+                            filename: 'Etiquetas_' + slot + '_' + new Date().toISOString().slice(0,10) + '.pdf',
+                            image: { type: 'jpeg', quality: 0.95 },
+                            html2canvas: { scale: 2, useCORS: true, allowTaint: true },
+                            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                        }).save();
+                    } catch(e) {
+                        alert('Error generando PDF: ' + e.message + '\nUsando impresión normal como fallback.');
+                        window.print();
+                    } finally {
+                        cleanPrintArea();
+                    }
+                    return;
+                }
                 const handleAfterPrint = () => {
                     cleanPrintArea();
                 };
@@ -4375,38 +4400,68 @@ function renderLabelsInA4Grid(container, labelsHtml, paperMode) {
 function showPaperSelectModal(callback) {
     let modal = document.getElementById('modal-paper-select');
     if (modal) modal.remove();
-    
+
+    // Recordamos la última elección del usuario para reducir clics y para
+    // recordar a la impresora de oficinas distintas su configuración.
+    const lastChoice = (function() {
+        try { return localStorage.getItem('paperLastChoice') || ''; } catch(e) { return ''; }
+    })();
+
     modal = document.createElement('div');
     modal.id = 'modal-paper-select';
     modal.style = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; display:flex; justify-content:center; align-items:center; padding:20px;';
     modal.innerHTML = `
-        <div style="background:#1e1e1e; border:1px solid #444; border-radius:16px; padding:30px; max-width:500px; width:100%; text-align:center;">
-            <h3 style="color:var(--brand-primary, #FF4D00); margin-top:0; font-size:1.2rem;">🖨️ SELECCIONAR TIPO DE PAPEL</h3>
-            <p style="color:#888; font-size:0.85rem; margin-bottom:25px;">Elige el formato según tu impresora:</p>
-            
-            <div style="display:flex; gap:15px; justify-content:center; flex-wrap:wrap;">
-                <button id="btn-paper-label" style="flex:1; min-width:180px; padding:25px 15px; background:#2d2d30; border:2px solid #555; cursor:pointer; border-radius:12px; text-align:center; transition: all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='#555'">
-                    <div style="font-size:2.5rem; margin-bottom:8px;">🏷️</div>
-                    <div style="color:#d4d4d4; font-weight:900; font-size:1rem;">ETIQUETADORA</div>
-                    <div style="color:#888; font-size:0.75rem; margin-top:5px;">6 × 9 cm aprox.</div>
-                    <div style="color:#666; font-size:0.65rem; margin-top:3px;">Una etiqueta por hoja</div>
+        <div style="background:#1e1e1e; border:1px solid #444; border-radius:16px; padding:30px; max-width:560px; width:100%; text-align:center;">
+            <h3 style="color:var(--brand-primary, #FF4D00); margin-top:0; font-size:1.2rem;">🖨️ FORMATO DE IMPRESIÓN</h3>
+            <p style="color:#888; font-size:0.85rem; margin-bottom:6px;">Elige según tu impresora. Tu última elección se recuerda.</p>
+            ${lastChoice ? `<p style="color:#FF9F0A; font-size:0.72rem; margin:0 0 16px;">Último uso: <strong>${lastChoice === 'label' ? 'Etiquetadora' : (lastChoice === 'a4' ? 'A4' : 'PDF')}</strong></p>` : '<div style="margin-bottom:14px;"></div>'}
+
+            <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button id="btn-paper-label" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='label'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='label'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='label'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">🏷️</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">ETIQUETADORA</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">60 × 90 mm</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">1 etiqueta / hoja</div>
                 </button>
-                
-                <button id="btn-paper-a4" style="flex:1; min-width:180px; padding:25px 15px; background:#2d2d30; border:2px solid #555; cursor:pointer; border-radius:12px; text-align:center; transition: all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='#555'">
-                    <div style="font-size:2.5rem; margin-bottom:8px;">📄</div>
-                    <div style="color:#d4d4d4; font-weight:900; font-size:1rem;">A4</div>
-                    <div style="color:#888; font-size:0.75rem; margin-top:5px;">4 etiquetas por hoja</div>
-                    <div style="color:#666; font-size:0.65rem; margin-top:3px;">Grid 2×2 con márgenes</div>
+
+                <button id="btn-paper-a4" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='a4'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='a4'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='a4'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">📄</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">A4</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">210 × 297 mm</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">4 etiquetas / hoja</div>
+                </button>
+
+                <button id="btn-paper-pdf" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='pdf'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='pdf'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='pdf'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">📥</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">PDF</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">Descargar archivo</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">Imprime desde el visor</div>
                 </button>
             </div>
-            
-            <button onclick="document.getElementById('modal-paper-select').remove();" style="margin-top:20px; background:none; border:1px solid #555; color:#888; padding:8px 30px; cursor:pointer; border-radius:6px; font-size:0.8rem;">Cancelar</button>
+
+            <div style="margin-top:18px; background:rgba(255,159,10,0.08); border:1px solid rgba(255,159,10,0.25); border-radius:8px; padding:10px 14px; font-size:0.72rem; color:#FF9F0A; text-align:left; line-height:1.45;">
+                <strong>💡 Importante:</strong> en el diálogo de impresión que aparecerá después, verifica que:
+                <ul style="margin:4px 0 0 18px; padding:0;">
+                    <li>Tamaño de papel = el que elegiste arriba</li>
+                    <li>Márgenes = <strong>Ninguno</strong> o <strong>None</strong></li>
+                    <li>Escala = <strong>100 %</strong> (no "ajustar a página")</li>
+                </ul>
+                <span style="color:#888;">Si tu impresora no acepta el formato, prueba con <strong>PDF</strong> y abrirlo desde el visor de Windows.</span>
+            </div>
+
+            <button onclick="document.getElementById('modal-paper-select').remove();" style="margin-top:16px; background:none; border:1px solid #555; color:#888; padding:8px 30px; cursor:pointer; border-radius:6px; font-size:0.8rem;">Cancelar</button>
         </div>
     `;
     document.body.appendChild(modal);
-    
-    document.getElementById('btn-paper-label').onclick = () => { modal.remove(); callback('label'); };
-    document.getElementById('btn-paper-a4').onclick = () => { modal.remove(); callback('a4'); };
+
+    function pick(mode) {
+        try { localStorage.setItem('paperLastChoice', mode); } catch(e) {}
+        modal.remove();
+        callback(mode);
+    }
+    document.getElementById('btn-paper-label').onclick = () => pick('label');
+    document.getElementById('btn-paper-a4').onclick = () => pick('a4');
+    document.getElementById('btn-paper-pdf').onclick = () => pick('pdf');
 }
 
 async function printLabel(t) {
@@ -4414,19 +4469,19 @@ async function printLabel(t) {
     showPaperSelectModal(async (paperMode) => {
         cleanPrintArea();
         const area = document.getElementById('print-area');
-        
-        if (paperMode === 'a4') {
+
+        if (paperMode === 'a4' || paperMode === 'pdf') {
             setPrintPageSize('A4 portrait');
         } else {
             setPrintPageSize('60mm 90mm');
         }
-        
+
         const totalPkgs = t.packagesList ? t.packagesList.reduce((s, p) => s + (parseInt(p.qty) || 1), 0) : 1;
         let labelsHtml = [];
-        const isA4 = (paperMode === 'a4');
+        const isA4 = (paperMode === 'a4' || paperMode === 'pdf');
         for (let i = 0; i < totalPkgs; i++) labelsHtml.push(generateLabelHTML(t, i, totalPkgs, null, isA4));
 
-        renderLabelsInA4Grid(area, labelsHtml, paperMode);
+        renderLabelsInA4Grid(area, labelsHtml, isA4 ? 'a4' : 'label');
 
         document.body.classList.add('printing-labels');
 
@@ -4445,9 +4500,26 @@ async function printLabel(t) {
         const handleAfterPrint = () => {
             cleanPrintArea();
         };
-        registerAfterPrint(handleAfterPrint);
 
-        setTimeout(() => {
+        setTimeout(async () => {
+            if (paperMode === 'pdf' && typeof html2pdf === 'function') {
+                try {
+                    await html2pdf().from(area).set({
+                        margin: 0,
+                        filename: 'Etiqueta_' + (t.id || t.docId || 'NP') + '.pdf',
+                        image: { type: 'jpeg', quality: 0.95 },
+                        html2canvas: { scale: 2, useCORS: true, allowTaint: true },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    }).save();
+                } catch(e) {
+                    alert('Error generando PDF: ' + e.message + '\nUsando impresión normal como fallback.');
+                    window.print();
+                } finally {
+                    cleanPrintArea();
+                }
+                return;
+            }
+            registerAfterPrint(handleAfterPrint);
             window.print();
             setTimeout(() => { if (area.innerHTML.length > 0) cleanPrintArea(); }, 60000);
         }, 800);
