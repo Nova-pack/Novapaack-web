@@ -1280,6 +1280,56 @@
             window.open(url, '_blank');
         };
 
+        // Link an EXISTING Firebase Auth account to an EXISTING users/{docId}
+        // record. Used when:
+        //   • The client created their auth via a previous portal / import.
+        //   • The "activate access" flow above failed with auth/email-already-
+        //     in-use and admin chose to link instead of overwrite.
+        // No new Auth account is created — admin pastes the UID from Firebase
+        // Console (Authentication → search by email → copy UID).
+        window.openLinkAuthModal = async function openLinkAuthModal(docId, prefillEmail) {
+            const data = (window.userMap && window.userMap[docId]) || {};
+            if (data.authUid) {
+                if (!confirm('Este cliente YA tiene authUid vinculado (' + data.authUid + ').\n\n¿Quieres reescribirlo con otro UID?')) return;
+            }
+            const email = prompt('Email de la cuenta Auth que vas a vincular:', prefillEmail || data.email || '');
+            if (!email) return;
+            const emailClean = email.trim().toLowerCase();
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailClean)) {
+                alert('Email inválido.');
+                return;
+            }
+            const helpMsg = 'Pega el UID de la cuenta Auth.\n\nCómo obtenerlo:\n  1. Abre Firebase Console → Authentication → pestaña Users.\n  2. Busca el email: ' + emailClean + '\n  3. Copia el "User UID" (es una cadena tipo abc123XYZ…).\n  4. Pégalo aquí.';
+            const uid = prompt(helpMsg);
+            if (!uid) return;
+            const uidClean = uid.trim();
+            if (uidClean.length < 16) {
+                alert('Ese UID parece demasiado corto. Verifica que has copiado el valor correcto desde Firebase Console.');
+                return;
+            }
+            if (!confirm('¿Vincular?\n\n  Cliente: ' + (data.name || docId) + '\n  Email:   ' + emailClean + '\n  UID Auth: ' + uidClean + '\n\nEsto NO crea ni borra cuentas; sólo escribe el campo authUid en la ficha del cliente.')) return;
+
+            showLoading();
+            try {
+                await db.collection('users').doc(docId).update({
+                    email: emailClean,
+                    authUid: uidClean,
+                    accessLinkedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    accessLinkedBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
+                });
+                if (window.userMap && window.userMap[docId]) {
+                    window.userMap[docId].email = emailClean;
+                    window.userMap[docId].authUid = uidClean;
+                }
+                hideLoading();
+                alert('✅ Cuenta Auth vinculada al cliente.\n\nLa próxima vez que el usuario haga login con ' + emailClean + ', la app encontrará su ficha y cargará sus datos.');
+                if (typeof loadUsers === 'function') loadUsers('current');
+            } catch(e) {
+                hideLoading();
+                alert('Error vinculando: ' + (e.message || e));
+            }
+        };
+
         // Activate online access for an EXISTING client that's already in the
         // users collection but has no Firebase Auth credentials yet. Common
         // workflow: clients already on the books (created historically or
@@ -1335,7 +1385,11 @@
             } catch (e) {
                 hideLoading();
                 if (e.code === 'auth/email-already-in-use') {
-                    alert('❌ Ese email ya tiene una cuenta Auth en Firebase.\n\nSi pertenece a este cliente, sólo necesitas vincularla: pídeme la opción de "vincular Auth existente" o usa Firebase Console para ver el UID y pega aquí el valor.');
+                    if (confirm('❌ Ese email ya tiene una cuenta Auth en Firebase.\n\n¿Pertenece a este mismo cliente y quieres vincularla?\n\n[Aceptar] te abriré el modo "Vincular Auth existente" — necesitarás copiar el UID desde Firebase Console → Authentication.\n[Cancelar] no hace nada.')) {
+                        if (typeof window.openLinkAuthModal === 'function') {
+                            window.openLinkAuthModal(docId, emailClean);
+                        }
+                    }
                 } else if (e.code === 'auth/invalid-email') {
                     alert('Email inválido.');
                 } else if (e.code === 'auth/weak-password') {
@@ -7655,7 +7709,8 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
                                     ${data.authUid
                                         ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>`
-                                        : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>`}
+                                        : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>
+                                           <button class="btn btn-outline btn-sm" onclick="openLinkAuthModal('${escapeHtml(data.id)}')" title="Vincular cuenta Auth ya existente (UID conocido)" style="border-color:#5DADE2; color:#5DADE2;">🔗</button>`}
                                     <button class="btn btn-outline btn-sm" onclick="impersonateClient('${escapeHtml(data.id)}')" title="Entrar como este cliente (super-admin)" style="border-color:#AB47BC; color:#AB47BC;">👁️</button>
                                     <button class="btn btn-secondary btn-sm" onclick="sendWhatsApp('${escapeHtml(data.senderPhone || '')}', 'Hola ${escapeHtml(data.name)}')" title="WhatsApp">💬</button>
                                     <button class="btn btn-danger btn-sm" onclick="deleteUser('${escapeHtml(data.id)}')" title="Eliminar">🗑️</button>
