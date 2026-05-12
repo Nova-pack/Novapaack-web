@@ -255,7 +255,87 @@
                 </select>
             </div>
         </div>
+
+        ${_sectionTitle('manage_accounts', 'Acceso online & Albarán', '#FF4D00')}
+        <div id="fc-access-banner" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:0.78rem; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <div id="fc-access-label" style="color:#aaa;">Cargando estado…</div>
+            <div id="fc-access-actions" style="display:flex; gap:5px; flex-wrap:wrap;"></div>
+        </div>
+        <div id="fc-access-loginline" style="display:none; font-size:0.7rem; color:#888; font-family:monospace; word-break:break-all; margin-bottom:8px;"></div>
+        <div style="display:grid; grid-template-columns: 200px 1fr 1fr 1fr; gap:6px; margin-bottom:6px;">
+            <div style="min-width:auto; display:flex; align-items:center; gap:6px; padding-top:18px;">
+                <input type="checkbox" id="fc-access-active" ${(d.accessActive === undefined || d.accessActive) ? 'checked' : ''} style="scale:1.2;">
+                <label for="fc-access-active" style="color:#ccc; font-size:0.78rem; cursor:pointer;">Cuenta activa</label>
+            </div>
+            ${_field('Prefijo albarán', 'fc-prefix', '', { placeholder: 'NP', minWidth: 'auto' })}
+            ${_field('Próximo nº', 'fc-startnum', '', { type: 'number', placeholder: '1001', minWidth: 'auto' })}
+            <div style="min-width:auto;">
+                <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Vista previa siguiente ID</label>
+                <div id="fc-albaran-preview" style="padding:5px 7px; background:rgba(76,175,80,0.06); border:1px solid rgba(76,175,80,0.25); border-radius:4px; font-family:monospace; font-size:0.85rem; color:#4CAF50; font-weight:700; text-align:center;">—</div>
+            </div>
+        </div>
         `;
+
+        // Hooks de preview y carga asíncrona de comp_main + estado de acceso
+        setTimeout(_fichaWireAccessSection, 50);
+    }
+
+    function _fichaUpdateAlbaranPreview() {
+        const pfxEl = document.getElementById('fc-prefix');
+        const snEl = document.getElementById('fc-startnum');
+        const prev = document.getElementById('fc-albaran-preview');
+        if (!pfxEl || !snEl || !prev) return;
+        let p = (pfxEl.value || pfxEl.placeholder || 'NP').toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'NP';
+        let n = parseInt(snEl.value || snEl.placeholder || '1001', 10);
+        if (isNaN(n) || n < 1) n = 1001;
+        prev.textContent = p + '-' + n;
+    }
+
+    async function _fichaWireAccessSection() {
+        const d = _fichaClientData;
+        if (!d) return;
+        // Carga comp_main para prefix + startNum
+        try {
+            const compDoc = await db.collection('users').doc(d.id).collection('companies').doc('comp_main').get();
+            const c = compDoc.exists ? compDoc.data() : {};
+            const pfx = c.prefix || (d.idNum || 'NP').toString().toUpperCase().slice(0, 3);
+            const sn = c.startNum || 1001;
+            const pfxEl = document.getElementById('fc-prefix');
+            const snEl = document.getElementById('fc-startnum');
+            if (pfxEl) pfxEl.value = pfx;
+            if (snEl) snEl.value = sn;
+        } catch(e) { console.warn('comp_main load (ficha):', e); }
+
+        // Wire preview live
+        const pfxEl = document.getElementById('fc-prefix');
+        const snEl = document.getElementById('fc-startnum');
+        if (pfxEl) pfxEl.addEventListener('input', function() { this.value = this.value.toUpperCase(); _fichaUpdateAlbaranPreview(); });
+        if (snEl) snEl.addEventListener('input', _fichaUpdateAlbaranPreview);
+        _fichaUpdateAlbaranPreview();
+
+        // Estado de acceso + acciones
+        const label = document.getElementById('fc-access-label');
+        const actions = document.getElementById('fc-access-actions');
+        const lineInfo = document.getElementById('fc-access-loginline');
+        if (label && actions) {
+            if (d.authUid) {
+                label.innerHTML = '<span style="font-size:0.95rem;">🟢</span> <strong>Acceso activo</strong>';
+                actions.innerHTML =
+                    '<button type="button" onclick="openChangeLoginModal(\'' + d.id + '\')" style="background:rgba(255,179,0,0.10); border:1px solid #FFB300; color:#FFB300; padding:4px 10px; border-radius:5px; font-size:0.72rem; cursor:pointer;">🔄 Cambiar login</button>'
+                  + '<button type="button" onclick="composeWelcomeEmail(userMap[\'' + d.id + '\'] || _fichaClientData)" style="background:rgba(52,199,89,0.10); border:1px solid #34C759; color:#34C759; padding:4px 10px; border-radius:5px; font-size:0.72rem; cursor:pointer;">✉️ Reenviar</button>'
+                  + '<button type="button" onclick="impersonateClient(\'' + d.id + '\')" style="background:rgba(171,71,188,0.10); border:1px solid #AB47BC; color:#AB47BC; padding:4px 10px; border-radius:5px; font-size:0.72rem; cursor:pointer;">👁️ Entrar como</button>';
+                if (lineInfo) {
+                    lineInfo.style.display = 'block';
+                    lineInfo.textContent = 'Login: ' + (d.loginEmail || d.email || '?') + ' · UID: ' + d.authUid;
+                }
+            } else {
+                label.innerHTML = '<span style="font-size:0.95rem;">🔴</span> Acceso online <strong>no activado</strong>';
+                actions.innerHTML =
+                    '<button type="button" onclick="openActivateAccessModal(\'' + d.id + '\')" style="background:rgba(255,159,10,0.10); border:1px solid #FF9F0A; color:#FF9F0A; padding:4px 10px; border-radius:5px; font-size:0.72rem; cursor:pointer;">🔓 Activar</button>'
+                  + '<button type="button" onclick="openLinkAuthModal(\'' + d.id + '\')" style="background:rgba(93,173,226,0.10); border:1px solid #5DADE2; color:#5DADE2; padding:4px 10px; border-radius:5px; font-size:0.72rem; cursor:pointer;">🔗 Vincular</button>';
+                if (lineInfo) lineInfo.style.display = 'none';
+            }
+        }
     }
 
     // ============================================================
@@ -898,6 +978,31 @@
         if (getVal('fc-flatrate') !== null) updates.isFlatRate = getVal('fc-flatrate') === 'Sí';
         if (getVal('fc-flatrate-amt') !== null) updates.flatRateAmount = parseFloat(getVal('fc-flatrate-amt')) || 0;
 
+        // Acceso online (fc-access-active)
+        const accCb = document.getElementById('fc-access-active');
+        if (accCb) {
+            updates.accessActive = !!accCb.checked;
+            updates.accessActiveUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
+        }
+
+        // Prefijo y nº de albarán → van a comp_main (no a /users)
+        let compMainUpdate = null;
+        const pfxVal = getVal('fc-prefix');
+        const snVal = getVal('fc-startnum');
+        if (pfxVal !== null || snVal !== null) {
+            compMainUpdate = {};
+            if (pfxVal !== null) {
+                const cleaned = pfxVal.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+                if (cleaned) compMainUpdate.prefix = cleaned;
+            }
+            if (snVal !== null) {
+                const n = parseInt(snVal, 10);
+                if (!isNaN(n) && n > 0) compMainUpdate.startNum = n;
+            }
+            if (Object.keys(compMainUpdate).length === 0) compMainUpdate = null;
+            else compMainUpdate.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+        }
+
         // Remove null entries
         Object.keys(updates).forEach(k => { if (updates[k] === null) delete updates[k]; });
 
@@ -908,7 +1013,12 @@
 
         try {
             if (typeof showLoading === 'function') showLoading();
-            await db.collection('users').doc(_fichaClientId).update(updates);
+            if (Object.keys(updates).length > 0) {
+                await db.collection('users').doc(_fichaClientId).update(updates);
+            }
+            if (compMainUpdate) {
+                await db.collection('users').doc(_fichaClientId).collection('companies').doc('comp_main').set(compMainUpdate, { merge: true });
+            }
 
             // Update local cache
             if (window.userMap && window.userMap[_fichaClientId]) {
@@ -916,7 +1026,7 @@
             }
             _fichaClientData = { ..._fichaClientData, ...updates };
 
-            alert('✅ Ficha de cliente actualizada correctamente.');
+            alert('✅ Ficha de cliente actualizada correctamente.' + (compMainUpdate ? '\n\n📦 Prefijo / nº albarán también guardados.' : ''));
 
             // Re-render header with updated data
             _fichaRender();
