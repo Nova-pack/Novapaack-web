@@ -11970,6 +11970,7 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-secondary btn-sm" onclick="emailInvoice('${doc.id}')">📧</button>
                                     <button class="btn btn-secondary btn-sm" style="background:#25D366; border-color:#25D366;" onclick="sendWhatsAppInvoice('${doc.id}')">💬</button>
                                     <button class="btn btn-outline btn-sm" style="color:#FF4444;" onclick="downloadInvoicePDF('${doc.id}')">📄</button>
+                                    <button class="btn btn-outline btn-sm" style="border-color:#FF6600; color:#FF6600;" onclick="previewMultiBranchInvoiceHTML('${escapeHtml(inv.invoiceId || doc.id)}')" title="Vista previa PDF tarifa plana multi-sucursal">📋</button>
                                     <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${doc.id}')">🗑️</button>
                                 </div>
                             </td>
@@ -18595,6 +18596,7 @@ window.importTarifas50 = async () => {
 <script src="analytics.js?v=20260504"></script>
 <script src="auto_assign.js?v=20260504"></script>
 <script src="heatmap.js?v=20260504"></script>
+<script src="invoice_flatrate_multibranch.js?v=20260504_v1"></script>
 
 </body>
 </html>
