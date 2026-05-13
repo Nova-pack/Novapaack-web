@@ -272,6 +272,7 @@
                 <span style="color:#666; margin-left:6px;">(comparten NIF, cada una con su propio login y prefijo)</span>
             </div>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" onclick="window.openParentDiagnostic('${d.id}')" style="background:transparent; border:1px solid #4CAF50; color:#4CAF50; padding:6px 12px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;" title="Comprobar que padre y sucursales están bien configurados y que la facturación saldrá correcta">🩺 Verificar configuración</button>
                 <button type="button" onclick="window.openInvoiceFormatModal('${d.id}')" style="background:#FF6600; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">📊 Facturar mes</button>
                 <button type="button" onclick="window.openNewSucursalModal('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">+ Nueva sucursal</button>
             </div>
@@ -542,6 +543,199 @@
                 this.textContent = 'Crear sucursal';
             }
         });
+    };
+
+    // ============================================================
+    //  DIAGNÓSTICO DE CONFIGURACIÓN PADRE + SUCURSALES
+    //  Lee Firestore en vivo y reporta qué está bien, qué tiene aviso
+    //  y qué hay que arreglar para que la facturación mensual salga
+    //  correctamente.
+    // ============================================================
+    window.openParentDiagnostic = async function(parentId) {
+        if (!parentId) return;
+        const _esc = (s) => (typeof escapeHtml === 'function')
+            ? escapeHtml(s)
+            : String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+        // Modal contenedor (se rellena tras cargar)
+        const old = document.getElementById('parent-diag-modal');
+        if (old) old.remove();
+        const modal = document.createElement('div');
+        modal.id = 'parent-diag-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100000; display:flex; align-items:center; justify-content:center; padding:18px;';
+        modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:22px; max-width:920px; width:100%; max-height:92vh; overflow-y:auto; color:#d4d4d4;"><div style="text-align:center; padding:60px 20px; color:#888;">Verificando configuración…</div></div>';
+        document.body.appendChild(modal);
+
+        const issues = []; // {level:'ok'|'warn'|'err', msg:''}
+        const add = (level, msg) => issues.push({ level, msg });
+        let parent = null;
+        let children = [];
+
+        try {
+            // 1. Cargar padre fresco desde Firestore
+            const parentDoc = await db.collection('users').doc(parentId).get();
+            if (!parentDoc.exists) {
+                modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #f44; border-radius:12px; padding:22px; max-width:600px; color:#FF3B30;">❌ Cliente padre no encontrado en Firestore.</div>';
+                return;
+            }
+            parent = { id: parentDoc.id, ...parentDoc.data() };
+
+            // 2. Cargar sucursales (los que apuntan al padre por docId o idNum)
+            const childByDoc = await db.collection('users').where('parentClientId', '==', parentDoc.id).get();
+            childByDoc.forEach(d => children.push({ id: d.id, ...d.data() }));
+            if (parent.idNum) {
+                const childByIdNum = await db.collection('users').where('parentClientId', '==', String(parent.idNum)).get();
+                childByIdNum.forEach(d => {
+                    if (!children.find(c => c.id === d.id)) children.push({ id: d.id, ...d.data() });
+                });
+            }
+
+            // 3. Cargar comp_main del padre (prefijo + startNum)
+            let parentComp = {};
+            try {
+                const cm = await db.collection('users').doc(parentDoc.id).collection('companies').doc('comp_main').get();
+                if (cm.exists) parentComp = cm.data();
+            } catch(_) {}
+
+            // ─── CHECKS DEL PADRE ────────────────────────────────────
+            if (parent.parentClientId) add('err', 'El padre tiene parentClientId — debería ser independiente. Quítalo desde su ficha.');
+            else add('ok', 'Es cliente padre/independiente (sin parentClientId).');
+
+            if (parent.nif) add('ok', 'Tiene NIF: <code>' + _esc(parent.nif) + '</code>.');
+            else add('warn', 'No tiene NIF — sus sucursales no podrán heredarlo y las facturas saldrán sin NIF.');
+
+            if (parent.isFlatRate) {
+                const amt = Number(parent.flatRateAmount) || 0;
+                if (amt > 0) add('ok', 'Tarifa plana mensual ACTIVA: <code>' + amt.toFixed(2).replace('.', ',') + ' €/mes</code>. Formato 1 emitirá esta cuota una vez al mes.');
+                else add('warn', 'isFlatRate=Sí pero flatRateAmount=0. La factura del Formato 1 saldrá a 0 €. Edita el importe en pestaña Económico.');
+            } else {
+                add('warn', 'isFlatRate=No. La facturación será por consumo real (Formato 2) — no se emitirá cuota plana. Si tenías acuerdo de cuota plana, márcalo en pestaña Económico.');
+            }
+
+            if (parent.tariffId) add('ok', 'Tarifa asignada: <code>' + _esc(parent.tariffId) + '</code>.');
+            else add('warn', 'Sin tariffId. Sus extras (paletizados, etc.) y los albaranes reales de sucursales no tendrán tarifa de referencia. Asigna una en pestaña Principal.');
+
+            if (parentComp.prefix && parentComp.startNum) add('ok', 'Prefijo de albarán del padre: <code>' + _esc(parentComp.prefix) + '-' + parentComp.startNum + '</code>.');
+            else add('warn', 'Falta prefijo o nº inicial de albarán en comp_main del padre.');
+
+            if (parent.accessActive === false) add('warn', 'Acceso online DESACTIVADO en el padre. No podrá entrar a su app.');
+            else add('ok', 'Acceso online activo en el padre.');
+
+            // ─── CHECKS POR SUCURSAL ─────────────────────────────────
+            const childReports = [];
+            for (const c of children) {
+                const r = { id: c.id, idNum: c.idNum, name: c.name, ok: [], warn: [], err: [] };
+
+                if (String(c.parentClientId) === String(parent.id) || String(c.parentClientId) === String(parent.idNum)) {
+                    r.ok.push('parentClientId apunta al padre correctamente.');
+                } else {
+                    r.err.push('parentClientId apunta a "' + _esc(c.parentClientId) + '" — NO al padre.');
+                }
+
+                if (c.nif && parent.nif && c.nif === parent.nif) r.ok.push('NIF heredado del padre.');
+                else if (!c.nif) r.warn.push('Sin NIF — sus facturas independientes (Formato 2) saldrán sin NIF.');
+                else if (parent.nif && c.nif !== parent.nif) r.warn.push('NIF distinto al del padre — confirma que sea intencional.');
+
+                if (c.isFlatRate) r.err.push('isFlatRate=Sí en la sucursal. ❌ Duplicará la cuota plana del padre. Pon isFlatRate=No.');
+                else r.ok.push('isFlatRate=No (no duplica cuota plana).');
+
+                if (Number(c.flatRateAmount) > 0) r.warn.push('flatRateAmount > 0 (' + c.flatRateAmount + ' €). Ponlo a 0 para que no salga cuota en su factura.');
+
+                if (c.tariffId) r.ok.push('Tarifa: <code>' + _esc(c.tariffId) + '</code>' + (c.tariffId === parent.tariffId ? ' (misma que el padre)' : ' (distinta a la del padre)') + '.');
+                else r.warn.push('Sin tariffId — no podrá facturar extras si los tiene.');
+
+                // comp_main de la sucursal
+                let scComp = {};
+                try {
+                    const sc = await db.collection('users').doc(c.id).collection('companies').doc('comp_main').get();
+                    if (sc.exists) scComp = sc.data();
+                } catch(_) {}
+                if (scComp.prefix && scComp.startNum) {
+                    if (parentComp.prefix && scComp.prefix === parentComp.prefix) {
+                        r.err.push('Prefijo de albarán <code>' + _esc(scComp.prefix) + '</code> IGUAL al del padre → colisionarán IDs. Cambia el prefijo de la sucursal (típicamente padre+letra).');
+                    } else {
+                        r.ok.push('Prefijo único: <code>' + _esc(scComp.prefix) + '-' + scComp.startNum + '</code>.');
+                    }
+                } else {
+                    r.warn.push('Falta prefijo o nº inicial de albarán en comp_main.');
+                }
+
+                if (c.accessActive === false) r.warn.push('Acceso online DESACTIVADO.');
+                else if (c.authUid) r.ok.push('Acceso online activo (login: <code>' + _esc(c.loginEmail || c.email || '?') + '</code>).');
+                else r.warn.push('Sin authUid — la sucursal no tiene cuenta de login todavía. Actívala con 🔓 en el listado.');
+
+                childReports.push(r);
+            }
+
+            // ─── PREDICCIÓN DE FACTURACIÓN ───────────────────────────
+            const flat = Number(parent.flatRateAmount) || 0;
+            let predict = '';
+            if (parent.isFlatRate && flat > 0) {
+                predict += '<p><strong>📊 Formato 1 (consolidado tarifa plana):</strong> emite UNA factura al padre <strong>' + _esc(parent.name || '') + '</strong> por <code>' + flat.toFixed(2).replace('.', ',') + ' €</code>. Las sucursales aparecen como desglose informativo de volumen (sin precio).</p>';
+                predict += '<p><strong>📊 Formato 2 (factura por sucursal):</strong> emite UNA factura por cada sucursal con sus albaranes a precio real (según tariffId) + UNA factura al padre por la cuota plana <code>' + flat.toFixed(2).replace('.', ',') + ' €</code>. Total: <strong>' + (children.length + 1) + '</strong> facturas.</p>';
+            } else {
+                predict += '<p><strong>📊 Formato 1 NO aplicable</strong> (el padre no tiene cuota plana). Sólo Formato 2.</p>';
+                predict += '<p><strong>📊 Formato 2:</strong> emite UNA factura por cada sucursal con sus albaranes a precio real. Total: <strong>' + children.length + '</strong> facturas + 1 al padre si tiene movimientos propios.</p>';
+            }
+            const errs = issues.filter(i => i.level === 'err').length + childReports.reduce((a,r) => a + r.err.length, 0);
+            const warns = issues.filter(i => i.level === 'warn').length + childReports.reduce((a,r) => a + r.warn.length, 0);
+
+            // ─── RENDER REPORT ───────────────────────────────────────
+            const chip = (level) => level === 'ok'
+                ? '<span style="background:rgba(76,175,80,0.18); color:#4CAF50; padding:2px 7px; border-radius:8px; font-size:0.7rem; font-weight:700; margin-right:6px;">✓ OK</span>'
+                : level === 'warn'
+                    ? '<span style="background:rgba(255,193,7,0.18); color:#FFC107; padding:2px 7px; border-radius:8px; font-size:0.7rem; font-weight:700; margin-right:6px;">⚠ AVISO</span>'
+                    : '<span style="background:rgba(255,59,48,0.18); color:#FF3B30; padding:2px 7px; border-radius:8px; font-size:0.7rem; font-weight:700; margin-right:6px;">✗ ERROR</span>';
+
+            let html = '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:22px; max-width:920px; width:100%; max-height:92vh; overflow-y:auto; color:#d4d4d4;">'
+                + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
+                + '  <div><h2 style="margin:0; color:' + (errs ? '#FF3B30' : (warns ? '#FFC107' : '#4CAF50')) + ';">🩺 Diagnóstico: ' + _esc(parent.name || parent.idNum || '?') + '</h2>'
+                + '  <div style="font-size:0.78rem; color:#aaa; margin-top:3px;">' + children.length + ' sucursales · ' + errs + ' error' + (errs === 1 ? '' : 'es') + ' · ' + warns + ' aviso' + (warns === 1 ? '' : 's') + '</div></div>'
+                + '  <button id="pd-close" style="background:#333; border:1px solid #555; color:#fff; padding:7px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
+                + '</div>';
+
+            html += '<div style="background:#0a0a0a; border:1px solid #2d2d30; border-radius:8px; padding:12px; margin-bottom:14px;">'
+                + '<h3 style="margin:0 0 8px; color:#FF6600; font-size:0.9rem;">CLIENTE PADRE</h3>';
+            issues.forEach(i => {
+                html += '<div style="padding:5px 0; font-size:0.82rem;">' + chip(i.level) + i.msg + '</div>';
+            });
+            html += '</div>';
+
+            html += '<div style="background:#0a0a0a; border:1px solid #2d2d30; border-radius:8px; padding:12px; margin-bottom:14px;">'
+                + '<h3 style="margin:0 0 8px; color:#5DADE2; font-size:0.9rem;">SUCURSALES (' + children.length + ')</h3>';
+            if (!children.length) {
+                html += '<div style="color:#888; font-style:italic; font-size:0.82rem;">Este padre no tiene sucursales vinculadas.</div>';
+            } else {
+                childReports.forEach(r => {
+                    html += '<div style="border:1px solid #2d2d30; border-radius:6px; padding:9px 12px; margin-bottom:8px;">'
+                        + '<div style="font-weight:700; color:#fff; margin-bottom:5px;">#' + _esc(r.idNum || '?') + ' · ' + _esc(r.name || r.id) + '</div>';
+                    r.err.forEach(m => html += '<div style="font-size:0.78rem; padding:2px 0;">' + chip('err') + m + '</div>');
+                    r.warn.forEach(m => html += '<div style="font-size:0.78rem; padding:2px 0;">' + chip('warn') + m + '</div>');
+                    r.ok.forEach(m => html += '<div style="font-size:0.78rem; padding:2px 0;">' + chip('ok') + m + '</div>');
+                    html += '</div>';
+                });
+            }
+            html += '</div>';
+
+            html += '<div style="background:rgba(255,102,0,0.05); border:1px solid rgba(255,102,0,0.25); border-radius:8px; padding:12px; margin-bottom:14px;">'
+                + '<h3 style="margin:0 0 8px; color:#FF8A50; font-size:0.9rem;">PREDICCIÓN DE FACTURACIÓN MENSUAL</h3>'
+                + '<div style="font-size:0.82rem; line-height:1.5;">' + predict + '</div>'
+                + '</div>';
+
+            const verdict = errs
+                ? '<div style="background:rgba(255,59,48,0.08); border:2px solid #FF3B30; border-radius:8px; padding:14px; color:#FF3B30; font-weight:700; text-align:center;">❌ HAY ' + errs + ' ERROR' + (errs === 1 ? '' : 'ES') + ' QUE DEBES CORREGIR ANTES DE FACTURAR.</div>'
+                : warns
+                    ? '<div style="background:rgba(255,193,7,0.08); border:2px solid #FFC107; border-radius:8px; padding:14px; color:#FFC107; font-weight:700; text-align:center;">⚠ ' + warns + ' AVISO' + (warns === 1 ? '' : 'S') + ' — la facturación funcionará pero conviene revisarlos.</div>'
+                    : '<div style="background:rgba(76,175,80,0.08); border:2px solid #4CAF50; border-radius:8px; padding:14px; color:#4CAF50; font-weight:700; text-align:center;">✅ TODO CORRECTO. La facturación se emitirá según lo previsto arriba.</div>';
+            html += verdict;
+            html += '</div>';
+
+            modal.innerHTML = html;
+            document.getElementById('pd-close').onclick = () => modal.remove();
+        } catch(e) {
+            console.error('[Diagnóstico]', e);
+            modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #f44; border-radius:12px; padding:22px; max-width:600px; color:#FF3B30;">❌ Error en diagnóstico: ' + _esc(e.message) + '<br><br><button onclick="document.getElementById(&quot;parent-diag-modal&quot;).remove()" style="background:#333; border:1px solid #555; color:#fff; padding:7px 16px; border-radius:6px; cursor:pointer; margin-top:10px;">Cerrar</button></div>';
+        }
     };
 
     async function _fichaWireAccessSection() {
