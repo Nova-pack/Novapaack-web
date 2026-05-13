@@ -1292,46 +1292,61 @@
                    || null;
             if (!c) { alert('Cliente no encontrado en cache. Recarga la lista.'); return; }
 
-            // ─── RESOLVER EMAIL DE DESTINO REAL ────────────────────
-            // El loginEmail sintético (c106_xxx@novapack.com) NUNCA puede
-            // ser el destinatario — es solo identificador interno de Auth.
-            // Orden de preferencia: email del cliente → email del padre
-            // (sucursal) → adminEmail. Si nada → cortar y pedir al admin
-            // que rellene la ficha.
+            // ─── RESOLVER EMAIL DE DESTINO ─────────────────────────
+            // PRIORIDAD (decisión del user 2026-05-13):
+            //   1. adminEmail del propio cliente — el correo de administración
+            //      es donde la empresa quiere recibir comunicaciones oficiales.
+            //   2. email principal del cliente (si NO es sintético).
+            //   3. adminEmail del padre (si es sucursal sin email propio).
+            //   4. email principal del padre (si es sucursal sin email propio).
+            // Nunca usar loginEmail (sintético c{id}_{slug}_{rand}@novapack.com).
             const isSynthetic = (e) => !!e && /^c[0-9a-z]+_[a-z0-9_]+_[a-z0-9]+@novapack\.com$/i.test(e);
+            const cleanReal = (e) => {
+                const t = (e || '').trim();
+                return (t && !isSynthetic(t)) ? t : '';
+            };
 
-            let realEmail = (c.email || '').trim();
-            if (isSynthetic(realEmail)) realEmail = ''; // por si alguna ficha lo tiene mal
+            let realEmail = '';
+            let fuente = '';
 
-            let heredadoDe = null;
+            // 1) Admin email del propio cliente (PREFERIDO)
+            realEmail = cleanReal(c.adminEmail);
+            if (realEmail) fuente = 'email de administración del cliente';
+
+            // 2) Email principal del propio cliente
+            if (!realEmail) {
+                realEmail = cleanReal(c.email);
+                if (realEmail) fuente = 'email principal del cliente';
+            }
+
+            // 3) y 4) Si es sucursal sin email propio, mirar al padre
             if (!realEmail && c.parentClientId) {
                 const parent = (window.userMap && window.userMap[c.parentClientId])
                              || (window._advClientsCache && window._advClientsCache.find(x => x.id === c.parentClientId));
-                if (parent && parent.email && !isSynthetic(parent.email)) {
-                    realEmail = parent.email.trim();
-                    heredadoDe = parent.name || ('cliente padre #' + (parent.idNum || ''));
+                if (parent) {
+                    realEmail = cleanReal(parent.adminEmail);
+                    if (realEmail) fuente = 'email de administración del cliente padre (' + (parent.name || '#' + (parent.idNum||'')) + ')';
+                    if (!realEmail) {
+                        realEmail = cleanReal(parent.email);
+                        if (realEmail) fuente = 'email principal del cliente padre (' + (parent.name || '#' + (parent.idNum||'')) + ')';
+                    }
                 }
-            }
-            if (!realEmail && c.adminEmail && !isSynthetic(c.adminEmail)) {
-                realEmail = c.adminEmail.trim();
-                heredadoDe = 'email de administración';
             }
 
             if (!realEmail) {
                 alert('⚠️ No hay email real en la ficha del cliente.\n\n' +
-                      'El "Email login" es interno de NOVAPACK y NO se puede usar como destinatario.\n\n' +
-                      'Edita la ficha y rellena el campo "Email (Login)" con el email real del cliente, ' +
-                      'o si es una sucursal asegúrate de que el cliente padre tenga email.');
+                      'Necesitas rellenar al menos UNO de estos campos en la ficha:\n' +
+                      '  • Email Administración\n' +
+                      '  • Email principal\n\n' +
+                      'El "Login" sintético es interno y NO sirve como destinatario.');
                 return;
             }
 
-            // Confirmación si se heredó de otro sitio (transparencia)
-            if (heredadoDe) {
-                if (!confirm('La bienvenida se va a enviar a:\n\n  ' + realEmail + '\n  (' + heredadoDe + ')\n\n¿Continuar?')) return;
-            }
+            // Confirmación SIEMPRE — para que el admin vea a qué buzón va.
+            if (!confirm('La bienvenida se va a enviar a:\n\n  ' + realEmail + '\n  (' + fuente + ')\n\n¿Continuar?')) return;
 
             window.composeWelcomeEmail({
-                email: realEmail,
+                email: realEmail,            // ahora ya es el ganador de la cascada
                 adminEmail: c.adminEmail || '',
                 loginEmail: c.loginEmail || '',  // usado solo como "Usuario:" en el cuerpo, NO como destinatario
                 name: c.name || '',
@@ -1649,27 +1664,24 @@
         // it's never stored in plaintext).
         window.composeWelcomeEmail = async function composeWelcomeEmail(opts) {
             opts = opts || {};
-            // Email DESTINO: cadena de fallback opts.email → opts.adminEmail.
-            // IMPORTANTE: NUNCA usar loginEmail como destinatario — los login
-            // sintéticos tipo c106_xxx@novapack.com no son buzones reales,
-            // son identificadores de Firebase Auth. Si todo lo demás falla,
-            // cortamos y forzamos al admin a rellenar la ficha.
+            // Email DESTINO — PRIORIDAD (decisión user 2026-05-13):
+            //   1. opts.adminEmail (email de administración — PREFERIDO)
+            //   2. opts.email (email principal — fallback)
+            // IMPORTANTE: NUNCA usar loginEmail (sintético) como destinatario.
             const _isSynth = (e) => !!e && /^c[0-9a-z]+_[a-z0-9_]+_[a-z0-9]+@novapack\.com$/i.test(e);
-            var to = (opts.email || '').trim();
-            if (_isSynth(to)) to = ''; // por si nos llegó por error
-            var fellBack = false;
-            if (!to && opts.adminEmail && !_isSynth(opts.adminEmail)) {
-                to = opts.adminEmail.trim();
-                fellBack = 'adminEmail';
-            }
+            const _cleanReal = (e) => {
+                const t = (e || '').trim();
+                return (t && !_isSynth(t)) ? t : '';
+            };
+            var to = _cleanReal(opts.adminEmail) || _cleanReal(opts.email);
             if (!to) {
                 alert('⚠️ No se puede enviar la bienvenida.\n\n' +
-                      'Este cliente no tiene un email REAL en la ficha (solo tiene el login sintético interno).\n\n' +
-                      'Edita la ficha → Email (Login) → pon el email auténtico del cliente y vuelve a intentarlo.');
+                      'Este cliente no tiene un email REAL en la ficha.\n\n' +
+                      'Edita la ficha y rellena al menos uno:\n' +
+                      '  • Email Administración (preferido)\n' +
+                      '  • Email principal\n\n' +
+                      'El "Login" sintético interno NO sirve como destinatario.');
                 return;
-            }
-            if (fellBack === 'adminEmail') {
-                if (!confirm('El cliente NO tiene email principal — usaremos el de Administración:\n\n  ' + to + '\n\n¿Continuar?')) return;
             }
             var loginCredential = (opts.loginEmail || opts.email || '').trim();
             var pwd = (opts.password || '').trim();
