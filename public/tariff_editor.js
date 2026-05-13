@@ -1,0 +1,510 @@
+/**
+ * NOVAPACK CLOUD — Editor de Tarifas v2  (Fase 2 + 3)
+ *
+ * UI completa de tarifas v2 con artículos estructurados (modo + reglas)
+ * y overrides por cliente. Integra con el motor pricingEngine.
+ *
+ * Estructura Firestore que usa este editor:
+ *   tariffs/{tariffId}                          ← tarifas v2 globales
+ *      { id, name, version: 2, items: [...] }
+ *
+ *   users/{uid}.tariffId                        ← tarifa base asignada
+ *   users/{uid}.tariffOverrides                 ← overrides por item
+ *
+ * Entry points:
+ *   openTariffManager(clientId)         ← gestor completo del cliente
+ *   openTariffBuilder(tariffId, mode)   ← editar la tarifa global asignada
+ *   openItemEditor(item, onSave)        ← formulario de un artículo
+ */
+(function() {
+    'use strict';
+
+    if (typeof db === 'undefined' || typeof pricingEngine === 'undefined') return;
+
+    function _esc(s) {
+        return (typeof escapeHtml === 'function') ? escapeHtml(s)
+            : String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+    function _money(n) { return (Number(n) || 0).toFixed(2).replace('.', ',') + ' €'; }
+
+    const MODE_LABELS = {
+        'per_package': 'Por bulto (qty × precio)',
+        'per_kg': 'Por kilo (kg × precio)',
+        'per_expedition': 'Por expedición (1 cobro por línea)',
+        'per_expedition_unit': 'Por expedición × bulto (qty × precio)',
+        'flat_monthly': 'Cuota mensual fija (no factura albarán)'
+    };
+
+    // ============ FIRESTORE IO ============
+
+    async function _loadTariff(tariffId) {
+        const id = tariffId.startsWith('GLOBAL_') || tariffId.includes('CUSTOM_') ? tariffId : 'GLOBAL_' + tariffId;
+        const candidates = [id, tariffId, 'GLOBAL_' + tariffId];
+        for (const c of candidates) {
+            try {
+                const d = await db.collection('tariffs').doc(c).get();
+                if (d.exists) return { id: c, ...d.data() };
+            } catch(e) {}
+        }
+        return null;
+    }
+
+    async function _listV2Tariffs() {
+        const out = [];
+        try {
+            const snap = await db.collection('tariffs').get();
+            snap.forEach(doc => {
+                const d = doc.data();
+                if (d.version === 2) out.push({ id: doc.id, ...d });
+            });
+        } catch(e) { console.warn('list tarifas v2:', e); }
+        return out;
+    }
+
+    async function _saveTariff(tariff) {
+        const id = tariff.id || ('GLOBAL_' + (tariff.name || 'sin_nombre').toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 30) + '_v2');
+        const payload = {
+            ...tariff,
+            id: id,
+            version: 2,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
+        };
+        delete payload.id; // no guardar id como field
+        await db.collection('tariffs').doc(id).set(payload, { merge: true });
+        return id;
+    }
+
+    async function _saveClientOverrides(clientId, tariffId, overrides) {
+        const upd = {
+            tariffId: tariffId,
+            tariffOverrides: overrides || {},
+            tariffUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await db.collection('users').doc(clientId).update(upd);
+        if (window.userMap && window.userMap[clientId]) {
+            window.userMap[clientId].tariffId = tariffId;
+            window.userMap[clientId].tariffOverrides = overrides;
+        }
+    }
+
+    // ============ ITEM EDITOR (modal por artículo) ============
+
+    function openItemEditor(item, onSave) {
+        const isNew = !item || !item.id;
+        const it = item ? { ...item } : {
+            id: 'item_' + Date.now().toString(36),
+            name: '',
+            mode: 'per_package',
+            basePrice: 0,
+            unit: '',
+            pricingRule: null
+        };
+
+        const old = document.getElementById('item-editor-modal');
+        if (old) old.remove();
+        const modal = document.createElement('div');
+        modal.id = 'item-editor-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100002; display:flex; align-items:center; justify-content:center; padding:20px;';
+
+        function modeOptions(selected) {
+            return Object.keys(MODE_LABELS).map(k =>
+                '<option value="' + k + '"' + (k === selected ? ' selected' : '') + '>' + MODE_LABELS[k] + '</option>'
+            ).join('');
+        }
+        function ruleEditorHTML(rule) {
+            rule = rule || { type: '' };
+            return ''
+                + '<select id="ie-rule-type" style="width:100%; padding:7px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:4px;">'
+                + '  <option value="">— Sin regla especial —</option>'
+                + '  <option value="bulk_discount"' + (rule.type === 'bulk_discount' ? ' selected' : '') + '>Descuento por volumen (cada N → factura M)</option>'
+                + '  <option value="tiered"' + (rule.type === 'tiered' ? ' selected' : '') + '>Precio por tramos</option>'
+                + '  <option value="min_charge"' + (rule.type === 'min_charge' ? ' selected' : '') + '>Mínimo facturable</option>'
+                + '  <option value="surcharge_over"' + (rule.type === 'surcharge_over' ? ' selected' : '') + '>Recargo sobre umbral</option>'
+                + '</select>'
+                + '<div id="ie-rule-fields" style="margin-top:8px;"></div>';
+        }
+        function renderRuleFields(type, current) {
+            current = current || {};
+            const c = document.getElementById('ie-rule-fields');
+            if (!c) return;
+            if (type === 'bulk_discount') {
+                c.innerHTML = ''
+                    + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">'
+                    + '  <label>Cada N qty<input type="number" id="ie-r-every" value="' + (current.every || 4) + '" min="2" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"></label>'
+                    + '  <label>Factura solo M<input type="number" id="ie-r-charge" value="' + (current.charge != null ? current.charge : 3) + '" min="1" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"></label>'
+                    + '</div>'
+                    + '<p style="font-size:0.7rem; color:#888; margin:6px 0 0;">Ej: every=4, charge=3 → "4 baterías por el precio de 3"</p>';
+            } else if (type === 'tiered') {
+                const tiers = current.tiers || [{minQty:1, price:0}];
+                c.innerHTML = '<div id="ie-tiers"></div>'
+                    + '<button type="button" id="ie-add-tier" style="margin-top:6px; background:#5DADE2; border:0; color:#000; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:0.75rem;">+ Tramo</button>';
+                const tEl = document.getElementById('ie-tiers');
+                tiers.forEach((t, idx) => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:grid; grid-template-columns:1fr 1fr auto; gap:6px; margin-bottom:4px; align-items:center;';
+                    row.innerHTML = ''
+                        + '<input type="number" placeholder="qty mín" data-tier-min value="' + (t.minQty || 0) + '" min="1" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;">'
+                        + '<input type="number" placeholder="precio" data-tier-price value="' + (t.price || 0) + '" step="0.01" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;">'
+                        + '<button type="button" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;">−</button>';
+                    row.querySelector('button').onclick = () => row.remove();
+                    tEl.appendChild(row);
+                });
+                document.getElementById('ie-add-tier').onclick = () => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:grid; grid-template-columns:1fr 1fr auto; gap:6px; margin-bottom:4px; align-items:center;';
+                    row.innerHTML = '<input type="number" placeholder="qty mín" data-tier-min min="1" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"><input type="number" placeholder="precio" data-tier-price step="0.01" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"><button type="button" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;">−</button>';
+                    row.querySelector('button').onclick = () => row.remove();
+                    tEl.appendChild(row);
+                };
+            } else if (type === 'min_charge') {
+                c.innerHTML = '<label>Importe mínimo €<input type="number" id="ie-r-min" value="' + (current.amount || 0) + '" step="0.01" min="0" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"></label>'
+                    + '<p style="font-size:0.7rem; color:#888; margin:6px 0 0;">Si la línea sale por debajo, se sube a ese importe.</p>';
+            } else if (type === 'surcharge_over') {
+                c.innerHTML = ''
+                    + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">'
+                    + '  <label>Sobre qty/kg<input type="number" id="ie-r-thr" value="' + (current.threshold || 0) + '" step="0.01" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"></label>'
+                    + '  <label>Base <select id="ie-r-basis" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"><option value="qty"' + (current.basis === 'qty' ? ' selected' : '') + '>qty</option><option value="kg"' + (current.basis === 'kg' ? ' selected' : '') + '>kg</option></select></label>'
+                    + '  <label>Tipo <select id="ie-r-kind" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"><option value="flat"' + (current.kind === 'flat' ? ' selected' : '') + '>+ € fijo</option><option value="per_unit"' + (current.kind === 'per_unit' ? ' selected' : '') + '>+ € por unidad excedida</option></select></label>'
+                    + '  <label>Importe €<input type="number" id="ie-r-amount" value="' + (current.amount || 0) + '" step="0.01" min="0" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px;"></label>'
+                    + '</div>';
+            } else {
+                c.innerHTML = '';
+            }
+        }
+        function readRule() {
+            const type = document.getElementById('ie-rule-type').value;
+            if (!type) return null;
+            if (type === 'bulk_discount') {
+                return { type, every: parseInt(document.getElementById('ie-r-every').value, 10) || 4,
+                         charge: parseInt(document.getElementById('ie-r-charge').value, 10) || 3 };
+            }
+            if (type === 'tiered') {
+                const tiers = [];
+                document.querySelectorAll('#ie-tiers > div').forEach(row => {
+                    const minQty = parseInt(row.querySelector('[data-tier-min]').value, 10);
+                    const price = parseFloat(row.querySelector('[data-tier-price]').value);
+                    if (!isNaN(minQty) && !isNaN(price)) tiers.push({ minQty, price });
+                });
+                tiers.sort((a, b) => a.minQty - b.minQty);
+                return { type, tiers };
+            }
+            if (type === 'min_charge') {
+                return { type, amount: parseFloat(document.getElementById('ie-r-min').value) || 0 };
+            }
+            if (type === 'surcharge_over') {
+                return {
+                    type,
+                    threshold: parseFloat(document.getElementById('ie-r-thr').value) || 0,
+                    basis: document.getElementById('ie-r-basis').value,
+                    kind: document.getElementById('ie-r-kind').value,
+                    amount: parseFloat(document.getElementById('ie-r-amount').value) || 0
+                };
+            }
+            return null;
+        }
+
+        modal.innerHTML = ''
+            + '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:24px; max-width:600px; width:100%; color:#d4d4d4; max-height:90vh; overflow-y:auto;">'
+            + '<h3 style="margin:0 0 16px; color:#FF6600;">' + (isNew ? '+ Nuevo artículo' : '✏️ Editar artículo') + '</h3>'
+            + '<div style="display:grid; gap:10px;">'
+            + '  <label>ID <small style="color:#666;">(identificador estable, no se debe cambiar después)</small><input type="text" id="ie-id" value="' + _esc(it.id) + '" ' + (isNew ? '' : 'readonly') + ' style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:' + (isNew ? '#fff' : '#888') + '; border-radius:5px; font-family:monospace;"></label>'
+            + '  <label>Nombre visible<input type="text" id="ie-name" value="' + _esc(it.name) + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
+            + '  <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:8px;">'
+            + '    <label>Modo<select id="ie-mode" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;">' + modeOptions(it.mode) + '</select></label>'
+            + '    <label>Precio base €<input type="number" id="ie-price" value="' + (it.basePrice || 0) + '" step="0.01" min="0" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
+            + '    <label>Unidad<input type="text" id="ie-unit" value="' + _esc(it.unit || '') + '" placeholder="paquete, kg…" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
+            + '  </div>'
+            + '  <div style="background:rgba(255,102,0,0.04); border:1px solid rgba(255,102,0,0.2); border-radius:6px; padding:10px;">'
+            + '    <label style="font-weight:600; color:#FF8A50; display:block; margin-bottom:6px;">Regla especial (opcional)</label>'
+            + ruleEditorHTML(it.pricingRule)
+            + '  </div>'
+            + '</div>'
+            + '<div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">'
+            + '  <button type="button" id="ie-cancel" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:5px; cursor:pointer;">Cancelar</button>'
+            + '  <button type="button" id="ie-save" style="background:#FF6600; border:0; color:#fff; padding:8px 22px; border-radius:5px; font-weight:700; cursor:pointer;">Guardar</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        renderRuleFields(it.pricingRule ? it.pricingRule.type : '', it.pricingRule || {});
+        document.getElementById('ie-rule-type').addEventListener('change', function() {
+            renderRuleFields(this.value, {});
+        });
+        document.getElementById('ie-cancel').onclick = () => modal.remove();
+        document.getElementById('ie-save').onclick = () => {
+            const itemOut = {
+                id: document.getElementById('ie-id').value.trim() || it.id,
+                name: document.getElementById('ie-name').value.trim(),
+                mode: document.getElementById('ie-mode').value,
+                basePrice: parseFloat(document.getElementById('ie-price').value) || 0,
+                unit: document.getElementById('ie-unit').value.trim(),
+                pricingRule: readRule()
+            };
+            if (!itemOut.name) { alert('Pon un nombre al artículo.'); return; }
+            modal.remove();
+            if (typeof onSave === 'function') onSave(itemOut);
+        };
+    }
+
+    // ============ TARIFA EDITOR (constructor de tarifa global) ============
+
+    window.openTariffBuilder = async function openTariffBuilder(tariffId) {
+        let tariff;
+        if (tariffId) {
+            tariff = await _loadTariff(tariffId);
+            if (tariff && tariff.version !== 2) tariff = null;
+        }
+        if (!tariff) {
+            const name = prompt('Nombre de la nueva tarifa:');
+            if (!name) return;
+            tariff = { name: name.trim(), version: 2, items: [] };
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'tariff-builder-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100001; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+        modal.innerHTML = ''
+            + '<div style="max-width:980px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:24px; color:#d4d4d4;">'
+            + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
+            + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Constructor de tarifa</h2><div id="tb-name" style="font-size:0.85rem; color:#aaa; margin-top:3px;"></div></div>'
+            + '  <div style="display:flex; gap:8px;"><button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button><button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
+            + '</div>'
+            + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;"><thead><tr style="border-bottom:1px solid #444;"><th style="text-align:left; padding:8px;">Artículo</th><th>Modo</th><th>Precio</th><th>Regla</th><th></th></tr></thead><tbody id="tb-rows"></tbody></table>'
+            + '<button id="tb-add" style="margin-top:14px; background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo</button>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        function renderRows() {
+            const tb = document.getElementById('tb-rows');
+            if (!tariff.items.length) {
+                tb.innerHTML = '<tr><td colspan="5" style="padding:14px; text-align:center; color:#666;">Sin artículos. Añade el primero.</td></tr>';
+                return;
+            }
+            tb.innerHTML = tariff.items.map((it, idx) => {
+                const ruleSummary = it.pricingRule ? it.pricingRule.type.replace('_', ' ') : '—';
+                return '<tr style="border-bottom:1px solid #2d2d30;">'
+                    + '<td style="padding:8px;"><strong>' + _esc(it.name) + '</strong><br><small style="color:#666; font-family:monospace;">' + _esc(it.id) + '</small></td>'
+                    + '<td style="padding:8px; color:#aaa; font-size:0.78rem;">' + (MODE_LABELS[it.mode] || it.mode) + '</td>'
+                    + '<td style="padding:8px; font-family:monospace; color:#fff;">' + _money(it.basePrice) + (it.unit ? ' / ' + _esc(it.unit) : '') + '</td>'
+                    + '<td style="padding:8px; font-size:0.75rem; color:#FF8A50;">' + ruleSummary + '</td>'
+                    + '<td style="padding:8px; text-align:right;"><button data-edit="' + idx + '" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem; margin-right:4px;">✏️</button><button data-del="' + idx + '" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem;">🗑️</button></td>'
+                    + '</tr>';
+            }).join('');
+            tb.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+                const i = parseInt(b.getAttribute('data-edit'), 10);
+                openItemEditor(tariff.items[i], (updated) => { tariff.items[i] = updated; renderRows(); });
+            });
+            tb.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+                const i = parseInt(b.getAttribute('data-del'), 10);
+                if (confirm('¿Eliminar "' + tariff.items[i].name + '"?')) { tariff.items.splice(i, 1); renderRows(); }
+            });
+        }
+        renderRows();
+
+        document.getElementById('tb-add').onclick = () => openItemEditor(null, (it) => { tariff.items.push(it); renderRows(); });
+        document.getElementById('tb-close').onclick = () => modal.remove();
+        document.getElementById('tb-save').onclick = async () => {
+            tariff.name = document.getElementById('tb-tariff-name').value.trim();
+            if (!tariff.name) { alert('La tarifa necesita un nombre.'); return; }
+            if (!tariff.items.length) { if (!confirm('No tiene artículos. ¿Guardar de todos modos?')) return; }
+            try {
+                const id = await _saveTariff(tariff);
+                alert('✅ Tarifa guardada: ' + id);
+                modal.remove();
+            } catch(e) { alert('Error: ' + e.message); }
+        };
+    };
+
+    // ============ TARIFA MANAGER (vista cliente) ============
+
+    window.openTariffManager = async function openTariffManager(clientId) {
+        const client = (window.userMap && window.userMap[clientId])
+                    || (window._advClientsCache && window._advClientsCache.find(c => c.id === clientId))
+                    || null;
+        if (!client) { alert('Cliente no encontrado.'); return; }
+        const tariffs = await _listV2Tariffs();
+        let baseTariff = null;
+        if (client.tariffId) baseTariff = tariffs.find(t => t.id === client.tariffId) || await _loadTariff(client.tariffId);
+        const overrides = { ...(client.tariffOverrides || {}) };
+
+        const modal = document.createElement('div');
+        modal.id = 'tariff-mgr-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100000; display:flex; flex-direction:column; padding:18px; overflow-y:auto;';
+        modal.innerHTML = ''
+            + '<div style="max-width:1000px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:22px; color:#d4d4d4;">'
+            + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; gap:12px; flex-wrap:wrap;">'
+            + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Tarifa & Precios — ' + _esc(client.name || clientId) + '</h2><div style="font-size:0.8rem; color:#aaa; margin-top:3px;">Asigna una tarifa base global y personaliza precios o reglas por artículo.</div></div>'
+            + '  <div style="display:flex; gap:6px; flex-wrap:wrap;"><button id="tm-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar</button><button id="tm-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
+            + '</div>'
+
+            // Selector tarifa base
+            + '<div style="background:#0a0a0a; border:1px solid #444; border-radius:8px; padding:12px; margin-bottom:14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">'
+            + '  <label style="font-size:0.8rem; color:#aaa;">Tarifa base:</label>'
+            + '  <select id="tm-base" style="flex:1; min-width:200px; padding:7px; background:#1a1a1a; border:1px solid #444; color:#fff; border-radius:4px;">'
+            + '    <option value="">— Sin tarifa asignada —</option>'
+            + tariffs.map(t => '<option value="' + t.id + '"' + (t.id === client.tariffId ? ' selected' : '') + '>' + _esc(t.name || t.id) + ' (' + (t.items || []).length + ' artículos)</option>').join('')
+            + '  </select>'
+            + '  <button id="tm-new" style="background:#5DADE2; border:0; color:#000; padding:7px 12px; border-radius:4px; cursor:pointer; font-weight:700; font-size:0.78rem;">+ Crear nueva</button>'
+            + '  <button id="tm-edit-base" style="background:transparent; border:1px solid #FF8A50; color:#FF8A50; padding:7px 12px; border-radius:4px; cursor:pointer; font-size:0.78rem;">✏️ Editar base</button>'
+            + '</div>'
+
+            // Items table
+            + '<div id="tm-items-wrap"></div>'
+
+            // Live calc
+            + '<details style="margin-top:18px; background:rgba(76,175,80,0.04); border:1px solid rgba(76,175,80,0.25); border-radius:8px; padding:10px 14px;">'
+            + '  <summary style="cursor:pointer; font-weight:600; color:#4CAF50;">🧪 Probar cálculo con un albarán de ejemplo</summary>'
+            + '  <div style="margin-top:10px; font-size:0.78rem;">Pega un JSON con packagesList tipo <code>[{"qty":4,"size":"Batería 75AH"}]</code>:</div>'
+            + '  <textarea id="tm-test-json" rows="4" style="width:100%; margin-top:6px; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; font-family:monospace; font-size:0.75rem; border-radius:4px;">[{"qty":4,"size":"Batería 75AH","weight":25}]</textarea>'
+            + '  <button id="tm-test-run" style="margin-top:6px; background:#4CAF50; border:0; color:#000; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:700; font-size:0.75rem;">Calcular</button>'
+            + '  <pre id="tm-test-out" style="margin-top:8px; background:#0a0a0a; padding:10px; border-radius:4px; font-size:0.72rem; color:#4CAF50; max-height:200px; overflow:auto;"></pre>'
+            + '</details>'
+
+            + '</div>';
+        document.body.appendChild(modal);
+
+        function renderItems() {
+            const wrap = document.getElementById('tm-items-wrap');
+            if (!baseTariff || !baseTariff.items || !baseTariff.items.length) {
+                wrap.innerHTML = '<div style="background:rgba(255,159,10,0.06); border:1px solid rgba(255,159,10,0.25); border-radius:6px; padding:14px; color:#FF9F0A; text-align:center;">Esta tarifa base no tiene artículos. Edítala o crea una nueva.</div>';
+                return;
+            }
+            const resolved = pricingEngine.resolveTariff(baseTariff, overrides);
+            const customs = Object.keys(overrides).filter(k => !baseTariff.items.find(i => i.id === k) && overrides[k] && overrides[k].name);
+            let rows = baseTariff.items.map(it => {
+                const ov = overrides[it.id];
+                const isExcluded = ov === null;
+                const isOverridden = ov && ov !== null;
+                const merged = isExcluded ? null : (isOverridden ? { ...it, ...ov } : it);
+                const stateChip = isExcluded
+                    ? '<span style="background:rgba(255,59,48,0.15); color:#FF3B30; padding:2px 7px; border-radius:8px; font-size:0.65rem;">EXCLUIDO</span>'
+                    : isOverridden
+                        ? '<span style="background:rgba(255,179,0,0.15); color:#FFB300; padding:2px 7px; border-radius:8px; font-size:0.65rem;">PERSONALIZADO</span>'
+                        : '<span style="background:rgba(120,120,120,0.15); color:#aaa; padding:2px 7px; border-radius:8px; font-size:0.65rem;">HEREDADO</span>';
+                return '<tr data-item-id="' + _esc(it.id) + '" style="border-bottom:1px solid #2d2d30;' + (isExcluded ? ' opacity:0.5;' : '') + '">'
+                    + '<td style="padding:8px; vertical-align:top;"><input type="checkbox" data-toggle ' + (isExcluded ? '' : 'checked') + ' style="scale:1.3;"></td>'
+                    + '<td style="padding:8px;"><strong>' + _esc(merged ? merged.name : it.name) + '</strong> ' + stateChip + '<br><small style="color:#666; font-family:monospace;">' + _esc(it.id) + '</small></td>'
+                    + '<td style="padding:8px; font-size:0.78rem; color:#aaa;">' + (MODE_LABELS[(merged && merged.mode) || it.mode] || '') + '</td>'
+                    + '<td style="padding:8px;">'
+                    + '  <input type="number" data-price step="0.01" min="0" value="' + ((merged ? merged.basePrice : it.basePrice) || 0) + '" style="width:90px; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-family:monospace; ' + (isExcluded ? 'pointer-events:none;' : '') + '">'
+                    + '</td>'
+                    + '<td style="padding:8px; font-size:0.72rem; color:#FF8A50;">' + ((merged && merged.pricingRule) ? merged.pricingRule.type : (it.pricingRule ? it.pricingRule.type : '—')) + '</td>'
+                    + '<td style="padding:8px; text-align:right;">'
+                    + '  <button data-edit-rule style="background:transparent; border:1px solid #FF8A50; color:#FF8A50; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem;">Regla</button>'
+                    + '  <button data-reset style="background:transparent; border:1px solid #888; color:#888; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; margin-left:3px;" title="Volver al precio base">↺</button>'
+                    + '</td>'
+                    + '</tr>';
+            }).join('');
+            // Custom items del cliente
+            customs.forEach(k => {
+                const it = overrides[k];
+                rows += '<tr data-item-id="' + _esc(k) + '" data-custom="1" style="border-bottom:1px solid #2d2d30; background:rgba(93,173,226,0.04);">'
+                    + '<td style="padding:8px;"><input type="checkbox" checked disabled style="scale:1.3;"></td>'
+                    + '<td style="padding:8px;"><strong>' + _esc(it.name) + '</strong> <span style="background:rgba(93,173,226,0.20); color:#5DADE2; padding:2px 7px; border-radius:8px; font-size:0.65rem;">CUSTOM CLIENTE</span><br><small style="color:#666; font-family:monospace;">' + _esc(k) + '</small></td>'
+                    + '<td style="padding:8px; font-size:0.78rem; color:#aaa;">' + (MODE_LABELS[it.mode] || it.mode) + '</td>'
+                    + '<td style="padding:8px;"><input type="number" data-price step="0.01" min="0" value="' + (it.basePrice || 0) + '" style="width:90px; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-family:monospace;"></td>'
+                    + '<td style="padding:8px; font-size:0.72rem; color:#FF8A50;">' + (it.pricingRule ? it.pricingRule.type : '—') + '</td>'
+                    + '<td style="padding:8px; text-align:right;"><button data-edit-rule style="background:transparent; border:1px solid #FF8A50; color:#FF8A50; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem;">Regla</button><button data-del-custom style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; margin-left:3px;">🗑️</button></td>'
+                    + '</tr>';
+            });
+            wrap.innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;"><thead><tr style="border-bottom:1px solid #444;"><th style="padding:8px; text-align:left; width:50px;">Activo</th><th style="text-align:left;">Artículo</th><th style="text-align:left;">Modo</th><th style="text-align:left; width:110px;">Precio (cliente)</th><th style="text-align:left;">Regla</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
+                + '<button id="tm-add-custom" style="margin-top:12px; background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo SOLO para este cliente</button>';
+
+            // Wire events
+            wrap.querySelectorAll('tr[data-item-id]').forEach(row => {
+                const id = row.getAttribute('data-item-id');
+                const isCustom = row.getAttribute('data-custom') === '1';
+                row.querySelectorAll('[data-toggle]').forEach(cb => cb.addEventListener('change', function() {
+                    if (this.checked) { delete overrides[id]; } else { overrides[id] = null; }
+                    renderItems();
+                }));
+                row.querySelectorAll('[data-price]').forEach(inp => inp.addEventListener('change', function() {
+                    const v = parseFloat(this.value) || 0;
+                    if (isCustom) overrides[id].basePrice = v;
+                    else {
+                        const orig = baseTariff.items.find(i => i.id === id);
+                        if (orig && v === orig.basePrice) {
+                            // mismo precio → quitar override de precio
+                            if (overrides[id]) {
+                                delete overrides[id].basePrice;
+                                if (Object.keys(overrides[id]).length === 0) delete overrides[id];
+                            }
+                        } else {
+                            overrides[id] = overrides[id] || {};
+                            overrides[id].basePrice = v;
+                        }
+                    }
+                    renderItems();
+                }));
+                row.querySelectorAll('[data-edit-rule]').forEach(b => b.addEventListener('click', function() {
+                    const current = isCustom ? overrides[id] : { ...baseTariff.items.find(i => i.id === id), ...(overrides[id] || {}) };
+                    openItemEditor(current, (updated) => {
+                        if (isCustom) {
+                            overrides[id] = updated;
+                        } else {
+                            const baseIt = baseTariff.items.find(i => i.id === id);
+                            const diff = {};
+                            ['name','mode','basePrice','unit'].forEach(k => { if (updated[k] !== baseIt[k]) diff[k] = updated[k]; });
+                            const ruleJson = JSON.stringify(updated.pricingRule || null);
+                            const baseRuleJson = JSON.stringify(baseIt.pricingRule || null);
+                            if (ruleJson !== baseRuleJson) diff.pricingRule = updated.pricingRule;
+                            if (Object.keys(diff).length === 0) delete overrides[id];
+                            else overrides[id] = diff;
+                        }
+                        renderItems();
+                    });
+                }));
+                row.querySelectorAll('[data-reset]').forEach(b => b.addEventListener('click', function() {
+                    delete overrides[id];
+                    renderItems();
+                }));
+                row.querySelectorAll('[data-del-custom]').forEach(b => b.addEventListener('click', function() {
+                    if (confirm('¿Borrar artículo custom?')) { delete overrides[id]; renderItems(); }
+                }));
+            });
+
+            document.getElementById('tm-add-custom').onclick = () => {
+                openItemEditor(null, (it) => { overrides[it.id] = it; renderItems(); });
+            };
+        }
+        renderItems();
+
+        // Cambiar base
+        document.getElementById('tm-base').addEventListener('change', async function() {
+            const v = this.value;
+            if (!v) { baseTariff = null; renderItems(); return; }
+            baseTariff = tariffs.find(t => t.id === v) || await _loadTariff(v);
+            renderItems();
+        });
+        document.getElementById('tm-new').onclick = () => { modal.remove(); window.openTariffBuilder(null); };
+        document.getElementById('tm-edit-base').onclick = () => {
+            if (!baseTariff) { alert('Primero selecciona una tarifa base.'); return; }
+            modal.remove();
+            window.openTariffBuilder(baseTariff.id);
+        };
+        document.getElementById('tm-close').onclick = () => modal.remove();
+        document.getElementById('tm-save').onclick = async () => {
+            const selBase = document.getElementById('tm-base').value;
+            try {
+                await _saveClientOverrides(clientId, selBase, overrides);
+                alert('✅ Tarifa del cliente guardada.');
+                modal.remove();
+            } catch(e) { alert('Error: ' + e.message); }
+        };
+
+        // Cálculo de prueba
+        document.getElementById('tm-test-run').onclick = () => {
+            const out = document.getElementById('tm-test-out');
+            try {
+                const pkg = JSON.parse(document.getElementById('tm-test-json').value);
+                const resolved = pricingEngine.resolveTariff(baseTariff || { items: [] }, overrides);
+                const r = pricingEngine.priceTicket(pkg, resolved);
+                out.textContent = JSON.stringify(r, null, 2);
+            } catch(e) {
+                out.textContent = 'Error: ' + e.message;
+            }
+        };
+    };
+})();

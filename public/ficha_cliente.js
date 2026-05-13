@@ -249,7 +249,10 @@
             })}
             ${_field('Cliente Padre', 'fc-parent-client', d.parentClientId || '', { placeholder: 'Independiente', minWidth: 'auto' })}
             <div style="min-width:auto;">
-                <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Tarifa Global</label>
+                <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px; display:flex; justify-content:space-between; align-items:center;">
+                    <span>Tarifa Global</span>
+                    <button type="button" onclick="openTariffManager('${d.id}')" style="background:#FF6600; border:0; color:#fff; padding:2px 8px; border-radius:3px; font-size:0.65rem; font-weight:700; cursor:pointer; letter-spacing:0;">🧮 Gestionar</button>
+                </label>
                 <select id="fc-tariff" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
                     <option value="">-- Cargando... --</option>
                 </select>
