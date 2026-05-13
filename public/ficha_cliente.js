@@ -1018,24 +1018,11 @@
                 <select id="fc-tariff-eco" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
                     <option value="">-- Cargando... --</option>
                 </select>
-                <div style="font-size:0.65rem; color:#666; margin-top:3px;">\u2139\ufe0f Este selector es el mismo que el de la pesta\u00f1a Principal \u2014 actual\u00edzalo desde donde te resulte c\u00f3modo.</div>
+                <div style="font-size:0.65rem; color:#666; margin-top:3px;">\u2139\ufe0f Mismo campo que en Principal \u2014 sincronizados.</div>
             </div>
         </div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
-            ${_field('Cuota Plana', 'fc-flatrate', d.isFlatRate ? 'S\u00ed' : 'No', {
-                type: 'select', minWidth: 'auto',
-                options: [
-                    { value: 'No', label: 'No' },
-                    { value: 'S\u00ed', label: 'S\u00ed' }
-                ]
-            })}
-            ${_field('Importe (\u20ac/mes)', 'fc-flatrate-amt', d.flatRateAmount || '', { type: 'number', minWidth: 'auto' })}
-        </div>
-        <div style="background:rgba(76,175,80,0.04); border:1px solid rgba(76,175,80,0.2); border-radius:6px; padding:8px 12px; margin-bottom:6px; font-size:0.72rem; color:#aaa;">
-            \ud83d\udca1 <strong style="color:#4CAF50;">Cuota Plana</strong> y <strong style="color:#FFD700;">Tarifa</strong> conviven:
-            la cuota plana a\u00f1ade un cargo fijo mensual (legacy), mientras que la tarifa v2 con item <code>flat_monthly</code> hace lo mismo pero pasa por el motor nuevo.
-            Si migraste con el bot\u00f3n "\ud83d\udd04 Migrar a v2", la cuota legacy queda a 0 y la cuota mensual est\u00e1 dentro de la tarifa.
-        </div>
+        <!-- Cuota mensual: contenedor din\u00e1mico. _fichaWireFlatRateBlock decide si mostrar info-read-only (la tarifa manda) o campos legacy editables. -->
+        <div id="fc-cuota-block" style="margin-bottom:6px;"></div>
         ${d.isFlatRate && d.flatRateAmount > 0 ? `
         <div style="background:rgba(94,160,255,0.06); border:1px solid rgba(94,160,255,0.3); border-radius:6px; padding:10px 12px; margin:6px 0 10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div style="font-size:0.78rem; color:#aaa;">
@@ -1086,6 +1073,107 @@
         _fichaLoadBalance();
         // Load custom tariff
         _fichaLoadCustomTariff();
+        // Wire flat-rate block (decide si mostrar read-only desde tarifa o legacy editable)
+        _fichaWireFlatRateBlock();
+    }
+
+    // ============================================================
+    //  BLOQUE CUOTA MENSUAL — la tarifa manda
+    // ============================================================
+    // Lógica: si la tarifa asignada tiene un item flat_monthly, el importe
+    // SALE DE AHÍ y los campos legacy quedan ocultos / read-only. Si no
+    // hay tarifa v2 con flat_monthly, mostramos los campos legacy para
+    // que el admin pueda meter cuota a la antigua.
+    async function _fichaWireFlatRateBlock() {
+        const wrap = document.getElementById('fc-cuota-block');
+        if (!wrap) return;
+        const d = _fichaClientData;
+        if (!d) return;
+
+        const _money = (n) => (Number(n) || 0).toFixed(2).replace('.', ',') + ' €';
+
+        // 1) Detectar si la tarifa asignada es v2 con flat_monthly
+        let v2FlatTotal = 0;
+        let v2Items = [];
+        let tariffName = '';
+        let tariffDocId = null;
+        if (d.tariffId) {
+            try {
+                const candidates = [d.tariffId, 'GLOBAL_' + d.tariffId];
+                for (const id of candidates) {
+                    try {
+                        const doc = await db.collection('tariffs').doc(id).get();
+                        if (doc.exists) {
+                            const data = doc.data();
+                            tariffDocId = doc.id;
+                            tariffName = data.name || doc.id;
+                            if (data.version === 2 && Array.isArray(data.items)) {
+                                // Aplicar overrides del cliente para que la cuota mostrada coincida con lo que se facturará
+                                let resolvedItems = data.items.slice();
+                                if (d.tariffOverrides && typeof window.pricingEngine !== 'undefined') {
+                                    try {
+                                        const resolved = window.pricingEngine.resolveTariff(data, d.tariffOverrides);
+                                        resolvedItems = resolved.items || resolvedItems;
+                                    } catch(_) {}
+                                }
+                                resolvedItems.forEach(it => {
+                                    if (it.mode === 'flat_monthly') {
+                                        v2FlatTotal += Number(it.basePrice) || 0;
+                                        v2Items.push(it);
+                                    }
+                                });
+                            }
+                            break;
+                        }
+                    } catch(_) {}
+                }
+            } catch(e) { console.warn('[ficha cuota] error leyendo tarifa:', e); }
+        }
+
+        // 2) Render según escenario
+        if (v2FlatTotal > 0) {
+            // ─── La tarifa MANDA — read-only, datos legacy ocultos ───
+            const itemsHtml = v2Items.map(it => '<li style="margin:2px 0;"><strong>' + (it.name || it.id) + '</strong> — ' + _money(it.basePrice) + '/' + (it.unit || 'mes') + '</li>').join('');
+            wrap.innerHTML = ''
+                + '<div style="background:rgba(76,175,80,0.06); border:1px solid rgba(76,175,80,0.3); border-radius:8px; padding:12px 14px;">'
+                + '  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
+                + '    <div>'
+                + '      <div style="font-size:0.7rem; color:#4CAF50; text-transform:uppercase; letter-spacing:0.5px; font-weight:700;">📊 Cuota mensual (gestionada por la tarifa)</div>'
+                + '      <div style="font-size:1.4rem; font-weight:700; color:#fff; margin-top:3px;">' + _money(v2FlatTotal) + ' / mes</div>'
+                + '      <div style="font-size:0.72rem; color:#aaa; margin-top:3px;">Tarifa: <code style="color:#FFD700;">' + (tariffName || tariffDocId) + '</code></div>'
+                + '    </div>'
+                + '    <button type="button" onclick="window.openTariffBuilder(\'' + tariffDocId + '\')" style="background:#FF6600; border:0; color:#fff; padding:7px 14px; border-radius:6px; font-size:0.78rem; font-weight:700; cursor:pointer;">✏️ Editar cuota en tarifa</button>'
+                + '  </div>'
+                + (itemsHtml ? '<details style="margin-top:10px;"><summary style="cursor:pointer; font-size:0.72rem; color:#888;">Ver desglose (' + v2Items.length + ' item' + (v2Items.length === 1 ? '' : 's') + ')</summary><ul style="margin:6px 0 0 18px; font-size:0.78rem; color:#ccc;">' + itemsHtml + '</ul></details>' : '')
+                + '</div>'
+                // Campos legacy ocultos pero presentes para no romper el save
+                + '<input type="hidden" id="fc-flatrate" value="No">'
+                + '<input type="hidden" id="fc-flatrate-amt" value="0">'
+                + '<div style="font-size:0.65rem; color:#666; margin-top:6px;">ℹ️ La cuota se factura automáticamente al cerrar mes. Para cambiar el importe, edita el item <code>flat_monthly</code> dentro de la tarifa pulsando ✏️ arriba.</div>';
+        } else {
+            // ─── Sin v2 flat_monthly — mostramos campos legacy editables ───
+            const isFlatRate = d.isFlatRate;
+            const amt = d.flatRateAmount || '';
+            wrap.innerHTML = ''
+                + '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">'
+                + '  <div style="min-width:auto;">'
+                + '    <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Cuota Plana (legacy)</label>'
+                + '    <select id="fc-flatrate" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">'
+                + '      <option value="No"' + (!isFlatRate ? ' selected' : '') + '>No</option>'
+                + '      <option value="Sí"' + (isFlatRate ? ' selected' : '') + '>Sí</option>'
+                + '    </select>'
+                + '  </div>'
+                + '  <div style="min-width:auto;">'
+                + '    <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Importe (€/mes)</label>'
+                + '    <input type="number" id="fc-flatrate-amt" value="' + amt + '" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">'
+                + '  </div>'
+                + '</div>'
+                + '<div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px; padding:8px 12px; font-size:0.7rem; color:#aaa;">'
+                + '  💡 Estos campos son del modelo <strong>legacy</strong>. La forma moderna de poner cuota plana es '
+                + '  crear una tarifa v2 con item <code>flat_monthly</code> desde <strong>💰 Gestionar</strong>. Tras hacerlo, '
+                + '  estos campos desaparecen y la cuota la maneja la tarifa.'
+                + '</div>';
+        }
     }
 
     // ============================================================
