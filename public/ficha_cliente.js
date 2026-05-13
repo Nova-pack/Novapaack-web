@@ -487,6 +487,11 @@
                     name: name,
                     parentClientId: parentId,
                     nif: parent.nif || '',  // hereda NIF del padre
+                    // ⬇ Hereda el email REAL del padre. Es lo que usaremos como
+                    //   destinatario de la bienvenida y demás comunicaciones.
+                    //   El loginEmail (sintético) se setea aparte más abajo.
+                    email: parent.email || '',
+                    adminEmail: parent.adminEmail || '',
                     tariffId: parent.tariffId || '',
                     billingCompanyId: parent.billingCompanyId || '',
                     paymentTerms: parent.paymentTerms || 'contado',
