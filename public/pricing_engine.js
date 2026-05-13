@@ -130,9 +130,32 @@
         return null;
     }
 
+    // Comparación de provincia por CP (2 primeros dígitos en España)
+    function _samProvince(cpA, cpB) {
+        if (!cpA || !cpB) return false;
+        const a = String(cpA).trim().replace(/\s/g, '').slice(0, 2);
+        const b = String(cpB).trim().replace(/\s/g, '').slice(0, 2);
+        if (!a || !b) return false;
+        return a === b;
+    }
+
     // Calcula el precio efectivo de un item para un context dado (CP, etc.)
+    // Prioridad:
+    //   1. pricesByProvince (si item.provincialDetect=true y hay originCp+destCp)
+    //   2. pricesByZone (si hay zona resuelta)
+    //   3. basePrice (fallback)
     function _itemPriceForContext(item, context) {
         let price = _num(item.basePrice);
+        // Auto-detección provincial / interprovincial
+        if (item.provincialDetect && item.pricesByProvince && context && context.cp && context.originCp) {
+            const sameProv = _samProvince(context.originCp, context.cp);
+            const key = sameProv ? 'provincial' : 'interprovincial';
+            const v = item.pricesByProvince[key];
+            if (v !== undefined && v !== null && v !== '') {
+                return _num(v);
+            }
+        }
+        // Zonas CP (sistema anterior, se queda como alternativa)
         if (item.pricesByZone && context && context._resolvedZone) {
             const zp = item.pricesByZone[context._resolvedZone.id];
             if (zp !== undefined && zp !== null && zp !== '') {
@@ -276,9 +299,14 @@
         if (MODES.indexOf(itemRef.mode) === -1) {
             return { error: 'invalid_mode:' + itemRef.mode, subtotal: 0 };
         }
-        // Precio efectivo: si hay zona resuelta y el item tiene pricesByZone,
-        // usa el precio de esa zona. Si no, basePrice.
+        // Precio efectivo: provincialDetect > zona > basePrice.
         const effectivePrice = _itemPriceForContext(itemRef, context);
+        // Detectar si fue por provincia para mostrar info en el resultado
+        let provincialApplied = null;
+        if (itemRef.provincialDetect && context && context.cp && context.originCp) {
+            const sameProv = _samProvince(context.originCp, context.cp);
+            provincialApplied = sameProv ? 'provincial' : 'interprovincial';
+        }
         const baseSubtotal = _modeBaseSubtotal(itemRef.mode, effectivePrice, qty, weightKg);
         const ruleResult = _applyPricingRule(itemRef.pricingRule, baseSubtotal, effectivePrice, qty, weightKg, itemRef.mode);
         return {
@@ -290,6 +318,7 @@
             basePrice: _num(itemRef.basePrice),
             effectivePrice: _num(effectivePrice),
             zoneApplied: (context && context._resolvedZone) ? { id: context._resolvedZone.id, name: context._resolvedZone.name } : null,
+            provincialApplied: provincialApplied,
             baseSubtotal: _round(baseSubtotal),
             ruleApplied: ruleResult.applied,
             subtotal: _round(ruleResult.subtotal)

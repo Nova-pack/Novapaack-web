@@ -14288,9 +14288,13 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                             size: t.size || 'Bulto',
                             weight: parseFloat(t.weight) || parseFloat(t.kilos) || 0
                         }];
-                        // Extraer CP del destinatario (campos diversos según versión del albarán)
+                        // CP destino (campos diversos según versión del albarán)
                         const destCp = (t.cp || t.destinationCp || t.destinationCP || t.receiverCP || t.receiverCp || t.cpDest || '').toString().trim();
-                        const result = window.pricingEngine.priceTicket(packagesList, resolved, { cp: destCp });
+                        // CP origen = del cliente (sender) — del propio user doc
+                        // o de su comp_main si está. Sirve para auto-detectar
+                        // provincial vs interprovincial.
+                        const originCp = (uData.cp || uData.senderCP || uData.senderCp || (uData.comp_main && uData.comp_main.cp) || '').toString().trim();
+                        const result = window.pricingEngine.priceTicket(packagesList, resolved, { cp: destCp, originCp: originCp });
                         return result.total || 0;
                     } catch(e) {
                         console.warn('[PriceEngine v2] fallback to legacy por error:', e.message, 'ticket:', t.id);
@@ -19232,8 +19236,8 @@ window.importTarifas50 = async () => {
 <script src="heatmap.js?v=20260504"></script>
 <script src="invoice_flatrate_multibranch.js?v=20260514_erp"></script>
 <script src="invoice_per_branch.js?v=20260514_erp"></script>
-<script src="pricing_engine.js?v=20260514_zones"></script>
-<script src="tariff_editor.js?v=20260514_revertmodal"></script>
+<script src="pricing_engine.js?v=20260514_provinces"></script>
+<script src="tariff_editor.js?v=20260514_provinces"></script>
 
 </body>
 </html>

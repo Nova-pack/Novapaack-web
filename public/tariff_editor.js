@@ -218,6 +218,18 @@
             + '    <label>Precio base €<input type="number" id="ie-price" value="' + (it.basePrice || 0) + '" step="0.01" min="0" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
             + '    <label>Unidad<input type="text" id="ie-unit" value="' + _esc(it.unit || '') + '" placeholder="paquete, kg…" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
             + '  </div>'
+            // ─── Auto-detección Provincial / Interprovincial por CP ──
+            + '  <div style="background:rgba(255,215,0,0.04); border:1px solid rgba(255,215,0,0.25); border-radius:6px; padding:10px;">'
+            + '    <label style="display:flex; align-items:center; gap:8px; font-weight:600; color:#FFD700; cursor:pointer;">'
+            + '      <input type="checkbox" id="ie-prov-detect"' + (it.provincialDetect ? ' checked' : '') + ' style="scale:1.2;">'
+            + '      <span>📍 Distinguir precio según provincia (auto-detección por CP)</span>'
+            + '    </label>'
+            + '    <div style="font-size:0.7rem; color:#888; margin-top:4px;">El sistema compara el CP del CLIENTE (origen) con el CP del DESTINATARIO. Si los 2 primeros dígitos coinciden = PROVINCIAL. Si no = INTERPROVINCIAL.</div>'
+            + '    <div id="ie-prov-fields" style="display:' + (it.provincialDetect ? 'grid' : 'none') + '; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;">'
+            + '      <label>Precio PROVINCIAL (mismo origen-destino) €<input type="number" id="ie-prov-price" step="0.01" min="0" value="' + ((it.pricesByProvince && it.pricesByProvince.provincial != null) ? it.pricesByProvince.provincial : '') + '" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-family:monospace; margin-top:3px;"></label>'
+            + '      <label>Precio INTERPROVINCIAL (provincias distintas) €<input type="number" id="ie-interprov-price" step="0.01" min="0" value="' + ((it.pricesByProvince && it.pricesByProvince.interprovincial != null) ? it.pricesByProvince.interprovincial : '') + '" style="width:100%; padding:6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-family:monospace; margin-top:3px;"></label>'
+            + '    </div>'
+            + '  </div>'
             + (zones.length ? (''
                 + '  <div style="background:rgba(94,160,255,0.04); border:1px solid rgba(94,160,255,0.25); border-radius:6px; padding:10px;">'
                 + '    <label style="font-weight:600; color:#5DADE2; display:block; margin-bottom:6px;">📍 Precios por zona (opcional — si vacío usa precio base)</label>'
@@ -253,6 +265,12 @@
         document.getElementById('ie-rule-type').addEventListener('change', function() {
             renderRuleFields(this.value, {});
         });
+        // Toggle de auto-detección provincial
+        const provDetect = document.getElementById('ie-prov-detect');
+        if (provDetect) provDetect.addEventListener('change', function() {
+            const fields = document.getElementById('ie-prov-fields');
+            if (fields) fields.style.display = this.checked ? 'grid' : 'none';
+        });
         document.getElementById('ie-cancel').onclick = () => modal.remove();
         document.getElementById('ie-save').onclick = () => {
             const itemOut = {
@@ -264,6 +282,19 @@
                 pricingRule: readRule()
             };
             if (!itemOut.name) { alert('Pon un nombre al artículo.'); return; }
+            // Auto-detección provincial/interprovincial
+            const provDet = document.getElementById('ie-prov-detect');
+            if (provDet && provDet.checked) {
+                const provP = document.getElementById('ie-prov-price').value;
+                const interP = document.getElementById('ie-interprov-price').value;
+                itemOut.provincialDetect = true;
+                itemOut.pricesByProvince = {};
+                if (provP !== '' && !isNaN(parseFloat(provP))) itemOut.pricesByProvince.provincial = parseFloat(provP);
+                if (interP !== '' && !isNaN(parseFloat(interP))) itemOut.pricesByProvince.interprovincial = parseFloat(interP);
+            } else {
+                itemOut.provincialDetect = false;
+                itemOut.pricesByProvince = null;
+            }
             // Recoger precios por zona si hay
             if (zones.length) {
                 const pbz = {};
@@ -428,8 +459,8 @@
             + '  <span style="font-size:0.72rem; color:#888;">Trae los códigos típicos (PP, PI, BP, BI, PLT-1..7, etc.) con precios del Excel. Luego edita lo que necesites o añade códigos custom (pms, psg, bms…) manualmente.</span>'
             + '</div>'
             + '<div id="tb-zones-section" style="margin-bottom:14px;"></div>'
+            + '<div id="tb-add-bar" style="margin-bottom:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
             + '<div id="tb-sections"></div>'
-            + '<div id="tb-add-bar" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
             + '</div>';
         document.body.appendChild(modal);
 
@@ -679,7 +710,7 @@
                         skippedItems.push(a.code);
                         return;
                     }
-                    newItems.push({
+                    const newIt = {
                         id: a.code,
                         name: a.name,
                         mode: a.mode,
@@ -689,7 +720,19 @@
                         conditions: a.conditions || null,
                         pricingRule: null,
                         pricesByZone: {}
-                    });
+                    };
+                    // ─── Heurística: si el código es PP o PI, BP o BI → activar
+                    // auto-detección provincial/interprovincial y mapear precios.
+                    // PP=Paquete Provincial, PI=Paquete Interprovincial. Mismo
+                    // par para BP/BI. El admin podrá editarlo después.
+                    if (a.code === 'PP' || a.code === 'BP') {
+                        newIt.provincialDetect = true;
+                        newIt.pricesByProvince = { provincial: Number(a.basePrice) || 0 };
+                    } else if (a.code === 'PI' || a.code === 'BI') {
+                        newIt.provincialDetect = true;
+                        newIt.pricesByProvince = { interprovincial: Number(a.basePrice) || 0 };
+                    }
+                    newItems.push(newIt);
                 });
 
                 if (newItems.length === 0) {
