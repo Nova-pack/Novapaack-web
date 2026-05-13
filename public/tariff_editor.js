@@ -472,11 +472,15 @@
             const wrap = document.getElementById('tb-zones-section');
             if (!wrap) return;
             const hasZones = tariff.zones && tariff.zones.length > 0;
-            let inner = '';
+            // ─── Sección AVANZADA, colapsada por defecto ───────────
+            // La auto-detección provincial/interprovincial (en cada artículo)
+            // cubre el 95% de los casos. Las zonas manuales solo hacen falta
+            // para destinos especiales (Baleares, Canarias, Internacional).
+            let bodyHtml = '';
             if (!hasZones) {
-                inner = '<div style="background:rgba(94,160,255,0.04); border:1px dashed rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">'
-                    + '  <div style="font-size:0.8rem; color:#aaa;">📍 <strong style="color:#5DADE2;">Zonas por código postal</strong> — define zonas (Málaga capital, Andalucía, Resto España, etc.) y cada artículo tendrá un precio por zona. Si no defines zonas, se usa el precio base para todo.</div>'
-                    + '  <button id="tb-zones-init" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.78rem;">+ Definir zonas</button>'
+                bodyHtml = '<div style="background:rgba(94,160,255,0.04); border:1px dashed rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">'
+                    + '  <div style="font-size:0.78rem; color:#aaa;">📍 <strong style="color:#5DADE2;">Zonas avanzadas por CP</strong> — solo úsalo si necesitas precios distintos para Baleares (07), Canarias (35,38) o internacional. Para el caso normal provincial/interprovincial, usa la opción del propio artículo.</div>'
+                    + '  <button id="tb-zones-init" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.78rem; white-space:nowrap;">+ Definir zonas</button>'
                     + '</div>';
             } else {
                 let rowsHtml = '';
@@ -493,7 +497,7 @@
                         + '  </td>'
                         + '</tr>';
                 });
-                inner = '<div style="background:rgba(94,160,255,0.04); border:1px solid rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px;">'
+                bodyHtml = '<div style="background:rgba(94,160,255,0.04); border:1px solid rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px;">'
                     + '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">'
                     + '    <strong style="color:#5DADE2; font-size:0.88rem;">📍 Zonas por código postal</strong>'
                     + '    <div style="display:flex; gap:6px;"><button id="tb-zone-add" style="background:#5DADE2; border:0; color:#000; padding:5px 12px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">+ Zona</button><button id="tb-zones-help" style="background:transparent; border:1px solid #555; color:#aaa; padding:5px 10px; border-radius:5px; cursor:pointer; font-size:0.75rem;">❓ Ayuda</button></div>'
@@ -505,7 +509,12 @@
                     + '  </table>'
                     + '</div>';
             }
-            wrap.innerHTML = inner;
+            // Envolver en <details> (avanzado, colapsado por defecto)
+            const isOpen = hasZones; // si ya hay zonas configuradas, abrir el accordion
+            wrap.innerHTML = '<details' + (isOpen ? ' open' : '') + ' style="background:rgba(255,255,255,0.02); border:1px solid #2d2d30; border-radius:8px;">'
+                + '<summary style="cursor:pointer; padding:8px 14px; font-size:0.78rem; color:#888; user-select:none;">⚙️ Avanzado · Zonas manuales por CP (Baleares, Canarias, internacional…)</summary>'
+                + '<div style="padding:10px 14px; border-top:1px solid #2d2d30;">' + bodyHtml + '</div>'
+                + '</details>';
 
             // Wire
             const initBtn = document.getElementById('tb-zones-init');
