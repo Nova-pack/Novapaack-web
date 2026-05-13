@@ -90,7 +90,7 @@
 
     // ============ ITEM EDITOR (modal por artículo) ============
 
-    function openItemEditor(item, onSave) {
+    function openItemEditor(item, onSave, zonesContext) {
         const isNew = !item || !item.id;
         const it = item ? { ...item } : {
             id: 'item_' + Date.now().toString(36),
@@ -98,8 +98,11 @@
             mode: 'per_package',
             basePrice: 0,
             unit: '',
-            pricingRule: null
+            pricingRule: null,
+            pricesByZone: {}
         };
+        // zonesContext: array de zonas de la tarifa contenedora (puede venir vacío).
+        const zones = Array.isArray(zonesContext) ? zonesContext : [];
 
         const old = document.getElementById('item-editor-modal');
         if (old) old.remove();
@@ -215,6 +218,25 @@
             + '    <label>Precio base €<input type="number" id="ie-price" value="' + (it.basePrice || 0) + '" step="0.01" min="0" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
             + '    <label>Unidad<input type="text" id="ie-unit" value="' + _esc(it.unit || '') + '" placeholder="paquete, kg…" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></label>'
             + '  </div>'
+            + (zones.length ? (''
+                + '  <div style="background:rgba(94,160,255,0.04); border:1px solid rgba(94,160,255,0.25); border-radius:6px; padding:10px;">'
+                + '    <label style="font-weight:600; color:#5DADE2; display:block; margin-bottom:6px;">📍 Precios por zona (opcional — si vacío usa precio base)</label>'
+                + '    <table style="width:100%; border-collapse:collapse; font-size:0.78rem;">'
+                + '      <thead><tr style="background:rgba(255,255,255,0.03);"><th style="padding:5px 8px; text-align:left; color:#888; font-size:0.7rem;">Zona</th><th style="padding:5px 8px; text-align:left; color:#888; font-size:0.7rem; width:60%;">Rangos CP</th><th style="padding:5px 8px; text-align:right; color:#888; font-size:0.7rem; width:120px;">Precio €</th></tr></thead>'
+                + '      <tbody>'
+                + zones.map(z => {
+                    const v = (it.pricesByZone && it.pricesByZone[z.id] !== undefined && it.pricesByZone[z.id] !== null) ? it.pricesByZone[z.id] : '';
+                    return '<tr style="border-bottom:1px solid #2d2d30;">'
+                        + '  <td style="padding:5px 8px; color:#fff; font-weight:600;">' + _esc(z.name) + '</td>'
+                        + '  <td style="padding:5px 8px; color:#888; font-family:monospace; font-size:0.72rem;">' + _esc((z.cpRanges || []).join(', ')) + '</td>'
+                        + '  <td style="padding:5px 8px;"><input type="number" step="0.01" min="0" data-zone-price="' + _esc(z.id) + '" value="' + _esc(v) + '" placeholder="(usa base)" style="width:100%; padding:5px 7px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; text-align:right; font-family:monospace;"></td>'
+                        + '</tr>';
+                }).join('')
+                + '      </tbody>'
+                + '    </table>'
+                + '    <div style="font-size:0.7rem; color:#888; margin-top:6px;">Deja vacío para usar el precio base. Si rellenas, ese precio gana cuando el CP del destinatario cae en esa zona.</div>'
+                + '  </div>'
+            ) : '')
             + '  <div style="background:rgba(255,102,0,0.04); border:1px solid rgba(255,102,0,0.2); border-radius:6px; padding:10px;">'
             + '    <label style="font-weight:600; color:#FF8A50; display:block; margin-bottom:6px;">Regla especial (opcional)</label>'
             + ruleEditorHTML(it.pricingRule)
@@ -242,6 +264,19 @@
                 pricingRule: readRule()
             };
             if (!itemOut.name) { alert('Pon un nombre al artículo.'); return; }
+            // Recoger precios por zona si hay
+            if (zones.length) {
+                const pbz = {};
+                modal.querySelectorAll('[data-zone-price]').forEach(inp => {
+                    const zid = inp.getAttribute('data-zone-price');
+                    const raw = inp.value.trim();
+                    if (raw !== '' && !isNaN(parseFloat(raw))) {
+                        pbz[zid] = parseFloat(raw);
+                    }
+                });
+                if (Object.keys(pbz).length > 0) itemOut.pricesByZone = pbz;
+                else itemOut.pricesByZone = {}; // limpiar si todos vacíos
+            }
             modal.remove();
             if (typeof onSave === 'function') onSave(itemOut);
         };
@@ -383,10 +418,131 @@
             + '  </div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '<div id="tb-zones-section" style="margin-bottom:14px;"></div>'
             + '<div id="tb-sections"></div>'
             + '<div id="tb-add-bar" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
             + '</div>';
         document.body.appendChild(modal);
+
+        // ─── ZONAS POR CÓDIGO POSTAL ────────────────────────────
+        // Garantizamos id único y formato consistente para cada zona.
+        if (!Array.isArray(tariff.zones)) tariff.zones = [];
+
+        function renderZonesSection() {
+            const wrap = document.getElementById('tb-zones-section');
+            if (!wrap) return;
+            const hasZones = tariff.zones && tariff.zones.length > 0;
+            let inner = '';
+            if (!hasZones) {
+                inner = '<div style="background:rgba(94,160,255,0.04); border:1px dashed rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">'
+                    + '  <div style="font-size:0.8rem; color:#aaa;">📍 <strong style="color:#5DADE2;">Zonas por código postal</strong> — define zonas (Málaga capital, Andalucía, Resto España, etc.) y cada artículo tendrá un precio por zona. Si no defines zonas, se usa el precio base para todo.</div>'
+                    + '  <button id="tb-zones-init" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.78rem;">+ Definir zonas</button>'
+                    + '</div>';
+            } else {
+                let rowsHtml = '';
+                tariff.zones.forEach((z, idx) => {
+                    const rangesStr = (z.cpRanges || []).join(', ');
+                    rowsHtml += '<tr data-zone-idx="' + idx + '" style="border-bottom:1px solid #2d2d30;">'
+                        + '  <td style="padding:6px; color:#666; font-size:0.7rem; text-align:center;">' + (idx + 1) + '</td>'
+                        + '  <td style="padding:6px;"><input type="text" data-zone-name value="' + _esc(z.name || '') + '" placeholder="Ej: Málaga capital" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-size:0.78rem;"></td>'
+                        + '  <td style="padding:6px;"><input type="text" data-zone-ranges value="' + _esc(rangesStr) + '" placeholder="29001-29099, 29, *" style="width:100%; padding:5px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:3px; font-size:0.78rem; font-family:monospace;"></td>'
+                        + '  <td style="padding:6px; text-align:right; white-space:nowrap;">'
+                        + '    <button data-zone-up style="background:transparent; border:1px solid #555; color:#aaa; padding:3px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;" title="Subir (mayor prioridad)">▲</button>'
+                        + '    <button data-zone-down style="background:transparent; border:1px solid #555; color:#aaa; padding:3px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;" title="Bajar">▼</button>'
+                        + '    <button data-zone-del style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;" title="Eliminar zona">🗑️</button>'
+                        + '  </td>'
+                        + '</tr>';
+                });
+                inner = '<div style="background:rgba(94,160,255,0.04); border:1px solid rgba(94,160,255,0.30); border-radius:8px; padding:12px 14px;">'
+                    + '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">'
+                    + '    <strong style="color:#5DADE2; font-size:0.88rem;">📍 Zonas por código postal</strong>'
+                    + '    <div style="display:flex; gap:6px;"><button id="tb-zone-add" style="background:#5DADE2; border:0; color:#000; padding:5px 12px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">+ Zona</button><button id="tb-zones-help" style="background:transparent; border:1px solid #555; color:#aaa; padding:5px 10px; border-radius:5px; cursor:pointer; font-size:0.75rem;">❓ Ayuda</button></div>'
+                    + '  </div>'
+                    + '  <div style="font-size:0.7rem; color:#888; margin-bottom:8px;">El orden importa — primera zona cuyo rango matchea gana. Pon las MÁS específicas arriba (Málaga capital antes que Provincia Málaga).</div>'
+                    + '  <table style="width:100%; border-collapse:collapse; font-size:0.78rem;">'
+                    + '    <thead><tr style="background:rgba(255,255,255,0.03);"><th style="padding:5px; text-align:center; color:#888; font-size:0.7rem; width:30px;">#</th><th style="padding:5px; text-align:left; color:#888; font-size:0.7rem;">Nombre</th><th style="padding:5px; text-align:left; color:#888; font-size:0.7rem;">Rangos CP (coma-separados)</th><th style="width:130px;"></th></tr></thead>'
+                    + '    <tbody>' + rowsHtml + '</tbody>'
+                    + '  </table>'
+                    + '</div>';
+            }
+            wrap.innerHTML = inner;
+
+            // Wire
+            const initBtn = document.getElementById('tb-zones-init');
+            if (initBtn) initBtn.onclick = function() {
+                tariff.zones = [
+                    { id: 'z' + Date.now().toString(36) + '_1', name: 'Málaga capital', cpRanges: ['29001-29099'] },
+                    { id: 'z' + Date.now().toString(36) + '_2', name: 'Provincia Málaga', cpRanges: ['29'] },
+                    { id: 'z' + Date.now().toString(36) + '_3', name: 'Resto Andalucía', cpRanges: ['11','14','18','21','23','41'] },
+                    { id: 'z' + Date.now().toString(36) + '_4', name: 'Resto España', cpRanges: ['*'] }
+                ];
+                renderZonesSection();
+                renderRows();
+            };
+            const addBtn = document.getElementById('tb-zone-add');
+            if (addBtn) addBtn.onclick = function() {
+                tariff.zones.push({ id: 'z' + Date.now().toString(36) + '_' + tariff.zones.length, name: 'Zona ' + (tariff.zones.length + 1), cpRanges: [] });
+                _commitZoneInputs();
+                renderZonesSection();
+                renderRows();
+            };
+            const helpBtn = document.getElementById('tb-zones-help');
+            if (helpBtn) helpBtn.onclick = function() {
+                alert('Cómo definir rangos de CP:\n\n'
+                    + '• "29001-29099" → CP entre 29001 y 29099 (Málaga capital)\n'
+                    + '• "29" → cualquier CP que empiece por 29 (provincia Málaga)\n'
+                    + '• "29,11,14" → varios rangos (separa con comas)\n'
+                    + '• "*" → catch-all (resto, cualquier CP no matcheado antes)\n\n'
+                    + 'Orden: la PRIMERA zona cuyo rango matchea gana. Pon las más específicas arriba (Málaga capital antes que Provincia Málaga, Provincia antes que Andalucía, Andalucía antes que Resto).');
+            };
+            wrap.querySelectorAll('[data-zone-idx]').forEach(row => {
+                const idx = parseInt(row.getAttribute('data-zone-idx'), 10);
+                row.querySelector('[data-zone-name]').oninput = function() {
+                    tariff.zones[idx].name = this.value;
+                };
+                row.querySelector('[data-zone-ranges]').oninput = function() {
+                    tariff.zones[idx].cpRanges = this.value.split(',').map(s => s.trim()).filter(s => s);
+                };
+                row.querySelector('[data-zone-up]').onclick = function() {
+                    if (idx <= 0) return;
+                    _commitZoneInputs();
+                    const tmp = tariff.zones[idx - 1];
+                    tariff.zones[idx - 1] = tariff.zones[idx];
+                    tariff.zones[idx] = tmp;
+                    renderZonesSection();
+                };
+                row.querySelector('[data-zone-down]').onclick = function() {
+                    if (idx >= tariff.zones.length - 1) return;
+                    _commitZoneInputs();
+                    const tmp = tariff.zones[idx + 1];
+                    tariff.zones[idx + 1] = tariff.zones[idx];
+                    tariff.zones[idx] = tmp;
+                    renderZonesSection();
+                };
+                row.querySelector('[data-zone-del]').onclick = function() {
+                    if (!confirm('¿Eliminar la zona "' + (tariff.zones[idx].name || '') + '"?\n\nLos precios por zona en cada artículo asociados a esta zona se conservan en los items por si la vuelves a añadir, pero no se usarán mientras la zona no exista.')) return;
+                    tariff.zones.splice(idx, 1);
+                    renderZonesSection();
+                    renderRows();
+                };
+            });
+        }
+
+        function _commitZoneInputs() {
+            // Lee los inputs actuales y los persiste a tariff.zones antes de re-renderizar
+            const wrap = document.getElementById('tb-zones-section');
+            if (!wrap) return;
+            wrap.querySelectorAll('[data-zone-idx]').forEach(row => {
+                const idx = parseInt(row.getAttribute('data-zone-idx'), 10);
+                if (!tariff.zones[idx]) return;
+                const nameEl = row.querySelector('[data-zone-name]');
+                const rangesEl = row.querySelector('[data-zone-ranges]');
+                if (nameEl) tariff.zones[idx].name = nameEl.value;
+                if (rangesEl) tariff.zones[idx].cpRanges = rangesEl.value.split(',').map(s => s.trim()).filter(s => s);
+            });
+        }
+
+        renderZonesSection();
 
         function _rowHTML(it, idx) {
             const ruleSummary = it.pricingRule ? it.pricingRule.type.replace('_', ' ') : '—';
@@ -456,10 +612,10 @@
                 addBar.innerHTML = '<button id="tb-add" style="background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo</button>';
             }
 
-            // Wire row buttons
+            // Wire row buttons — pasamos las zonas de la tarifa al editor del item
             sec.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
                 const i = parseInt(b.getAttribute('data-edit'), 10);
-                openItemEditor(tariff.items[i], (updated) => { tariff.items[i] = updated; renderRows(); });
+                openItemEditor(tariff.items[i], (updated) => { tariff.items[i] = updated; renderRows(); }, tariff.zones || []);
             });
             sec.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
                 const i = parseInt(b.getAttribute('data-del'), 10);
@@ -471,10 +627,9 @@
 
         function _wireAdds() {
             const addBtn = document.getElementById('tb-add');
-            if (addBtn) addBtn.onclick = () => openItemEditor(null, (it) => { tariff.items.push(it); renderRows(); });
+            if (addBtn) addBtn.onclick = () => openItemEditor(null, (it) => { tariff.items.push(it); renderRows(); }, tariff.zones || []);
             const addExtra = document.getElementById('tb-add-extra');
             if (addExtra) addExtra.onclick = () => {
-                // Pre-rellenamos un artículo facturable típico (paletizado) para guiar
                 openItemEditor({
                     id: 'extra_' + Date.now().toString(36),
                     name: '',
@@ -488,7 +643,7 @@
                     }
                     tariff.items.push(it);
                     renderRows();
-                });
+                }, tariff.zones || []);
             };
         }
 
@@ -498,11 +653,19 @@
             tariff.name = document.getElementById('tb-tariff-name').value.trim();
             if (!tariff.name) { alert('La tarifa necesita un nombre.'); return; }
             if (!tariff.items.length) { if (!confirm('No tiene artículos. ¿Guardar de todos modos?')) return; }
+            // Persistir cualquier edición pendiente de zonas (los inputs son live)
+            try { _commitZoneInputs(); } catch(_) {}
+            // Validar zonas si las hay: nombre + al menos un rango
+            if (tariff.zones && tariff.zones.length) {
+                for (const z of tariff.zones) {
+                    if (!z.name || !z.name.trim()) { alert('Una de las zonas no tiene nombre.'); return; }
+                    if (!z.cpRanges || !z.cpRanges.length) { alert('La zona "' + z.name + '" no tiene rangos de CP definidos.'); return; }
+                }
+            }
             try {
                 const id = await _saveTariff(tariff);
                 alert('✅ Tarifa guardada: ' + id);
                 modal.remove();
-                // Refrescar el listado de cards si está visible
                 if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
             } catch(e) { alert('Error: ' + e.message); }
         };

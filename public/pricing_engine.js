@@ -94,10 +94,58 @@
     function _round(n) { return Math.round(n * 100) / 100; }
     function _num(n) { const x = Number(n); return isNaN(x) ? 0 : x; }
 
+    // ===== Resolución de zona por CP =====
+    // Cada tarifa puede definir zonas:
+    //   zones: [
+    //     { id:'z1', name:'Málaga capital', cpRanges:['29001-29099'] },
+    //     { id:'z2', name:'Provincia Málaga', cpRanges:['29'] },
+    //     { id:'z3', name:'Resto Andalucía', cpRanges:['11','14','18','21','23','41'] },
+    //     { id:'z4', name:'Resto España', cpRanges:['*'] }
+    //   ]
+    // El admin define el ORDEN — primera zona cuyo rango matchea gana.
+    // Soporta:
+    //   - "29001-29099"  → rango numérico
+    //   - "29"           → prefijo (cualquier CP empezando por 29)
+    //   - "*"            → catch-all (todo lo demás)
+    function resolveZone(cp, zones) {
+        if (!cp || !Array.isArray(zones) || !zones.length) return null;
+        const cpStr = String(cp).trim().replace(/\s/g, '');
+        if (!cpStr) return null;
+        for (const z of zones) {
+            const ranges = z.cpRanges || z.cpPrefixes || [];
+            for (const r of ranges) {
+                const rStr = String(r).trim();
+                if (!rStr) continue;
+                if (rStr === '*' || rStr.toLowerCase() === 'resto' || rStr.toLowerCase() === 'cualquier') return z;
+                if (rStr.includes('-')) {
+                    const parts = rStr.split('-').map(s => s.trim());
+                    if (parts.length === 2 && parts[0] && parts[1]) {
+                        if (cpStr >= parts[0] && cpStr <= parts[1]) return z;
+                    }
+                    continue;
+                }
+                if (cpStr.startsWith(rStr)) return z;
+            }
+        }
+        return null;
+    }
+
+    // Calcula el precio efectivo de un item para un context dado (CP, etc.)
+    function _itemPriceForContext(item, context) {
+        let price = _num(item.basePrice);
+        if (item.pricesByZone && context && context._resolvedZone) {
+            const zp = item.pricesByZone[context._resolvedZone.id];
+            if (zp !== undefined && zp !== null && zp !== '') {
+                price = _num(zp);
+            }
+        }
+        return price;
+    }
+
     // ===== Resolver: base + overrides =====
     function resolveTariff(baseTariff, overrides) {
         if (!baseTariff || !Array.isArray(baseTariff.items)) {
-            return { id: 'EMPTY', name: 'Tarifa vacía', items: [] };
+            return { id: 'EMPTY', name: 'Tarifa vacía', items: [], zones: [] };
         }
         const ov = overrides || {};
         const items = [];
@@ -105,10 +153,17 @@
             const o = ov[it.id];
             if (o === null) return; // excluido para este cliente
             if (!o) { items.push({ ...it, _source: 'base' }); return; }
+            // Para pricesByZone hacemos merge: override puede añadir/sobrescribir
+            // precios por zona específicos sin perder los de la base.
+            let mergedPricesByZone = it.pricesByZone ? { ...it.pricesByZone } : undefined;
+            if (o.pricesByZone) {
+                mergedPricesByZone = { ...(mergedPricesByZone || {}), ...o.pricesByZone };
+            }
             items.push({
                 ...it,
                 ...o,
                 pricingRule: (o.pricingRule !== undefined) ? o.pricingRule : it.pricingRule,
+                pricesByZone: mergedPricesByZone,
                 _source: 'override',
                 _baseRef: it.id
             });
@@ -123,11 +178,14 @@
             id: baseTariff.id + '_resolved',
             baseId: baseTariff.id,
             name: baseTariff.name + ' (resuelta)',
-            items: items
+            items: items,
+            zones: baseTariff.zones || []
         };
     }
 
     // ===== Cálculo base por modo =====
+    // basePrice ya viene resuelto con la zona aplicada si procede
+    // (ver _itemPriceForContext).
     function _modeBaseSubtotal(mode, basePrice, qty, weightKg) {
         switch (mode) {
             case 'per_package':           return _num(basePrice) * _num(qty);
@@ -218,8 +276,11 @@
         if (MODES.indexOf(itemRef.mode) === -1) {
             return { error: 'invalid_mode:' + itemRef.mode, subtotal: 0 };
         }
-        const baseSubtotal = _modeBaseSubtotal(itemRef.mode, itemRef.basePrice, qty, weightKg);
-        const ruleResult = _applyPricingRule(itemRef.pricingRule, baseSubtotal, itemRef.basePrice, qty, weightKg, itemRef.mode);
+        // Precio efectivo: si hay zona resuelta y el item tiene pricesByZone,
+        // usa el precio de esa zona. Si no, basePrice.
+        const effectivePrice = _itemPriceForContext(itemRef, context);
+        const baseSubtotal = _modeBaseSubtotal(itemRef.mode, effectivePrice, qty, weightKg);
+        const ruleResult = _applyPricingRule(itemRef.pricingRule, baseSubtotal, effectivePrice, qty, weightKg, itemRef.mode);
         return {
             itemId: itemRef.id,
             itemName: itemRef.name,
@@ -227,6 +288,8 @@
             qty: _num(qty),
             weightKg: _num(weightKg),
             basePrice: _num(itemRef.basePrice),
+            effectivePrice: _num(effectivePrice),
+            zoneApplied: (context && context._resolvedZone) ? { id: context._resolvedZone.id, name: context._resolvedZone.name } : null,
             baseSubtotal: _round(baseSubtotal),
             ruleApplied: ruleResult.applied,
             subtotal: _round(ruleResult.subtotal)
@@ -235,12 +298,21 @@
 
     // ===== priceTicket =====
     // packagesList = [{ qty, size, weight }, ...]
+    // context puede traer { cp: '29100' } para resolución de zona.
     function priceTicket(packagesList, resolvedTariff, context) {
         context = context || {};
-        const out = { lines: [], errors: [], total: 0, monthlyFlatCovered: false };
+        const out = { lines: [], errors: [], total: 0, monthlyFlatCovered: false, zone: null };
         if (!resolvedTariff || !Array.isArray(resolvedTariff.items)) {
             out.errors.push('resolved_tariff_invalid');
             return out;
+        }
+        // Resolver zona UNA VEZ por ticket (todos los packages del ticket comparten destino)
+        if (resolvedTariff.zones && resolvedTariff.zones.length && context.cp) {
+            const z = resolveZone(context.cp, resolvedTariff.zones);
+            if (z) {
+                context._resolvedZone = z;
+                out.zone = { id: z.id, name: z.name };
+            }
         }
         const byName = {};
         const byId = {};
@@ -404,11 +476,12 @@
     // Exportar API
     window.pricingEngine = {
         resolveTariff: resolveTariff,
+        resolveZone: resolveZone,
         priceLine: priceLine,
         priceTicket: priceTicket,
         runSelfTests: runSelfTests,
         MODES: MODES,
         RULE_TYPES: RULE_TYPES,
-        version: '1.0'
+        version: '1.1'
     };
 })();
