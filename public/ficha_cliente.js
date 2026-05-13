@@ -87,9 +87,14 @@
                         #${d.idNum || 'N/A'} · ${d.nif || 'N/A'} · ${d.email || ''} · <strong style="color:#FFD700;">${paymentLabels[d.paymentTerms] || 'Contado'}</strong>
                     </div>
                 </div>
-                <button onclick="window._fichaSaveAll()" style="background:#4CAF50; border:none; color:#fff; padding:6px 14px; border-radius:5px; cursor:pointer; font-weight:bold; font-size:0.78rem; display:flex; align-items:center; gap:4px;">
-                    <span class="material-symbols-outlined" style="font-size:0.95rem;">save</span> Guardar
-                </button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button onclick="window._fichaSaveAll()" style="background:#4CAF50; border:none; color:#fff; padding:6px 14px; border-radius:5px; cursor:pointer; font-weight:bold; font-size:0.78rem; display:flex; align-items:center; gap:4px;" title="Guardar todos los cambios (atajo: Ctrl+S)">
+                        <span class="material-symbols-outlined" style="font-size:0.95rem;">save</span> Guardar
+                    </button>
+                    <button onclick="window._fichaClose()" style="background:transparent; border:1px solid rgba(255,255,255,0.4); color:#fff; padding:6px 14px; border-radius:5px; cursor:pointer; font-weight:600; font-size:0.78rem; display:flex; align-items:center; gap:4px;" title="Cerrar la ficha sin guardar cambios">
+                        <span class="material-symbols-outlined" style="font-size:0.95rem;">close</span> Salir
+                    </button>
+                </div>
             </div>
 
             <!-- SUB-TAB BAR -->
@@ -1190,6 +1195,48 @@
             alert('Error: ' + e.message);
         }
     };
+
+    // ============================================================
+    //  CLOSE FICHA (sin guardar)
+    // ============================================================
+    window._fichaClose = function() {
+        // Confirm sólo si parece que ha tocado algo. Heurística barata:
+        // si hay un input/textarea/select que está enfocado o si el usuario
+        // pulsa con shift saltamos confirm. Para evitar molestar siempre,
+        // confirm SIEMPRE con un texto claro: el admin sabe que sale.
+        const ok = confirm('¿Salir de la ficha sin guardar?\n\nSi has hecho cambios y no has pulsado «Guardar», se perderán.');
+        if (!ok) return;
+        if (typeof window.erpCloseTab === 'function') {
+            window.erpCloseTab('ficha-cliente');
+        } else {
+            // Fallback: limpia el contenedor y vuelve al inicio
+            const c = document.getElementById('erp-tab-ficha-cliente');
+            if (c) c.innerHTML = '';
+            if (typeof window.erpOpenTab === 'function') window.erpOpenTab('inicio');
+        }
+    };
+
+    // Atajo de teclado Ctrl+S → Guardar (cuando la ficha está visible).
+    // Se registra una sola vez por sesión.
+    if (!window._fichaCtrlSWired) {
+        window._fichaCtrlSWired = true;
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key && e.key.toLowerCase() === 's') {
+                const tab = document.getElementById('erp-tab-ficha-cliente');
+                // Sólo si la pestaña ficha está renderizada y visible
+                if (tab && tab.offsetParent !== null && typeof window._fichaSaveAll === 'function') {
+                    e.preventDefault();
+                    window._fichaSaveAll();
+                }
+            }
+            if (e.key === 'Escape') {
+                const tab = document.getElementById('erp-tab-ficha-cliente');
+                if (tab && tab.offsetParent !== null && typeof window._fichaClose === 'function') {
+                    window._fichaClose();
+                }
+            }
+        });
+    }
 
     // ============================================================
     //  SAVE ALL (from Principal + Económico)
