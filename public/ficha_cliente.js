@@ -156,15 +156,11 @@
     function _fichaPopulateTariffSelects() {
         const currentVal = _fichaClientData ? (_fichaClientData.tariffId || '') : '';
         // fc-tariff vive en pestaña Principal, fc-tariff-eco en Económico —
-        // editan el mismo campo users/{id}.tariffId. Los sincronizamos al
-        // guardar (ver _fichaSaveAll abajo).
+        // editan el mismo campo users/{id}.tariffId.
         ['fc-tariff', 'fc-tariff-eco'].forEach(selId => {
             const sel = document.getElementById(selId);
             if (!sel) return;
             sel.innerHTML = '<option value="">-- Sin Tarifa Global --</option>';
-            // Inyectamos el valor actual del cliente PRIMERO aunque no esté en la
-            // lista cargada (puede ser una tarifa custom o legacy con id raro) —
-            // así nunca se "pierde" la selección al abrir la ficha.
             if (currentVal && !_fichaTariffsCache.find(t => t.id === currentVal)) {
                 const opt = document.createElement('option');
                 opt.value = currentVal;
@@ -179,13 +175,54 @@
                 if (t.id === currentVal) opt.selected = true;
                 sel.appendChild(opt);
             });
-            // Sincronización en vivo: cambiar uno actualiza el otro
-            sel.onchange = function() {
+            // ─── AUTOGUARDADO al cambiar la tarifa ────────────────
+            // Antes había que pulsar 💾 Guardar para persistir. Olvidarlo
+            // perdía el cambio. Ahora el cambio se graba al instante en
+            // Firestore + sincroniza el otro select + toast verde.
+            sel.onchange = async function() {
+                const newVal = this.value;
                 const otherId = selId === 'fc-tariff' ? 'fc-tariff-eco' : 'fc-tariff';
                 const other = document.getElementById(otherId);
-                if (other && other.value !== this.value) other.value = this.value;
+                if (other && other.value !== newVal) other.value = newVal;
+                await _fichaAutoSaveTariffId(newVal);
             };
         });
+    }
+
+    // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
+    async function _fichaAutoSaveTariffId(newTariffId) {
+        if (!_fichaClientId) return;
+        try {
+            await db.collection('users').doc(_fichaClientId).update({
+                tariffId: newTariffId,
+                tariffUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            // Update local cache
+            if (window.userMap && window.userMap[_fichaClientId]) {
+                window.userMap[_fichaClientId].tariffId = newTariffId;
+            }
+            _fichaClientData = { ..._fichaClientData, tariffId: newTariffId };
+            _fichaShowToast('✓ Tarifa actualizada: ' + (newTariffId || 'sin tarifa'));
+            // Refrescar bloque cuota mensual (si la nueva tarifa cambia el flat_monthly)
+            if (typeof _fichaWireFlatRateBlock === 'function') {
+                try { _fichaWireFlatRateBlock(); } catch(_) {}
+            }
+        } catch(e) {
+            console.error('[ficha] autoSave tariffId failed:', e);
+            alert('❌ No se pudo guardar la tarifa: ' + e.message);
+        }
+    }
+
+    // Toast no bloqueante de 2.5s — reemplaza al alert para autoguardados
+    function _fichaShowToast(msg, color) {
+        try {
+            const t = document.createElement('div');
+            t.style.cssText = 'position:fixed; bottom:20px; right:20px; background:' + (color || '#4CAF50') + '; color:#fff; padding:10px 18px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.4); font-size:0.85rem; font-weight:600; z-index:100001; opacity:0; transition:opacity 0.2s;';
+            t.textContent = msg;
+            document.body.appendChild(t);
+            requestAnimationFrame(() => { t.style.opacity = '1'; });
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 2500);
+        } catch(_) {}
     }
 
     // Botón de refrescar manual por si el admin acaba de crear una tarifa
