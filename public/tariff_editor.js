@@ -249,6 +249,98 @@
 
     // ============ TARIFA EDITOR (constructor de tarifa global) ============
 
+    // Plantillas de arranque según tipo de tarifa elegido en el picker
+    const TARIFF_TEMPLATES = {
+        plana: {
+            label: 'Tarifa plana mensual',
+            description: 'Una cuota fija al mes que cubre todo. Los albaranes no facturan individualmente.',
+            icon: '📊',
+            items: [
+                { id: 'cuota_mensual', name: 'Cuota mensual', mode: 'flat_monthly', basePrice: 500.00, unit: 'mes', pricingRule: null }
+            ]
+        },
+        bulto: {
+            label: 'Por bulto',
+            description: 'Precio según número de paquetes. Habitual en paquetería estándar.',
+            icon: '📦',
+            items: [
+                { id: 'pkg_pequeno', name: 'Paquete pequeño', mode: 'per_package', basePrice: 4.50, unit: 'paquete', conditions: { maxKg: 5 }, pricingRule: null },
+                { id: 'pkg_mediano', name: 'Paquete mediano', mode: 'per_package', basePrice: 7.00, unit: 'paquete', conditions: { minKg: 5, maxKg: 15 }, pricingRule: null },
+                { id: 'pkg_grande', name: 'Paquete grande', mode: 'per_package', basePrice: 12.00, unit: 'paquete', conditions: { minKg: 15, maxKg: 30 }, pricingRule: null }
+            ]
+        },
+        kilo: {
+            label: 'Por kilo',
+            description: 'Precio según peso real del envío. Ideal para mercancía variable.',
+            icon: '⚖️',
+            items: [
+                { id: 'kg_estandar', name: 'Transporte por peso', mode: 'per_kg', basePrice: 0.80, unit: 'kg', pricingRule: { type: 'min_charge', amount: 6.00 } }
+            ]
+        },
+        expedicion: {
+            label: 'Por expedición',
+            description: 'Un cobro fijo por albarán, sin importar cuántos paquetes lleve.',
+            icon: '🚚',
+            items: [
+                { id: 'exp_estandar', name: 'Expedición estándar', mode: 'per_expedition', basePrice: 25.00, unit: 'expedición', pricingRule: null }
+            ]
+        },
+        expedicion_unit: {
+            label: 'Por expedición × bulto',
+            description: 'Cuota fija de expedición multiplicada por bultos. (Caso descrito como "carga 4" en albarán de 4 bultos).',
+            icon: '🚛',
+            items: [
+                { id: 'exp_x_bulto', name: 'Expedición por bulto', mode: 'per_expedition_unit', basePrice: 6.00, unit: 'bulto', pricingRule: null }
+            ]
+        },
+        mixta: {
+            label: 'Mixta / libre',
+            description: 'Tarifa vacía. Construye los artículos que quieras combinando todos los modos. Recomendado si tu caso es complejo.',
+            icon: '🧩',
+            items: []
+        }
+    };
+
+    function _openTariffTypePicker(onPicked) {
+        const old = document.getElementById('tariff-type-picker');
+        if (old) old.remove();
+        const modal = document.createElement('div');
+        modal.id = 'tariff-type-picker';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100002; display:flex; align-items:center; justify-content:center; padding:20px;';
+        const keys = Object.keys(TARIFF_TEMPLATES);
+        const cards = keys.map(k => {
+            const t = TARIFF_TEMPLATES[k];
+            return ''
+                + '<div data-pick="' + k + '" style="background:#1a1a1a; border:2px solid #444; border-radius:10px; padding:14px; cursor:pointer; transition:all 0.15s;" onmouseover="this.style.borderColor=\'#FF6600\'; this.style.background=\'rgba(255,102,0,0.04)\'" onmouseout="this.style.borderColor=\'#444\'; this.style.background=\'#1a1a1a\'">'
+                + '  <div style="font-size:1.8rem; margin-bottom:6px;">' + t.icon + '</div>'
+                + '  <div style="font-weight:700; color:#FF8A50; font-size:0.95rem; margin-bottom:4px;">' + _esc(t.label) + '</div>'
+                + '  <div style="font-size:0.72rem; color:#aaa; line-height:1.4; min-height:42px;">' + _esc(t.description) + '</div>'
+                + '  <div style="font-size:0.62rem; color:#666; margin-top:8px; letter-spacing:0.5px; text-transform:uppercase;">' + (t.items.length === 0 ? 'Sin plantilla — empieza vacío' : 'Plantilla: ' + t.items.length + ' artículo' + (t.items.length === 1 ? '' : 's')) + '</div>'
+                + '</div>';
+        }).join('');
+        modal.innerHTML = ''
+            + '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:24px; max-width:880px; width:100%; max-height:92vh; overflow-y:auto; color:#d4d4d4;">'
+            + '<h2 style="margin:0 0 6px; color:#FF6600;">🧮 ¿Qué tipo de tarifa quieres crear?</h2>'
+            + '<p style="margin:0 0 18px; font-size:0.82rem; color:#aaa;">Elige el modelo base. Cada opción te crea una plantilla con artículos típicos que luego puedes editar, añadir o quitar libremente. Si tu caso es muy específico, elige "Mixta / libre".</p>'
+            + '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px,1fr)); gap:12px;">' + cards + '</div>'
+            + '<div style="margin-top:20px; text-align:right;">'
+            + '  <button id="ttp-cancel" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cancelar</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+        document.getElementById('ttp-cancel').onclick = () => modal.remove();
+        modal.querySelectorAll('[data-pick]').forEach(card => card.addEventListener('click', function() {
+            const key = this.getAttribute('data-pick');
+            const tpl = TARIFF_TEMPLATES[key];
+            const name = prompt('Nombre para la tarifa "' + tpl.label + '":', tpl.label + ' ' + new Date().getFullYear());
+            if (!name) return;
+            modal.remove();
+            // Deep clone items para que ediciones futuras no muten la plantilla
+            const items = JSON.parse(JSON.stringify(tpl.items));
+            onPicked({ name: name.trim(), version: 2, items: items, _typePreset: key });
+        }));
+    }
+
     window.openTariffBuilder = async function openTariffBuilder(tariffId) {
         let tariff;
         if (tariffId) {
@@ -256,10 +348,15 @@
             if (tariff && tariff.version !== 2) tariff = null;
         }
         if (!tariff) {
-            const name = prompt('Nombre de la nueva tarifa:');
-            if (!name) return;
-            tariff = { name: name.trim(), version: 2, items: [] };
+            // Pasa por el picker de tipo antes de entrar al editor
+            return _openTariffTypePicker(function(preset) {
+                _renderTariffBuilder(preset);
+            });
         }
+        _renderTariffBuilder(tariff);
+    };
+
+    function _renderTariffBuilder(tariff) {
 
         const modal = document.createElement('div');
         modal.id = 'tariff-builder-modal';
@@ -267,7 +364,7 @@
         modal.innerHTML = ''
             + '<div style="max-width:980px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:24px; color:#d4d4d4;">'
             + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
-            + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Constructor de tarifa</h2><div id="tb-name" style="font-size:0.85rem; color:#aaa; margin-top:3px;"></div></div>'
+            + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Constructor de tarifa' + (tariff._typePreset ? ' <span style="font-size:0.7rem; color:#FF8A50; background:rgba(255,102,0,0.10); padding:3px 9px; border-radius:8px; vertical-align:middle; margin-left:8px;">tipo: ' + _esc(TARIFF_TEMPLATES[tariff._typePreset] ? TARIFF_TEMPLATES[tariff._typePreset].label : tariff._typePreset) + '</span>' : '') + '</h2><div id="tb-name" style="font-size:0.85rem; color:#aaa; margin-top:3px;">' + (tariff._typePreset ? 'Plantilla cargada — puedes editar, añadir o quitar artículos libremente.' : 'Edición de tarifa existente') + '</div></div>'
             + '  <div style="display:flex; gap:8px;"><button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button><button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
