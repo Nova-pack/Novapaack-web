@@ -689,6 +689,54 @@ async function run() {
     });
 }
 
+// ============================================================
+// MODOS DE EJECUCIÓN
+// ============================================================
+// One-shot (default):  ejecuta una pasada IMAP + cola SMTP y sale.
+//                      Útil para cron / programador de tareas.
+// Watch mode (--watch): IMAP cada IMAP_INTERVAL_MIN minutos +
+//                      escucha Firestore EN TIEMPO REAL para
+//                      enviar emails salientes al instante (1-2s)
+//                      cuando aparecen con status:'queued'.
+const WATCH_MODE = process.argv.includes('--watch') || process.env.WATCH_MODE === 'true';
+const IMAP_INTERVAL_MIN = parseInt(process.env.IMAP_INTERVAL_MIN || '5', 10);
+
+// Anti doble-procesado de la cola: si hay un envío en curso y llegan
+// más cambios, no lanzamos múltiples procesos en paralelo (evita rate
+// limits de IONOS y race conditions sobre el doc).
+let _processingOutgoing = false;
+async function tryProcessOutgoing(db) {
+    if (_processingOutgoing) return;
+    _processingOutgoing = true;
+    try {
+        await processOutgoingQueue(db);
+    } catch(e) {
+        console.error('[MAIL ENGINE] Error cola saliente (watch):', e.message);
+    } finally {
+        _processingOutgoing = false;
+    }
+}
+
+// Ejecuta una pasada IMAP completa con retries (lo que antes hacía main
+// en una sola tirada). Reutilizable en watch mode.
+async function runImapOnce() {
+    let lastError = null;
+    for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
+        try {
+            console.log(`[MAIL ENGINE] IMAP attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
+            await run();
+            return null;
+        } catch(e) {
+            lastError = e;
+            console.error(`[MAIL ENGINE] IMAP attempt ${attempt} failed: ${e.message}`);
+            if (attempt < IMAP_MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
+            }
+        }
+    }
+    return lastError;
+}
+
 // Run and handle Firebase auth
 async function main() {
     // Init Firebase
@@ -755,39 +803,92 @@ async function main() {
     }
 
     let lastError = null;
-    if (!skipImap) {
-        for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
-            try {
-                console.log(`[MAIL ENGINE] Attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
-                await run();
-                lastError = null;
-                break;
-            } catch(e) {
-                lastError = e;
-                console.error(`[MAIL ENGINE] Attempt ${attempt} failed: ${e.message}`);
-                if (attempt < IMAP_MAX_RETRIES) {
-                    console.log(`[MAIL ENGINE] Retrying in ${IMAP_RETRY_DELAY_MS / 1000}s...`);
-                    await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
-                }
-            }
+
+    // ════════════════════════════════════════════════════════════
+    //  WATCH MODE — vive eternamente, escucha Firestore en tiempo real
+    // ════════════════════════════════════════════════════════════
+    if (WATCH_MODE) {
+        console.log('[MAIL ENGINE] 🟢 MODO WATCH — quedo escuchando cambios en tiempo real');
+        console.log('[MAIL ENGINE]    IMAP cada ' + IMAP_INTERVAL_MIN + ' min · SMTP al instante via Firestore listener');
+        const db = firebase.firestore();
+
+        // 1) Pasada inicial IMAP (si no está pausado)
+        if (!skipImap) {
+            await runImapOnce();
+        } else {
+            console.log('[MAIL ENGINE] IMAP saltado por pausa de admin.');
         }
 
+        // 2) Pasada inicial cola saliente (procesa lo que estuviera ya pendiente)
+        if (!skipOutgoing) {
+            await tryProcessOutgoing(db);
+        }
+
+        // 3) Listener en tiempo real sobre la cola saliente
+        if (!skipOutgoing) {
+            console.log('[MAIL ENGINE] 📡 Suscripción Firestore a status="queued" activa.');
+            db.collection('mailbox').where('status', '==', 'queued')
+                .onSnapshot(snap => {
+                    const newOnes = snap.docChanges().filter(c => c.type === 'added' || c.type === 'modified');
+                    if (newOnes.length === 0) return;
+                    console.log('[MAIL ENGINE] 🔔 ' + newOnes.length + ' email(s) saliente(s) detectado(s) en tiempo real');
+                    tryProcessOutgoing(db);
+                }, err => {
+                    console.error('[MAIL ENGINE] Listener Firestore error:', err.message);
+                });
+            // También vigilamos el legacy status='outgoing'
+            db.collection('mailbox').where('status', '==', 'outgoing')
+                .onSnapshot(snap => {
+                    const newOnes = snap.docChanges().filter(c => c.type === 'added' || c.type === 'modified');
+                    if (newOnes.length === 0) return;
+                    console.log('[MAIL ENGINE] 🔔 ' + newOnes.length + ' email(s) saliente(s) legacy detectado(s)');
+                    tryProcessOutgoing(db);
+                }, err => {
+                    console.error('[MAIL ENGINE] Listener Firestore (legacy) error:', err.message);
+                });
+        }
+
+        // 4) Intervalo IMAP periódico
+        if (!skipImap) {
+            setInterval(async () => {
+                console.log('[MAIL ENGINE] ⏰ Pasada IMAP periódica…');
+                // Re-leemos pausa: el admin puede activar/desactivar sobre la marcha
+                try {
+                    const cfgDoc = await db.collection('config').doc('admin').get();
+                    if (cfgDoc.exists && cfgDoc.data().mailEngineEnabled === false) {
+                        console.log('[MAIL ENGINE] IMAP sigue pausado por admin. Salto pasada.');
+                        return;
+                    }
+                } catch(_) {}
+                await runImapOnce();
+            }, IMAP_INTERVAL_MIN * 60 * 1000);
+        }
+
+        // 5) Heartbeat cada 30 min para que se vea que sigue vivo en logs
+        setInterval(() => {
+            console.log('[MAIL ENGINE] ❤️ Heartbeat ' + new Date().toLocaleString('es-ES'));
+        }, 30 * 60 * 1000);
+
+        console.log('[MAIL ENGINE] ✅ Listo. NO cerrar esta ventana — el motor vive aquí.');
+        // No salimos. El proceso se queda vivo por los listeners y setIntervals.
+        return;
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  ONE-SHOT MODE — pasada única y salida (compat cron)
+    // ════════════════════════════════════════════════════════════
+    if (!skipImap) {
+        lastError = await runImapOnce();
         if (lastError) {
             console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
-            console.error('[MAIL ENGINE] ⚠️  ALERTA: El buzón no se ha podido sincronizar. Revisa la conexión IMAP o las credenciales.');
         }
     } else {
-        // Registro de la pausa para que el admin vea cuándo fue el último ciclo
         try { await firebase.firestore().collection('config').doc('admin').set({
             mailEngineLastSkippedAt: firebase.firestore.FieldValue.serverTimestamp(),
             mailEngineLastReason: 'imap_paused_by_admin'
         }, { merge: true }); } catch(e) {}
     }
 
-    // ── PROCESAR COLA SALIENTE ──
-    // Se ejecuta INDEPENDIENTEMENTE del estado de IMAP: aunque el admin
-    // tenga pausada la lectura del buzón entrante, las bienvenidas y
-    // demás emails salientes deben enviarse igual.
     if (!skipOutgoing) {
         try {
             const db = firebase.firestore();
