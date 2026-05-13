@@ -291,6 +291,10 @@
             case 'tariffs':
                 if (typeof window.loadTariffClients === 'function') window.loadTariffClients();
                 if (typeof window.loadArticlesCount === 'function') window.loadArticlesCount();
+                // Activar sub-tab 'global' (Mis tarifas) y renderizar las cards.
+                // Sin esto, el panel se quedaba vacío al abrir el workspace.
+                if (typeof window.showTariffTab === 'function') window.showTariffTab('global');
+                if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
                 break;
             case 'debidos':
                 if (typeof window.loadDebidosManager === 'function') window.loadDebidosManager();
@@ -510,7 +514,10 @@
                 'adv-billing-workspace', 'adv-history-workspace', 'adv-reports-workspace', 'adv-tariffs-workspace',
                 'adv-clients-workspace', 'adv-providers-workspace', 'adv-manual-tickets-workspace',
                 'adv-scanner-workspace', 'erp-tab-mailbox', 'erp-tab-facturas-central', 'erp-tab-route-details',
-                'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment', 'erp-tab-trash', 'erp-tab-cooper'
+                'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment', 'erp-tab-trash', 'erp-tab-cooper',
+                'erp-tab-analytics', 'erp-tab-auto-assign', 'erp-tab-heatmap',
+                'erp-tab-tariff-builder', 'erp-tab-tariff-manager',
+                'erp-tab-parent-diagnostic', 'erp-tab-invoice-preview'
             ];
             tabContainerIds.forEach(function(id) {
                 var el = document.getElementById(id);
