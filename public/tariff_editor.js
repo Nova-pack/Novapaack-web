@@ -253,10 +253,21 @@
     const TARIFF_TEMPLATES = {
         plana: {
             label: 'Tarifa plana mensual',
-            description: 'Una cuota fija al mes que cubre todo. Los albaranes no facturan individualmente.',
+            description: 'Una cuota fija al mes que cubre el flujo habitual. Los albaranes normales no facturan individualmente.',
             icon: '📊',
             items: [
                 { id: 'cuota_mensual', name: 'Cuota mensual', mode: 'flat_monthly', basePrice: 500.00, unit: 'mes', pricingRule: null }
+            ]
+        },
+        plana_extras: {
+            label: 'Plana + servicios sueltos',
+            description: 'Cuota mensual fija + artículos que SE FACTURAN APARTE (paletizados, urgentes, especiales). Lo más común en clientes con plana.',
+            icon: '📊➕',
+            items: [
+                { id: 'cuota_mensual', name: 'Cuota mensual', mode: 'flat_monthly', basePrice: 500.00, unit: 'mes', pricingRule: null },
+                { id: 'palet_estandar', name: 'Paletizado estándar', mode: 'per_package', basePrice: 35.00, unit: 'palet', pricingRule: null },
+                { id: 'palet_europeo', name: 'Paletizado europeo (120×80)', mode: 'per_package', basePrice: 40.00, unit: 'palet', pricingRule: null },
+                { id: 'envio_urgente', name: 'Envío urgente fuera horario', mode: 'per_expedition', basePrice: 60.00, unit: 'expedición', pricingRule: null }
             ]
         },
         bulto: {
@@ -368,39 +379,116 @@
             + '  <div style="display:flex; gap:8px;"><button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button><button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
-            + '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;"><thead><tr style="border-bottom:1px solid #444;"><th style="text-align:left; padding:8px;">Artículo</th><th>Modo</th><th>Precio</th><th>Regla</th><th></th></tr></thead><tbody id="tb-rows"></tbody></table>'
-            + '<button id="tb-add" style="margin-top:14px; background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo</button>'
+            + '<div id="tb-sections"></div>'
+            + '<div id="tb-add-bar" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
             + '</div>';
         document.body.appendChild(modal);
 
+        function _rowHTML(it, idx) {
+            const ruleSummary = it.pricingRule ? it.pricingRule.type.replace('_', ' ') : '—';
+            return '<tr style="border-bottom:1px solid #2d2d30;">'
+                + '<td style="padding:8px;"><strong>' + _esc(it.name) + '</strong><br><small style="color:#666; font-family:monospace;">' + _esc(it.id) + '</small></td>'
+                + '<td style="padding:8px; color:#aaa; font-size:0.78rem;">' + (MODE_LABELS[it.mode] || it.mode) + '</td>'
+                + '<td style="padding:8px; font-family:monospace; color:#fff;">' + _money(it.basePrice) + (it.unit ? ' / ' + _esc(it.unit) : '') + '</td>'
+                + '<td style="padding:8px; font-size:0.75rem; color:#FF8A50;">' + ruleSummary + '</td>'
+                + '<td style="padding:8px; text-align:right;"><button data-edit="' + idx + '" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem; margin-right:4px;">✏️</button><button data-del="' + idx + '" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem;">🗑️</button></td>'
+                + '</tr>';
+        }
+
+        function _tableHTML(rowsHtml, headerExtra) {
+            return '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+                + '<thead><tr style="border-bottom:1px solid #444;"><th style="text-align:left; padding:8px;">Artículo</th><th style="text-align:left;">Modo</th><th style="text-align:left;">Precio</th><th style="text-align:left;">Regla</th><th></th></tr></thead>'
+                + '<tbody>' + rowsHtml + '</tbody></table>';
+        }
+
         function renderRows() {
-            const tb = document.getElementById('tb-rows');
+            const sec = document.getElementById('tb-sections');
+            const addBar = document.getElementById('tb-add-bar');
+
             if (!tariff.items.length) {
-                tb.innerHTML = '<tr><td colspan="5" style="padding:14px; text-align:center; color:#666;">Sin artículos. Añade el primero.</td></tr>';
+                sec.innerHTML = '<div style="padding:24px; text-align:center; color:#666; border:1px dashed #333; border-radius:8px;">Sin artículos todavía. Añade el primero.</div>';
+                addBar.innerHTML = '<button id="tb-add" style="background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo</button>';
+                _wireAdds();
                 return;
             }
-            tb.innerHTML = tariff.items.map((it, idx) => {
-                const ruleSummary = it.pricingRule ? it.pricingRule.type.replace('_', ' ') : '—';
-                return '<tr style="border-bottom:1px solid #2d2d30;">'
-                    + '<td style="padding:8px;"><strong>' + _esc(it.name) + '</strong><br><small style="color:#666; font-family:monospace;">' + _esc(it.id) + '</small></td>'
-                    + '<td style="padding:8px; color:#aaa; font-size:0.78rem;">' + (MODE_LABELS[it.mode] || it.mode) + '</td>'
-                    + '<td style="padding:8px; font-family:monospace; color:#fff;">' + _money(it.basePrice) + (it.unit ? ' / ' + _esc(it.unit) : '') + '</td>'
-                    + '<td style="padding:8px; font-size:0.75rem; color:#FF8A50;">' + ruleSummary + '</td>'
-                    + '<td style="padding:8px; text-align:right;"><button data-edit="' + idx + '" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem; margin-right:4px;">✏️</button><button data-del="' + idx + '" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.72rem;">🗑️</button></td>'
-                    + '</tr>';
-            }).join('');
-            tb.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+
+            // Separamos: cuotas planas (flat_monthly) vs. servicios facturables (resto)
+            const flatItems = [];
+            const billableItems = [];
+            tariff.items.forEach((it, idx) => {
+                if (it.mode === 'flat_monthly') flatItems.push({ it, idx });
+                else billableItems.push({ it, idx });
+            });
+
+            let html = '';
+
+            if (flatItems.length) {
+                html += '<div style="background:rgba(76,175,80,0.04); border:1px solid rgba(76,175,80,0.25); border-radius:8px; padding:12px; margin-bottom:14px;">'
+                    + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><span style="font-size:1.1rem;">📊</span><strong style="color:#4CAF50;">Cuota plana mensual</strong><span style="font-size:0.7rem; color:#aaa; background:rgba(76,175,80,0.10); padding:2px 7px; border-radius:8px;">se factura automáticamente al cerrar mes — los albaranes normales NO suman</span></div>'
+                    + _tableHTML(flatItems.map(x => _rowHTML(x.it, x.idx)).join(''))
+                    + '</div>';
+            }
+
+            if (billableItems.length || flatItems.length) {
+                const titleExtra = flatItems.length
+                    ? '<strong style="color:#FF8A50;">Servicios facturados aparte</strong><span style="font-size:0.7rem; color:#aaa; background:rgba(255,138,80,0.10); padding:2px 7px; border-radius:8px;">SE FACTURAN POR ALBARÁN además de la cuota plana (paletizados, urgentes, especiales…)</span>'
+                    : '<strong style="color:#FF8A50;">Artículos facturables</strong><span style="font-size:0.7rem; color:#aaa;">se cobran según el modo configurado en cada línea de albarán</span>';
+                html += '<div style="background:rgba(255,138,80,0.04); border:1px solid rgba(255,138,80,0.25); border-radius:8px; padding:12px;">'
+                    + '<div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;"><span style="font-size:1.1rem;">📦</span>' + titleExtra + '</div>'
+                    + (billableItems.length
+                        ? _tableHTML(billableItems.map(x => _rowHTML(x.it, x.idx)).join(''))
+                        : '<div style="padding:12px; text-align:center; color:#888; font-size:0.82rem;">Sin servicios extras todavía. Pulsa «+ Añadir servicio extra» abajo si el cliente tiene paletizados, urgentes u otros servicios que NO entran en la cuota plana.</div>')
+                    + '</div>';
+            }
+
+            sec.innerHTML = html;
+
+            // Botones de añadir según contexto
+            if (flatItems.length) {
+                addBar.innerHTML = ''
+                    + '<button id="tb-add-extra" style="background:#FF8A50; border:0; color:#fff; padding:8px 16px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir servicio extra (fuera de la cuota plana)</button>'
+                    + '<button id="tb-add" style="background:#5DADE2; border:0; color:#000; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir cuota o artículo libre</button>';
+            } else {
+                addBar.innerHTML = '<button id="tb-add" style="background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo</button>';
+            }
+
+            // Wire row buttons
+            sec.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
                 const i = parseInt(b.getAttribute('data-edit'), 10);
                 openItemEditor(tariff.items[i], (updated) => { tariff.items[i] = updated; renderRows(); });
             });
-            tb.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+            sec.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
                 const i = parseInt(b.getAttribute('data-del'), 10);
                 if (confirm('¿Eliminar "' + tariff.items[i].name + '"?')) { tariff.items.splice(i, 1); renderRows(); }
             });
-        }
-        renderRows();
 
-        document.getElementById('tb-add').onclick = () => openItemEditor(null, (it) => { tariff.items.push(it); renderRows(); });
+            _wireAdds();
+        }
+
+        function _wireAdds() {
+            const addBtn = document.getElementById('tb-add');
+            if (addBtn) addBtn.onclick = () => openItemEditor(null, (it) => { tariff.items.push(it); renderRows(); });
+            const addExtra = document.getElementById('tb-add-extra');
+            if (addExtra) addExtra.onclick = () => {
+                // Pre-rellenamos un artículo facturable típico (paletizado) para guiar
+                openItemEditor({
+                    id: 'extra_' + Date.now().toString(36),
+                    name: '',
+                    mode: 'per_package',
+                    basePrice: 35.00,
+                    unit: 'palet',
+                    pricingRule: null
+                }, (it) => {
+                    if (it.mode === 'flat_monthly') {
+                        if (!confirm('Has marcado este artículo como cuota plana mensual, no como servicio extra facturable. ¿Guardar igualmente?')) return;
+                    }
+                    tariff.items.push(it);
+                    renderRows();
+                });
+            };
+        }
+
+        renderRows();
         document.getElementById('tb-close').onclick = () => modal.remove();
         document.getElementById('tb-save').onclick = async () => {
             tariff.name = document.getElementById('tb-tariff-name').value.trim();
