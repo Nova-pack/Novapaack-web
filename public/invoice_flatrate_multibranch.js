@@ -210,11 +210,53 @@
             + '  </tbody>'
             + '</table>'
 
-            // BRANCH BREAKDOWN
-            + '<div style="background:rgba(255,102,0,0.03); border:0.5px solid rgba(255,102,0,0.15); border-radius:6px; padding:14px 16px; margin-bottom:30px; page-break-inside:avoid;">'
-            + '  <div style="font-size:0.65rem; color:#FF6600; letter-spacing:1.5px; text-transform:uppercase; font-weight:500; margin-bottom:8px;">Albaranes incluidos · desglose por sede (' + totalTickets + ' en total)</div>'
-            + branchesHTML
-            + '</div>'
+            // BRANCH BREAKDOWN — bloque informativo con % por sucursal
+            + (function() {
+                if (totalTickets === 0 || groups.length === 0) return '';
+                // Construir barras de % visualmente
+                let pctRows = groups.map(g => {
+                    const pct = (g.count / totalTickets) * 100;
+                    const pctRound = pct.toFixed(1);
+                    const barW = Math.max(2, Math.round(pct));
+                    return ''
+                        + '<div style="display:grid; grid-template-columns: 1fr 70px 60px 140px; gap:10px; align-items:center; padding:6px 0; border-bottom:0.5px dashed rgba(255,102,0,0.10);">'
+                        + '  <div>'
+                        + '    <div style="font-size:0.78rem; color:#333; font-weight:500;">' + _esc(g.label) + '</div>'
+                        + '    <div style="font-size:0.62rem; color:#888; margin-top:1px;">' + _esc(g.sub) + '</div>'
+                        + '  </div>'
+                        + '  <div style="text-align:right; font-size:0.78rem; color:#444; font-weight:500;">' + g.count + ' alb.</div>'
+                        + '  <div style="text-align:right; font-size:0.78rem; color:#FF6600; font-weight:600;">' + pctRound + ' %</div>'
+                        + '  <div style="background:rgba(255,102,0,0.08); border-radius:3px; height:10px; overflow:hidden;">'
+                        + '    <div style="height:100%; width:' + barW + '%; background:linear-gradient(90deg, #FF6600, #FFB366); border-radius:3px;"></div>'
+                        + '  </div>'
+                        + '</div>';
+                }).join('');
+                // Identificar sucursal más operativa
+                const top = groups.slice().sort((a,b) => b.count - a.count)[0];
+                // Listado de IDs (colapsado al final para no saturar)
+                const allIdsHTML = groups.map(g =>
+                    '<div style="margin-top:6px;">'
+                    + '<span style="font-size:0.7rem; color:#666; font-weight:500;">' + _esc(g.label) + ':</span> '
+                    + '<span style="font-family:monospace; font-size:0.65rem; color:#888;">' + _esc(g.ids.join(', ')) + '</span>'
+                    + '</div>'
+                ).join('');
+                return ''
+                    + '<div style="background:rgba(255,102,0,0.03); border:0.5px solid rgba(255,102,0,0.15); border-radius:6px; padding:14px 16px; margin-bottom:25px; page-break-inside:avoid;">'
+                    + '  <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">'
+                    + '    <div style="font-size:0.65rem; color:#FF6600; letter-spacing:1.5px; text-transform:uppercase; font-weight:500;">ⓘ Distribución operativa por sucursal · ' + _esc(periodLabel) + '</div>'
+                    + '  </div>'
+                    + '  <div style="font-size:0.65rem; color:#999; font-style:italic; margin-bottom:10px; line-height:1.4;">Datos informativos. La cuota mensual contractual es única y no varía con el volumen.</div>'
+                    + pctRows
+                    + '  <div style="display:grid; grid-template-columns: 1fr 70px 60px 140px; gap:10px; padding:7px 0 3px; margin-top:3px; font-weight:700;">'
+                    + '    <div style="font-size:0.78rem; color:#222;">TOTAL CONSOLIDADO</div>'
+                    + '    <div style="text-align:right; font-size:0.78rem; color:#222;">' + totalTickets + ' alb.</div>'
+                    + '    <div style="text-align:right; font-size:0.78rem; color:#222;">100 %</div>'
+                    + '    <div></div>'
+                    + '  </div>'
+                    + (top ? '<div style="margin-top:8px; padding-top:8px; border-top:0.5px solid rgba(255,102,0,0.15); font-size:0.7rem; color:#555;">Sucursal más operativa este periodo: <strong style="color:#FF6600;">' + _esc(top.label) + '</strong> con ' + top.count + ' albaranes (' + ((top.count/totalTickets)*100).toFixed(1) + ' %).</div>' : '')
+                    + '  <details style="margin-top:10px;"><summary style="cursor:pointer; font-size:0.65rem; color:#aaa; letter-spacing:1px; text-transform:uppercase;">Ver IDs de albaranes incluidos</summary>' + allIdsHTML + '</details>'
+                    + '</div>'
+            })()
 
             // TOTALS
             + '<div style="display:flex; justify-content:flex-end; margin-bottom:30px;">'
