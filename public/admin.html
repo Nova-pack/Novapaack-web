@@ -4645,8 +4645,9 @@ window.runPublicTicketsBackfill = async function() {
                     <span style="color:#4CAF50; font-weight:bold; font-size:0.85rem;"><span class="material-symbols-outlined">bar_chart</span> Tarifa Global:</span>
                     <input type="text" id="tariff-global-id" placeholder="ID o nombre de tarifa..." list="global-tariffs-datalist" style="padding:5px 10px; background:#1e1e1e; border:1px solid #555; color:white; border-radius:4px; width:200px; font-size:0.85rem;">
                     <datalist id="global-tariffs-datalist"></datalist>
-                    <button class="btn btn-primary" id="btn-load-global-tariff" style="background:#4CAF50; border:none; color:white; padding:5px 15px; font-size:0.85rem; cursor:pointer; border-radius:4px;">Cargar</button>
-                    <button onclick="promptCreateGlobalTariff()" style="background:transparent; border:1px solid #4CAF50; color:#4CAF50; padding:5px 12px; font-size:0.85rem; cursor:pointer; border-radius:4px;">+ Nueva Tarifa</button>
+                    <button class="btn btn-primary" id="btn-load-global-tariff" style="background:#4CAF50; border:none; color:white; padding:5px 15px; font-size:0.85rem; cursor:pointer; border-radius:4px;" title="Cargar tarifa seleccionada. Si es v2, abre el editor nuevo automáticamente.">Cargar</button>
+                    <button onclick="if(typeof window.openTariffBuilder===&quot;function&quot;){ window.openTariffBuilder(null); } else { alert(&quot;Editor v2 no cargado.&quot;); }" style="background:#FF6600; border:none; color:#fff; padding:5px 12px; font-size:0.85rem; cursor:pointer; border-radius:4px; font-weight:700;" title="Nuevo editor de tarifas v2 con modos por bulto/kg/expedición + reglas (descuento por volumen, mínimo, etc.)">🧮 + Nueva (v2)</button>
+                    <button onclick="promptCreateGlobalTariff()" style="background:transparent; border:1px solid #888; color:#aaa; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:4px;" title="Modelo antiguo (artículos por tamaño + peso por brackets)">+ Nueva (legacy)</button>
                     <button id="btn-delete-global-tariff" onclick="deleteCurrentGlobalTariff()" style="display:none; background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:5px 12px; font-size:0.85rem; cursor:pointer; border-radius:4px;"><span class="material-symbols-outlined">delete</span> Eliminar</button>
                 </div>
                 <div id="tariff-editor-area" style="display:none;">
@@ -10942,13 +10943,38 @@ window.runPublicTicketsBackfill = async function() {
 
                 try {
                     const tariffSnap = await db.collection('tariffs').get();
-                    const globalIds = [];
-                    tariffSnap.forEach(doc => { if (doc.id.startsWith("GLOBAL_")) globalIds.push(doc.id.replace("GLOBAL_", "")); });
-                    globalIds.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(id => {
-                        if (globalDatalist) { const o = document.createElement('option'); o.value = id; globalDatalist.appendChild(o); }
-                        if (globalSelect) { const o = document.createElement('option'); o.value = id; o.textContent = "Tarifa Global #" + id; globalSelect.appendChild(o); }
+                    // Recolectamos id + version para anotar las v2 en el datalist
+                    const entries = [];
+                    tariffSnap.forEach(doc => {
+                        const data = doc.data() || {};
+                        if (doc.id.startsWith("GLOBAL_")) {
+                            entries.push({
+                                fullId: doc.id,
+                                shortId: doc.id.replace("GLOBAL_", ""),
+                                version: data.version === 2 ? 2 : 1,
+                                name: data.name || ''
+                            });
+                        }
                     });
-                } catch (e) { console.error(e); }
+                    entries.sort((a, b) => a.shortId.localeCompare(b.shortId, undefined, { numeric: true }));
+                    entries.forEach(e => {
+                        // datalist <option>: 'value' va al input al elegir; 'label' es la línea
+                        // visible secundaria. Para v2 mostramos el sufijo " — v2".
+                        if (globalDatalist) {
+                            const o = document.createElement('option');
+                            o.value = e.shortId;
+                            if (e.version === 2) o.label = (e.name || e.shortId) + ' — v2 (motor nuevo)';
+                            else o.label = e.name || e.shortId;
+                            globalDatalist.appendChild(o);
+                        }
+                        if (globalSelect) {
+                            const o = document.createElement('option');
+                            o.value = e.shortId;
+                            o.textContent = "Tarifa Global #" + e.shortId + (e.version === 2 ? ' (v2)' : '');
+                            globalSelect.appendChild(o);
+                        }
+                    });
+                } catch (err) { console.error(err); }
             }
 
             function renderFilteredTariffClients(filter) {
@@ -10978,15 +11004,36 @@ window.runPublicTicketsBackfill = async function() {
                 loadTariffTable(uid);
             };
 
-            document.getElementById('btn-load-global-tariff').onclick = () => {
+            document.getElementById('btn-load-global-tariff').onclick = async () => {
                 const tid = document.getElementById('tariff-global-id').value.trim();
                 if (!tid) { alert("ID de Tarifa Global"); return; }
-                currentTariffUID = "GLOBAL_" + tid;
+                // Resolver docId real: probar primero como id directo (puede ser
+                // un id v2 con sufijo _v2), después con prefijo GLOBAL_.
+                const candidates = [tid, 'GLOBAL_' + tid];
+                let docSnap = null;
+                for (const c of candidates) {
+                    try {
+                        const d = await db.collection('tariffs').doc(c).get();
+                        if (d.exists) { docSnap = { id: c, data: d.data() }; break; }
+                    } catch(e) {}
+                }
+                // ─── Detectar tarifa v2 → enrutar al editor v2 ────────
+                if (docSnap && docSnap.data && docSnap.data.version === 2) {
+                    if (typeof window.openTariffBuilder === 'function') {
+                        window.openTariffBuilder(docSnap.id);
+                        return;
+                    } else {
+                        alert('Esta tarifa es v2 pero el editor v2 (tariff_editor.js) no está cargado en esta pantalla. Reinicia/refresca.');
+                        return;
+                    }
+                }
+                // ─── Tarifa v1 (legacy) → editor antiguo ──────────────
+                currentTariffUID = docSnap ? docSnap.id : ("GLOBAL_" + tid);
                 window.currentTariffUID = currentTariffUID;
                 activeSubTariff = null;
                 document.getElementById('sub-tariff-tabs').style.display = 'flex';
                 document.getElementById('tariff-editor-area').style.display = 'block';
-                document.getElementById('tariff-editor-title').textContent = "Editar Tarifa Global #" + tid;
+                document.getElementById('tariff-editor-title').textContent = "Editar Tarifa Global #" + tid + (docSnap ? '' : ' (nueva)');
                 document.getElementById('btn-delete-global-tariff').style.display = 'inline-block';
                 loadTariffTable(currentTariffUID);
             };
@@ -16859,13 +16906,136 @@ window.importTarifas50 = async () => {
         const countEl = document.getElementById('adv-mgmt-client-count');
         if (!container) return;
         if (countEl) countEl.textContent = clients.length + ' clientes';
-        
+
         if (clients.length === 0) {
             container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">No se encontraron clientes.</div>';
             return;
         }
-        
+
+        // ─── ÁRBOL PADRE + SUCURSALES ─────────────────────────────────
+        // Las sucursales tienen parentClientId apuntando al padre (por docId
+        // o por idNum del padre). Las agrupamos visualmente bajo el padre,
+        // colapsadas por defecto, con un ▸/▾ para expandir.
+        // Casos:
+        //   - cliente sin parentClientId → padre o cliente independiente
+        //   - cliente con parentClientId match → sucursal
+        //   - cliente con parentClientId huérfano (no encuentra padre) → top-level
+        //   - global (isGlobal=true) → siempre al final del listado, sin nesting
+        const byDocId = new Map();
+        const byIdNum = new Map();
+        clients.forEach(c => {
+            if (c.isGlobal) return;
+            byDocId.set(c.id, c);
+            if (c.idNum) byIdNum.set(String(c.idNum), c);
+        });
+        const resolveParent = (c) => {
+            if (!c.parentClientId) return null;
+            const p = byDocId.get(c.parentClientId) || byIdNum.get(String(c.parentClientId));
+            return p || null;
+        };
+        const childrenOf = new Map();
+        const orphans = []; // sucursales sin padre encontrado
+        const topLevel = []; // padres + independientes
+        const globals = [];
+        clients.forEach(c => {
+            if (c.isGlobal) { globals.push(c); return; }
+            const p = resolveParent(c);
+            if (p) {
+                if (!childrenOf.has(p.id)) childrenOf.set(p.id, []);
+                childrenOf.get(p.id).push(c);
+            } else if (c.parentClientId) {
+                orphans.push(c);
+            } else {
+                topLevel.push(c);
+            }
+        });
+        // Sort children por idNum
+        childrenOf.forEach(arr => arr.sort((a, b) => {
+            const na = parseInt(String(a.idNum||'').replace(/\D/g,''),10) || 0;
+            const nb = parseInt(String(b.idNum||'').replace(/\D/g,''),10) || 0;
+            return na - nb || String(a.idNum||'').localeCompare(String(b.idNum||''));
+        }));
+
         window._globalClientsForImport = [];
+
+        function renderActions(c, isGlobal) {
+            let h = '';
+            if (isGlobal) {
+                const gIdx = window._globalClientsForImport.length;
+                window._globalClientsForImport.push({name:c.name||'',nif:c.nif||'',phone:c.phone||'',city:c.city||'',street:c.street||'',cp:c.cp||''});
+                h += '<button onclick="advImportGlobalClient(' + gIdx + ')" style="background:#FF9800; border:none; color:#fff; padding:3px 10px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Importar a mi agenda">📥 Importar</button>';
+                return h;
+            }
+            h += '<button onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" style="background:linear-gradient(135deg,#1a237e,#283593); border:none; color:#fff; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Abrir Ficha Cliente">📂</button>';
+            if (c.authUid) {
+                h += '<button onclick="advClientWelcome(\'' + c.id + '\')" style="background:transparent; border:1px solid #34C759; color:#34C759; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Reenviar email de bienvenida (acceso activado)">✉️</button>';
+                h += '<button onclick="openChangeLoginModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FFB300; color:#FFB300; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Cambiar email de login">🔄</button>';
+                h += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Re-vincular a otra cuenta Auth">🔗</button>';
+            } else {
+                h += '<button onclick="openActivateAccessModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FF9F0A; color:#FF9F0A; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Activar acceso online a este cliente">🔓</button>';
+                h += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Vincular Auth ya existente">🔗</button>';
+            }
+            h += '<button onclick="impersonateClient(\'' + c.id + '\')" style="background:transparent; border:1px solid #AB47BC; color:#AB47BC; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Entrar como este cliente (super-admin)">👁️</button>';
+            h += '<button onclick="advDeleteClient(\'' + c.id + '\', \'' + (c.name || '').replace(/'/g, '') + '\')" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Eliminar cliente">🗑️</button>';
+            return h;
+        }
+
+        function renderRow(c, opts) {
+            opts = opts || {};
+            const isGlobal = c.isGlobal === true;
+            const isBranch = !!opts.isBranch;
+            const isParent = !!opts.isParent;
+            const childCount = opts.childCount || 0;
+
+            const status = isGlobal
+                ? '<span style="color:#FF9800;">🌍 Global</span>'
+                : (c.active !== false ? '<span style="color:#4CAF50;">● Activo</span>' : '<span style="color:#f44;">● Inactivo</span>');
+
+            const rowBg = isGlobal
+                ? 'background:rgba(255,152,0,0.04);'
+                : (isBranch ? 'background:rgba(93,173,226,0.03);' : '');
+            const trAttrs = isBranch
+                ? ' data-branch-of="' + opts.parentId + '" style="border-bottom:1px solid #2d2d30;' + rowBg + ' display:none;"'
+                : ' style="border-bottom:1px solid #2d2d30;' + rowBg + '"';
+
+            const hoverBg = isGlobal ? 'rgba(255,152,0,0.04)' : (isBranch ? 'rgba(93,173,226,0.03)' : 'transparent');
+
+            let html = '<tr' + trAttrs + ' onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + hoverBg + '\'">';
+
+            // Nº column with toggle if parent
+            let numCell = '';
+            if (isGlobal) {
+                numCell = '🌍';
+            } else if (isParent && childCount > 0) {
+                numCell = '<span data-toggle-parent="' + c.id + '" style="display:inline-block; width:14px; cursor:pointer; user-select:none; color:#5DADE2;" title="Mostrar/ocultar sucursales">▸</span> ' + (c.clientNumber || c.idNum || '-');
+            } else if (isBranch) {
+                numCell = '<span style="display:inline-block; width:14px;"></span>'
+                       + '<span style="color:#5DADE2; font-size:0.65rem; margin-right:3px;">└─</span>'
+                       + (c.clientNumber || c.idNum || '-');
+            } else {
+                numCell = '<span style="display:inline-block; width:14px;"></span>' + (c.clientNumber || c.idNum || '-');
+            }
+            html += '<td style="padding:6px; color:' + (isGlobal ? '#FF9800' : (isBranch ? '#5DADE2' : '#FFD700')) + '; font-weight:bold; white-space:nowrap;">' + numCell + '</td>';
+
+            // Name with chip
+            let nameChip = '';
+            if (isParent && childCount > 0) {
+                nameChip = ' <span style="background:rgba(76,175,80,0.15); color:#4CAF50; padding:1px 6px; border-radius:8px; font-size:0.62rem; font-weight:600; margin-left:4px;">📊 ' + childCount + ' sucursal' + (childCount === 1 ? '' : 'es') + '</span>';
+            } else if (isBranch) {
+                nameChip = ' <span style="background:rgba(93,173,226,0.15); color:#5DADE2; padding:1px 6px; border-radius:8px; font-size:0.62rem; font-weight:600; margin-left:4px;">🏢 sucursal</span>';
+            }
+            const indentName = isBranch ? '<span style="padding-left:18px; display:inline-block;"></span>' : '';
+            html += '<td style="padding:6px; color:#fff; cursor:pointer;" onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" title="Abrir Ficha completa">' + indentName + '<span style="border-bottom:1px dotted #007acc;">' + (c.name || '-') + '</span>' + nameChip + '</td>';
+
+            html += '<td style="padding:6px; color:#888;">' + (c.email || '-') + '</td>';
+            html += '<td style="padding:6px; color:#ccc;">' + (c.nif || c.idNum || '-') + '</td>';
+            html += '<td style="padding:6px; color:#888;">' + (c.phone || '-') + '</td>';
+            html += '<td style="padding:6px; text-align:center; font-size:0.7rem;">' + status + '</td>';
+            html += '<td style="padding:6px; text-align:center; white-space:nowrap;">' + renderActions(c, isGlobal) + '</td>';
+            html += '</tr>';
+            return html;
+        }
+
         let html = '<div style="overflow-y:auto; max-height:calc(100vh - 280px);">';
         html += '<table style="width:100%; border-collapse:collapse; font-size:0.8rem;">';
         html += '<thead style="position:sticky; top:0; z-index:1;"><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">';
@@ -16877,43 +17047,35 @@ window.importTarifas50 = async () => {
         html += '<th style="padding:8px 6px; text-align:center;">Estado</th>';
         html += '<th style="padding:8px 6px; text-align:center; min-width:200px;">Acciones</th>';
         html += '</tr></thead><tbody>';
-        
-        clients.forEach(c => {
-            const isGlobal = c.isGlobal === true;
-            const status = isGlobal ? '<span style="color:#FF9800;">🌍 Global</span>' : (c.active !== false ? '<span style="color:#4CAF50;">● Activo</span>' : '<span style="color:#f44;">● Inactivo</span>');
-            const rowBg = isGlobal ? 'background:rgba(255,152,0,0.04);' : '';
-            html += '<tr style="border-bottom:1px solid #2d2d30;' + rowBg + '" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + (isGlobal ? 'rgba(255,152,0,0.04)' : 'transparent') + '\'">';
-            html += '<td style="padding:6px; color:' + (isGlobal ? '#FF9800' : '#FFD700') + '; font-weight:bold;">' + (isGlobal ? '🌍' : (c.clientNumber || c.idNum || '-')) + '</td>';
-            html += '<td style="padding:6px; color:#fff; cursor:pointer;" onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" title="Abrir Ficha completa"><span style="border-bottom:1px dotted #007acc;">' + (c.name || '-') + '</span></td>';
-            html += '<td style="padding:6px; color:#888;">' + (c.email || '-') + '</td>';
-            html += '<td style="padding:6px; color:#ccc;">' + (c.nif || c.idNum || '-') + '</td>';
-            html += '<td style="padding:6px; color:#888;">' + (c.phone || '-') + '</td>';
-            html += '<td style="padding:6px; text-align:center; font-size:0.7rem;">' + status + '</td>';
-            html += '<td style="padding:6px; text-align:center; white-space:nowrap;">';
-            if (isGlobal) {
-                var gIdx = window._globalClientsForImport.length;
-                window._globalClientsForImport.push({name:c.name||'',nif:c.nif||'',phone:c.phone||'',city:c.city||'',street:c.street||'',cp:c.cp||''});
-                html += '<button onclick="advImportGlobalClient(' + gIdx + ')" style="background:#FF9800; border:none; color:#fff; padding:3px 10px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Importar a mi agenda">📥 Importar</button>';
-            } else {
-                html += '<button onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" style="background:linear-gradient(135deg,#1a237e,#283593); border:none; color:#fff; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Abrir Ficha Cliente">📂</button>';
-                // Onboarding controls: read the client by id at click-time (no
-                // closure variables in the onclick attribute string).
-                if (c.authUid) {
-                    html += '<button onclick="advClientWelcome(\'' + c.id + '\')" style="background:transparent; border:1px solid #34C759; color:#34C759; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Reenviar email de bienvenida (acceso activado)">✉️</button>';
-                    html += '<button onclick="openChangeLoginModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FFB300; color:#FFB300; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Cambiar email de login">🔄</button>';
-                    html += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Re-vincular a otra cuenta Auth">🔗</button>';
-                } else {
-                    html += '<button onclick="openActivateAccessModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #FF9F0A; color:#FF9F0A; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Activar acceso online a este cliente">🔓</button>';
-                    html += '<button onclick="openLinkAuthModal(\'' + c.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Vincular Auth ya existente">🔗</button>';
-                }
-                html += '<button onclick="impersonateClient(\'' + c.id + '\')" style="background:transparent; border:1px solid #AB47BC; color:#AB47BC; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Entrar como este cliente (super-admin)">👁️</button>';
-                html += '<button onclick="advDeleteClient(\'' + c.id + '\', \'' + (c.name || '').replace(/'/g, '') + '\')" style="background:transparent; border:1px solid #f44; color:#f44; padding:3px 8px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Eliminar cliente">🗑️</button>';
-            }
-            html += '</td></tr>';
+
+        // top-level (padres + independientes)
+        topLevel.forEach(c => {
+            const kids = childrenOf.get(c.id) || [];
+            html += renderRow(c, { isParent: kids.length > 0, childCount: kids.length });
+            kids.forEach(k => html += renderRow(k, { isBranch: true, parentId: c.id }));
         });
-        
+        // Huérfanos: sucursales cuyo padre no se encontró
+        if (orphans.length) {
+            html += '<tr><td colspan="7" style="padding:6px 8px; background:#3a2a2a; color:#FF9F0A; font-size:0.7rem;">⚠️ Sucursales con padre no encontrado (revisar parentClientId):</td></tr>';
+            orphans.forEach(c => html += renderRow(c, {}));
+        }
+        // Globales al final
+        globals.forEach(c => html += renderRow(c, {}));
+
         html += '</tbody></table></div>';
         container.innerHTML = html;
+
+        // Wire toggles
+        container.querySelectorAll('[data-toggle-parent]').forEach(t => {
+            t.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                const pid = this.getAttribute('data-toggle-parent');
+                const rows = container.querySelectorAll('tr[data-branch-of="' + pid + '"]');
+                const open = this.textContent.trim() === '▾';
+                rows.forEach(r => { r.style.display = open ? 'none' : ''; });
+                this.textContent = open ? '▸' : '▾';
+            });
+        });
     };
 
     // Import a global client into the local users collection
