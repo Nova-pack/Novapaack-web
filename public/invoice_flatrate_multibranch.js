@@ -344,26 +344,40 @@
             const { client, branchesMap } = await _loadClientAndBranches(inv);
             const html = buildHTML(inv, client, branchesMap);
 
-            // Modal preview
-            let prev = document.getElementById('mb-invoice-preview');
-            if (prev) prev.remove();
-            const modal = document.createElement('div');
-            modal.id = 'mb-invoice-preview';
-            modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow-y:auto;';
+            // Contenedor: ERP tab si está disponible
+            const _opener = (typeof window.openWorkspaceOrModal === 'function')
+                ? window.openWorkspaceOrModal({
+                    tabKey: 'invoice-preview',
+                    tabTitle: '📄 ' + _esc(inv.invoiceId).slice(0, 24),
+                    tabIcon: 'receipt',
+                    modalId: 'mb-invoice-preview',
+                    modalStyle: 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow-y:auto;'
+                  })
+                : (function() {
+                    const old = document.getElementById('mb-invoice-preview');
+                    if (old) old.remove();
+                    const m = document.createElement('div');
+                    m.id = 'mb-invoice-preview';
+                    m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow-y:auto;';
+                    document.body.appendChild(m);
+                    return { container: m, close: () => m.remove(), useERP: false };
+                  })();
+            const modal = _opener.container;
+            const _closeInv = _opener.close;
             const inner = document.createElement('div');
-            inner.style.cssText = 'background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:16px; max-width:900px; width:100%;';
+            inner.style.cssText = 'background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:16px; max-width:900px; width:100%; margin:' + (_opener.useERP ? '18px auto' : '0') + ';';
             inner.innerHTML = ''
                 + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">'
                 + '  <h3 style="margin:0; color:#FF6600; font-size:1rem;">📄 Vista previa · ' + _esc(inv.invoiceId) + '</h3>'
                 + '  <div style="display:flex; gap:8px;">'
                 + '    <button id="mb-preview-download" style="background:#FF4D00; border:0; color:#000; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">📥 Descargar PDF</button>'
-                + '    <button id="mb-preview-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
+                + (_opener.useERP ? '' : '    <button id="mb-preview-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>')
                 + '  </div>'
                 + '</div>'
-                + '<div id="mb-preview-content" style="background:white; border-radius:6px; max-height:80vh; overflow-y:auto;">' + html + '</div>';
+                + '<div id="mb-preview-content" style="background:white; border-radius:6px; max-height:' + (_opener.useERP ? 'none' : '80vh') + '; overflow-y:auto;">' + html + '</div>';
             modal.appendChild(inner);
-            document.body.appendChild(modal);
-            document.getElementById('mb-preview-close').onclick = () => modal.remove();
+            const cbn = document.getElementById('mb-preview-close');
+            if (cbn) cbn.onclick = _closeInv;
             document.getElementById('mb-preview-download').onclick = () => {
                 window.downloadMultiBranchInvoicePDF(invoiceId);
             };

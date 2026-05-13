@@ -546,26 +546,40 @@
             ? window.buildMultiBranchInvoiceHTML(draft, parent, branchesMap)
             : '<p>Error: builder no disponible</p>';
 
-        // Modal preview
-        const old = document.getElementById('mb-f1-preview');
-        if (old) old.remove();
-        const modal = document.createElement('div');
-        modal.id = 'mb-f1-preview';
-        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+        // Contenedor: ERP tab si está disponible, modal si no.
+        const _opener = (typeof window.openWorkspaceOrModal === 'function')
+            ? window.openWorkspaceOrModal({
+                tabKey: 'invoice-preview',
+                tabTitle: '📄 Preview F1 · ' + _esc(parent.name).slice(0, 18),
+                tabIcon: 'receipt',
+                modalId: 'mb-f1-preview',
+                modalStyle: 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;'
+              })
+            : (function() {
+                const old = document.getElementById('mb-f1-preview');
+                if (old) old.remove();
+                const m = document.createElement('div');
+                m.id = 'mb-f1-preview';
+                m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+                document.body.appendChild(m);
+                return { container: m, close: () => m.remove(), useERP: false };
+              })();
+        const modal = _opener.container;
+        const _closePreview = _opener.close;
         modal.innerHTML = ''
-            + '<div style="max-width:880px; width:100%; margin:0 auto 14px; display:flex; justify-content:space-between; align-items:center; color:#fff;">'
+            + '<div style="max-width:880px; width:100%; margin:0 auto 14px; padding-top:' + (_opener.useERP ? '18px' : '0') + '; display:flex; justify-content:space-between; align-items:center; color:#fff;">'
             + '  <div>'
             + '    <h3 style="margin:0; color:#FF6600; font-size:1.05rem;">📄 Formato 1 — Factura consolidada · ' + _esc(_monthLabel(year, month)) + '</h3>'
             + '    <div style="font-size:0.78rem; color:#aaa; margin-top:3px;">' + _esc(parent.name) + ' · cuota plana ' + _money(flatAmount) + '</div>'
             + '  </div>'
             + '  <div style="display:flex; gap:8px;">'
             + '    <button id="f1-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">💾 Guardar y facturar</button>'
-            + '    <button id="f1-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
+            + (_opener.useERP ? '' : '    <button id="f1-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>')
             + '  </div>'
             + '</div>'
             + '<div style="max-width:880px; width:100%; margin:0 auto; background:white; border-radius:8px;">' + html + '</div>';
-        document.body.appendChild(modal);
-        document.getElementById('f1-close').onclick = () => modal.remove();
+        const f1cls = document.getElementById('f1-close');
+        if (f1cls) f1cls.onclick = _closePreview;
         document.getElementById('f1-save').onclick = async () => {
             if (!confirm('Vas a EMITIR la factura consolidada de ' + parent.name + ' por ' + _money(flatAmount) + ' base.\n\nMarcará los ' + allTicketsDetail.length + ' albaranes implicados como facturados. ¿Continuar?')) return;
             const btn = document.getElementById('f1-save');
@@ -607,7 +621,7 @@
                 }
                 if (opCount > 0) await batch.commit();
                 alert('✅ Factura consolidada emitida: ' + invoiceId);
-                modal.remove();
+                _closePreview();
             } catch(e) {
                 alert('Error: ' + e.message);
                 btn.disabled = false; btn.textContent = '💾 Guardar y facturar';
@@ -632,13 +646,28 @@
             return;
         }
 
-        const old = document.getElementById('mb-branch-preview');
-        if (old) old.remove();
-        const modal = document.createElement('div');
-        modal.id = 'mb-branch-preview';
-        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+        const _opener2 = (typeof window.openWorkspaceOrModal === 'function')
+            ? window.openWorkspaceOrModal({
+                tabKey: 'invoice-preview',
+                tabTitle: '📑 Preview F2 · ' + _esc(parent.name).slice(0, 18),
+                tabIcon: 'receipt',
+                modalId: 'mb-branch-preview',
+                modalStyle: 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;'
+              })
+            : (function() {
+                const old = document.getElementById('mb-branch-preview');
+                if (old) old.remove();
+                const m = document.createElement('div');
+                m.id = 'mb-branch-preview';
+                m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+                document.body.appendChild(m);
+                return { container: m, close: () => m.remove(), useERP: false };
+              })();
+        const modal = _opener2.container;
+        const _closePreview2 = _opener2.close;
+
         const header = document.createElement('div');
-        header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; max-width:880px; width:100%; margin:0 auto 16px; color:#fff;';
+        header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; max-width:880px; width:100%; margin:0 auto 16px; padding-top:' + (_opener2.useERP ? '18px' : '0') + '; color:#fff;';
         header.innerHTML = ''
             + '<div>'
             + '  <h3 style="margin:0; color:#5DADE2; font-size:1.1rem;">📑 Formato 2 — ' + previews.length + ' facturas separadas · ' + _esc(_monthLabel(year, month)) + '</h3>'
@@ -647,7 +676,7 @@
             + '<div style="display:flex; gap:8px;">'
             + '  <button id="mbb-download" style="background:#5DADE2; border:0; color:#000; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">📥 Descargar todas (PDF)</button>'
             + '  <button id="mbb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">💾 Guardar y facturar</button>'
-            + '  <button id="mbb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
+            + (_opener2.useERP ? '' : '  <button id="mbb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>')
             + '</div>';
         modal.appendChild(header);
         const grid = document.createElement('div');
@@ -659,9 +688,9 @@
             grid.appendChild(card);
         });
         modal.appendChild(grid);
-        document.body.appendChild(modal);
 
-        document.getElementById('mbb-close').onclick = () => modal.remove();
+        const mbbCls = document.getElementById('mbb-close');
+        if (mbbCls) mbbCls.onclick = _closePreview2;
         document.getElementById('mbb-download').onclick = () => window.downloadAllBranchInvoicesPDF(parentId, year, month);
         document.getElementById('mbb-save').onclick = async () => {
             if (!confirm('Vas a EMITIR ' + previews.length + ' facturas en Firestore para ' + parent.name + '.\n\nCada albarán incluido quedará marcado como facturado. ¿Continuar?')) return;
@@ -670,7 +699,7 @@
             try {
                 const gen = await window.generateBranchInvoicesAndSave(parentId, year, month);
                 alert('✅ ' + gen.length + ' facturas emitidas.\n\nIDs:\n  ' + gen.map(g => g.invoiceId).join('\n  '));
-                modal.remove();
+                _closePreview2();
             } catch(e) {
                 alert('Error: ' + e.message);
                 btn.disabled = false; btn.textContent = '💾 Guardar y facturar';

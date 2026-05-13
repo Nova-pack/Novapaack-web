@@ -780,14 +780,28 @@
             ? escapeHtml(s)
             : String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-        // Modal contenedor (se rellena tras cargar)
-        const old = document.getElementById('parent-diag-modal');
-        if (old) old.remove();
-        const modal = document.createElement('div');
-        modal.id = 'parent-diag-modal';
-        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100000; display:flex; align-items:center; justify-content:center; padding:18px;';
-        modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:22px; max-width:920px; width:100%; max-height:92vh; overflow-y:auto; color:#d4d4d4;"><div style="text-align:center; padding:60px 20px; color:#888;">Verificando configuración…</div></div>';
-        document.body.appendChild(modal);
+        // Contenedor: ERP tab si está disponible, modal si no.
+        const _opener = (typeof window.openWorkspaceOrModal === 'function')
+            ? window.openWorkspaceOrModal({
+                tabKey: 'parent-diagnostic',
+                tabTitle: '🩺 Diagnóstico',
+                tabIcon: 'monitor_heart',
+                modalId: 'parent-diag-modal',
+                modalStyle: 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100000; display:flex; align-items:center; justify-content:center; padding:18px;'
+              })
+            : (function() {
+                // Fallback si helper no cargado todavía
+                const old = document.getElementById('parent-diag-modal');
+                if (old) old.remove();
+                const m = document.createElement('div');
+                m.id = 'parent-diag-modal';
+                m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100000; display:flex; align-items:center; justify-content:center; padding:18px;';
+                document.body.appendChild(m);
+                return { container: m, close: () => m.remove(), useERP: false };
+              })();
+        const modal = _opener.container;
+        const _diagClose = _opener.close;
+        modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:22px; max-width:920px; width:100%; max-height:' + (_opener.useERP ? 'none' : '92vh') + '; ' + (_opener.useERP ? '' : 'overflow-y:auto; ') + 'margin:' + (_opener.useERP ? '18px auto' : '0') + '; color:#d4d4d4;"><div style="text-align:center; padding:60px 20px; color:#888;">Verificando configuración…</div></div>';
 
         const issues = []; // {level:'ok'|'warn'|'err', msg:''}
         const add = (level, msg) => issues.push({ level, msg });
@@ -1006,10 +1020,13 @@
             html += '</div>';
 
             modal.innerHTML = html;
-            document.getElementById('pd-close').onclick = () => modal.remove();
+            const closeBtn = document.getElementById('pd-close');
+            if (closeBtn) closeBtn.onclick = _diagClose;
         } catch(e) {
             console.error('[Diagnóstico]', e);
-            modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #f44; border-radius:12px; padding:22px; max-width:600px; color:#FF3B30;">❌ Error en diagnóstico: ' + _esc(e.message) + '<br><br><button onclick="document.getElementById(&quot;parent-diag-modal&quot;).remove()" style="background:#333; border:1px solid #555; color:#fff; padding:7px 16px; border-radius:6px; cursor:pointer; margin-top:10px;">Cerrar</button></div>';
+            modal.innerHTML = '<div style="background:#1e1e1e; border:1px solid #f44; border-radius:12px; padding:22px; max-width:600px; color:#FF3B30;">❌ Error en diagnóstico: ' + _esc(e.message) + '<br><br><button id="pd-close-err" style="background:#333; border:1px solid #555; color:#fff; padding:7px 16px; border-radius:6px; cursor:pointer; margin-top:10px;">Cerrar</button></div>';
+            const eb = document.getElementById('pd-close-err');
+            if (eb) eb.onclick = _diagClose;
         }
     };
 

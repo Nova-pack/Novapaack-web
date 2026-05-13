@@ -2895,6 +2895,12 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- Tab wrapper: Gestor de Tarifa por Cliente (overrides + asignación) — renderizado por tariff_editor.js -->
 <div id="erp-tab-tariff-manager" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:0;"></div>
 
+<!-- Tab wrapper: Diagnóstico padre+sucursales (🩺) — renderizado por ficha_cliente.js -->
+<div id="erp-tab-parent-diagnostic" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:0;"></div>
+
+<!-- Tab wrapper: Preview de factura (Formato 1 o 2) — renderizado por invoice_per_branch.js -->
+<div id="erp-tab-invoice-preview" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:0;"></div>
+
 <!-- Tab wrapper: Maintenance -->
 <div id="erp-tab-maintenance" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;">
     <div style="max-width:720px; margin:0 auto;">
@@ -19212,20 +19218,20 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260513_welcome"></script>
-<script src="ficha_cliente.js?v=20260514_autosave"></script>
+<script src="ficha_cliente.js?v=20260514_erpdiag"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260514_flat"></script>
 <script src="comunicaciones.js?v=20260404"></script>
 <script src="nif_enrichment.js?v=20260404"></script>
-<script src="erp_tabs.js?v=20260514_tariff"></script>
+<script src="erp_tabs.js?v=20260514_helper"></script>
 <script src="anti_extravio.js?v=20260504"></script>
 <script src="public_tickets_sync.js?v=20260504"></script>
 <script src="analytics.js?v=20260504"></script>
 <script src="auto_assign.js?v=20260504"></script>
 <script src="heatmap.js?v=20260504"></script>
-<script src="invoice_flatrate_multibranch.js?v=20260504_v2_pct"></script>
-<script src="invoice_per_branch.js?v=20260514_v2"></script>
+<script src="invoice_flatrate_multibranch.js?v=20260514_erp"></script>
+<script src="invoice_per_branch.js?v=20260514_erp"></script>
 <script src="pricing_engine.js?v=20260514_zones"></script>
 <script src="tariff_editor.js?v=20260514_erp"></script>
 

@@ -29,7 +29,9 @@
         'erp-tab-auto-assign',
         'erp-tab-heatmap',
         'erp-tab-tariff-builder',
-        'erp-tab-tariff-manager'
+        'erp-tab-tariff-manager',
+        'erp-tab-parent-diagnostic',
+        'erp-tab-invoice-preview'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -70,6 +72,54 @@
         'heatmap':         { wsId: 'erp-tab-heatmap',             title: 'Heatmap retrasos',   icon: 'whatshot',           closeable: true },
         'tariff-builder':  { wsId: 'erp-tab-tariff-builder',       title: 'Editor Tarifa',      icon: 'paid',               closeable: true },
         'tariff-manager':  { wsId: 'erp-tab-tariff-manager',       title: 'Tarifa Cliente',     icon: 'price_change',       closeable: true },
+        'parent-diagnostic': { wsId: 'erp-tab-parent-diagnostic',  title: 'Diagnóstico',        icon: 'monitor_heart',      closeable: true },
+        'invoice-preview': { wsId: 'erp-tab-invoice-preview',      title: 'Preview Factura',    icon: 'receipt',            closeable: true },
+    };
+
+    // ─── HELPER: abre como ERP tab si está disponible, si no como modal ──
+    // Reutilizable para cualquier pantalla "workspace-like" sin duplicar la
+    // detección manual en cada función.
+    //
+    // Uso:
+    //   const { container, close, useERP } = window.openWorkspaceOrModal({
+    //       tabKey: 'parent-diagnostic',
+    //       tabTitle: 'Diagnóstico Luis Moleon',
+    //       tabIcon: 'monitor_heart',
+    //       modalId: 'parent-diag-modal',
+    //       modalStyle: 'position:fixed; inset:0; ...'
+    //   });
+    //   container.innerHTML = '<div>contenido</div>';
+    //   // ...
+    //   close(); // funciona en ambos modos
+    //
+    // Si el wsId del tabKey no existe en el DOM, cae a modal automáticamente.
+    window.openWorkspaceOrModal = function(opts) {
+        opts = opts || {};
+        const tabKey = opts.tabKey;
+        const wsId = tabKey && TAB_WORKSPACE_MAP[tabKey] ? TAB_WORKSPACE_MAP[tabKey].wsId : ('erp-tab-' + tabKey);
+        const useERP = !!(tabKey && document.getElementById(wsId));
+        let container, close;
+        if (useERP) {
+            window.erpOpenTab(tabKey, {
+                title: opts.tabTitle,
+                icon: opts.tabIcon,
+                closeable: opts.closeable !== false
+            });
+            container = document.getElementById(wsId);
+            if (container) container.innerHTML = '';
+            close = () => {
+                if (typeof window.erpCloseTab === 'function') window.erpCloseTab(tabKey);
+            };
+        } else {
+            const oldModal = opts.modalId ? document.getElementById(opts.modalId) : null;
+            if (oldModal) oldModal.remove();
+            container = document.createElement('div');
+            if (opts.modalId) container.id = opts.modalId;
+            container.style.cssText = opts.modalStyle || 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; display:flex; align-items:center; justify-content:center; padding:20px;';
+            document.body.appendChild(container);
+            close = () => { try { container.remove(); } catch(_) {} };
+        }
+        return { container, close, useERP };
     };
 
     // --- CORE API ---
