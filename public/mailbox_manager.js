@@ -27,7 +27,15 @@ function getCategoryText(cat) {
 }
 
 function _isOutgoing(item) {
-    return item.type === 'outgoing_campaign' || item.status === 'outgoing';
+    // Cualquier campo que delate dirección saliente:
+    //  - type prefijado con 'outgoing_' (outgoing_campaign, outgoing_welcome, outgoing_pod...)
+    //  - direction === 'outgoing'
+    //  - status legacy === 'outgoing'
+    if (!item) return false;
+    if (item.direction === 'outgoing') return true;
+    if (item.status === 'outgoing') return true;
+    if (typeof item.type === 'string' && item.type.indexOf('outgoing') === 0) return true;
+    return false;
 }
 // ==================================================
 

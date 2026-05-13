@@ -1296,7 +1296,9 @@
                 adminEmail: c.adminEmail || '',
                 loginEmail: c.loginEmail || '',
                 name: c.name || '',
-                idNum: c.idNum || ''
+                idNum: c.idNum || '',
+                docId: docId,
+                uid: c.authUid || docId
             });
         };
 
@@ -1488,7 +1490,9 @@
                         loginEmail: loginEmail,
                         password: password,
                         name: data.name || '',
-                        idNum: data.idNum || ''
+                        idNum: data.idNum || '',
+                        docId: docId,
+                        uid: newUid
                     });
                 }
                 if (typeof loadUsers === 'function') loadUsers('current');
@@ -1582,7 +1586,9 @@
                         loginEmail: newLoginEmail,
                         password: password,
                         name: data.name || '',
-                        idNum: data.idNum || ''
+                        idNum: data.idNum || '',
+                        docId: docId,
+                        uid: newUid
                     });
                 }
                 alert('RECORDATORIO: borra la cuenta antigua "' + currentLogin + '" desde Firebase Console → Authentication → Users.');
@@ -1756,6 +1762,53 @@
                 // Fallback: copia el cuerpo al portapapeles para que admin lo
                 // pegue manualmente en un correo nuevo.
                 _showMailFallbackModal({ to: to, subject: decodeURIComponent(subject), body: body });
+            }
+
+            // ─── REGISTRO EN BUZÓN INTELIGENTE + FICHA CLIENTE ──────
+            // Independientemente de si el mailto: abrió bien o no, dejamos
+            // huella trazable de que el admin INTENTÓ mandar la bienvenida.
+            // Así aparece en Buzón → Salientes y en la fila del cliente.
+            try {
+                const adminEmailNow = (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin';
+                const docPayload = {
+                    type: 'outgoing_welcome',
+                    status: 'queued', // FASE 2: cuando enchufemos SMTP, mail_engine lo procesará
+                    to: to,
+                    toName: opts.name || '',
+                    toUid: opts.uid || opts.docId || '',
+                    clientId: opts.uid || opts.docId || '',
+                    clientIdNum: opts.idNum || '',
+                    subject: decodeURIComponent(subject),
+                    body: body,
+                    direction: 'outgoing',
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    createdBy: adminEmailNow,
+                    sentVia: 'mailto_admin', // el envío real lo hizo el cliente de correo del admin
+                    note: 'Email de bienvenida compuesto desde admin. mail_engine SMTP no activado todavía — el envío efectivo lo hizo el admin desde su cliente de correo.'
+                };
+                await db.collection('mailbox').add(docPayload);
+            } catch(e) {
+                console.warn('[welcome] no pude registrar en mailbox:', e);
+            }
+
+            // Actualiza marca en doc del cliente (para chip en listado)
+            try {
+                const clientDocId = opts.uid || opts.docId;
+                if (clientDocId) {
+                    const adminEmailNow = (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin';
+                    await db.collection('users').doc(clientDocId).set({
+                        welcomeSentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        welcomeSentBy: adminEmailNow,
+                        welcomeSentTo: to
+                    }, { merge: true });
+                    if (window.userMap && window.userMap[clientDocId]) {
+                        window.userMap[clientDocId].welcomeSentAt = new Date();
+                        window.userMap[clientDocId].welcomeSentBy = adminEmailNow;
+                        window.userMap[clientDocId].welcomeSentTo = to;
+                    }
+                }
+            } catch(e) {
+                console.warn('[welcome] no pude marcar welcomeSentAt en el cliente:', e);
             }
         };
 
@@ -17084,6 +17137,20 @@ window.importTarifas50 = async () => {
             } else if (isBranch) {
                 nameChip = ' <span style="background:rgba(93,173,226,0.15); color:#5DADE2; padding:1px 6px; border-radius:8px; font-size:0.62rem; font-weight:600; margin-left:4px;">🏢 sucursal</span>';
             }
+            // Chip de bienvenida enviada (visible para padres y sucursales con authUid)
+            if (!isGlobal && c.welcomeSentAt) {
+                let when = '';
+                try {
+                    const ts = c.welcomeSentAt.toDate ? c.welcomeSentAt.toDate() : new Date(c.welcomeSentAt);
+                    if (!isNaN(ts.getTime())) {
+                        when = ts.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                    }
+                } catch(_) {}
+                nameChip += ' <span style="background:rgba(52,199,89,0.15); color:#34C759; padding:1px 6px; border-radius:8px; font-size:0.6rem; font-weight:600; margin-left:4px;" title="Email de bienvenida compuesto el ' + (when || '?') + ' por ' + (c.welcomeSentBy || 'admin') + '">✉️ ' + (when || 'enviada') + '</span>';
+            } else if (!isGlobal && c.authUid) {
+                // Tiene cuenta auth pero no welcome enviado → invitar
+                nameChip += ' <span style="background:rgba(255,159,10,0.10); color:#FF9F0A; padding:1px 6px; border-radius:8px; font-size:0.6rem; font-weight:600; margin-left:4px;" title="Cliente con acceso activado pero sin registro de envío de bienvenida">✉️ sin bienvenida</span>';
+            }
             const indentName = isBranch ? '<span style="padding-left:18px; display:inline-block;"></span>' : '';
             html += '<td style="padding:6px; color:#fff; cursor:pointer;" onclick="if(typeof openFichaCliente===\'function\') openFichaCliente(\'' + c.id + '\')" title="Abrir Ficha completa">' + indentName + '<span style="border-bottom:1px dotted #007acc;">' + (c.name || '-') + '</span>' + nameChip + '</td>';
 
@@ -18829,7 +18896,7 @@ window.importTarifas50 = async () => {
 
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
-<script src="mailbox_manager.js?v=20260402_1445"></script>
+<script src="mailbox_manager.js?v=20260513_welcome"></script>
 <script src="ficha_cliente.js?v=20260513_nodup"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
