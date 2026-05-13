@@ -256,6 +256,18 @@
             </div>
         </div>
 
+        ${d.parentClientId ? '' : `
+        ${_sectionTitle('account_tree', 'Sucursales', '#5DADE2')}
+        <div id="fc-sucursales-banner" style="background:rgba(93,173,226,0.05); border:1px solid rgba(93,173,226,0.2); border-radius:8px; padding:10px 12px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <div style="font-size:0.78rem; color:#aaa;">
+                <span id="fc-sucursales-count" style="color:#5DADE2; font-weight:700;">—</span> sucursales vinculadas
+                <span style="color:#666; margin-left:6px;">(comparten NIF, cada una con su propio login y prefijo)</span>
+            </div>
+            <button type="button" onclick="window.openNewSucursalModal('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">+ Nueva sucursal</button>
+        </div>
+        <div id="fc-sucursales-list" style="margin-bottom:10px;"></div>
+        `}
+
         ${_sectionTitle('manage_accounts', 'Acceso online & Albarán', '#FF4D00')}
         <div id="fc-access-banner" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:0.78rem; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
             <div id="fc-access-label" style="color:#aaa;">Cargando estado…</div>
@@ -291,9 +303,241 @@
         prev.textContent = p + '-' + n;
     }
 
+    async function _fichaLoadSucursales() {
+        const d = _fichaClientData;
+        if (!d || d.parentClientId) return; // las sucursales no listan otras sucursales
+        const list = document.getElementById('fc-sucursales-list');
+        const countEl = document.getElementById('fc-sucursales-count');
+        if (!list) return;
+        try {
+            const snap = await db.collection('users').where('parentClientId', '==', d.id).get();
+            const branches = [];
+            snap.forEach(doc => branches.push({ id: doc.id, ...doc.data() }));
+            if (countEl) countEl.textContent = branches.length;
+            if (branches.length === 0) {
+                list.innerHTML = '<div style="font-size:0.78rem; color:#666; padding:10px 12px; background:rgba(255,255,255,0.02); border-radius:6px;">Aún no hay sucursales. Pulsa <strong>+ Nueva sucursal</strong> para crear la primera.</div>';
+                return;
+            }
+            branches.sort((a, b) => (a.idNum || '').toString().localeCompare((b.idNum || '').toString()));
+            list.innerHTML = '<div style="display:flex; flex-direction:column; gap:6px;">' + branches.map(b => {
+                const accessChip = b.authUid
+                    ? '<span style="background:rgba(52,199,89,0.15); color:#34C759; padding:2px 8px; border-radius:8px; font-size:0.65rem;">🟢 Login activo</span>'
+                    : '<span style="background:rgba(255,159,10,0.15); color:#FF9F0A; padding:2px 8px; border-radius:8px; font-size:0.65rem;">🔴 Sin acceso</span>';
+                return ''
+                    + '<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(93,173,226,0.04); border:1px solid rgba(93,173,226,0.15); border-radius:6px; font-size:0.8rem;">'
+                    + '  <div>'
+                    + '    <span style="color:#5DADE2; font-weight:700; font-family:monospace;">#' + (b.idNum || '?') + '</span>'
+                    + '    <span style="color:#fff; margin-left:8px; font-weight:500;">' + (b.name || 'Sin nombre') + '</span>'
+                    + '    <span style="color:#888; margin-left:10px; font-size:0.7rem;">' + (b.localidad || '') + '</span>'
+                    + '    <span style="margin-left:10px;">' + accessChip + '</span>'
+                    + (b.loginEmail ? '<div style="font-size:0.65rem; color:#666; font-family:monospace; margin-top:2px;">login: ' + b.loginEmail + '</div>' : '')
+                    + '  </div>'
+                    + '  <div style="display:flex; gap:4px;">'
+                    + '    <button type="button" onclick="openFichaCliente(\'' + b.id + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:5px; font-size:0.7rem; cursor:pointer;">Abrir ficha</button>'
+                    + (b.authUid
+                        ? '<button type="button" onclick="impersonateClient(\'' + b.id + '\')" style="background:transparent; border:1px solid #AB47BC; color:#AB47BC; padding:3px 9px; border-radius:5px; font-size:0.7rem; cursor:pointer;">👁️ Entrar</button>'
+                        : '<button type="button" onclick="openActivateAccessModal(\'' + b.id + '\')" style="background:transparent; border:1px solid #FF9F0A; color:#FF9F0A; padding:3px 9px; border-radius:5px; font-size:0.7rem; cursor:pointer;">🔓 Activar</button>')
+                    + '  </div>'
+                    + '</div>';
+            }).join('') + '</div>';
+        } catch(e) {
+            list.innerHTML = '<div style="color:#FF3B30; font-size:0.78rem;">Error cargando sucursales: ' + e.message + '</div>';
+        }
+    }
+
+    // Modal "Nueva sucursal" — formulario minimal con los campos necesarios.
+    // Hereda NIF + tarifa + paymentTerms del padre. parentClientId apunta al
+    // padre. Crea comp_main con prefijo y nº inicial. Activa Auth opcional.
+    window.openNewSucursalModal = async function(parentId) {
+        const parent = (window.userMap && window.userMap[parentId])
+                    || (window._advClientsCache && window._advClientsCache.find(c => c.id === parentId))
+                    || _fichaClientData;
+        if (!parent) { alert('No encuentro al cliente padre. Recarga la página.'); return; }
+
+        // Sugerir siguiente sufijo libre: A, B, C…
+        let suggestedSuffix = 'A';
+        try {
+            const snap = await db.collection('users').where('parentClientId', '==', parentId).get();
+            const used = new Set();
+            snap.forEach(doc => {
+                const idn = (doc.data().idNum || '').toString();
+                const m = idn.match(/[A-Z]$/i);
+                if (m) used.add(m[0].toUpperCase());
+            });
+            const letters = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
+            suggestedSuffix = letters.find(l => !used.has(l)) || 'X';
+        } catch(e) {}
+
+        const baseIdNum = (parent.idNum || 'X').toString();
+        const suggestedIdNum = baseIdNum + suggestedSuffix;
+        const basePrefix = (parent.prefix || baseIdNum).toString().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+        const suggestedPrefix = basePrefix + suggestedSuffix;
+
+        const existing = document.getElementById('modal-new-sucursal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'modal-new-sucursal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100000; display:flex; align-items:center; justify-content:center; padding:20px;';
+        modal.innerHTML = ''
+            + '<div style="background:#1e1e1e; border:1px solid #5DADE2; border-radius:12px; padding:24px; max-width:560px; width:100%; color:#d4d4d4;">'
+            + '<h3 style="margin:0 0 6px; color:#5DADE2; font-size:1.05rem;">+ Nueva sucursal de ' + (parent.name || parent.idNum || '?') + '</h3>'
+            + '<p style="margin:0 0 18px; font-size:0.78rem; color:#888;">Hereda NIF ' + (parent.nif || '—') + ' y la tarifa del padre. Tiene su propio login y prefijo de albarán.</p>'
+            + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">ID Cliente</label><input type="text" id="ns-idnum" value="' + suggestedIdNum + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px; font-family:monospace;"></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Nombre sucursal</label><input type="text" id="ns-name" placeholder="Ej: ' + (parent.name || 'Cliente') + ' Vélez-Málaga" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Prefijo albarán</label><input type="text" id="ns-prefix" value="' + suggestedPrefix + '" maxlength="6" oninput="this.value=this.value.toUpperCase()" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px; font-family:monospace;"></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Próximo nº albarán</label><input type="number" id="ns-startnum" value="1001" min="1" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px; font-family:monospace;"></div>'
+            + '  <div style="grid-column:1 / span 2;"><label style="font-size:0.7rem; color:#aaa;">Localidad / Dirección breve</label><input type="text" id="ns-localidad" placeholder="Localidad o dirección corta" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">CP</label><input type="text" id="ns-cp" maxlength="5" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px; font-family:monospace;"></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Provincia</label><input type="text" id="ns-province" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '</div>'
+            + '<div style="margin-top:16px; padding:12px; background:rgba(255,159,10,0.06); border:1px solid rgba(255,159,10,0.2); border-radius:6px;">'
+            + '  <label style="display:flex; align-items:center; gap:8px; font-size:0.82rem; color:#FF9F0A; font-weight:600;"><input type="checkbox" id="ns-activate" checked> Activar acceso online ahora</label>'
+            + '  <div id="ns-auth-fields" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px;">'
+            + '    <div><label style="font-size:0.68rem; color:#aaa;">Email login (opcional — si vacío genera sintético)</label><input type="email" id="ns-email" placeholder="(auto)" style="width:100%; padding:7px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:4px; font-size:0.8rem;"></div>'
+            + '    <div><label style="font-size:0.68rem; color:#aaa;">Contraseña</label><input type="text" id="ns-password" placeholder="mín 6 chars" style="width:100%; padding:7px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:4px; font-size:0.8rem;"></div>'
+            + '  </div>'
+            + '</div>'
+            + '<div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">'
+            + '  <button type="button" id="ns-cancel" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:6px; cursor:pointer;">Cancelar</button>'
+            + '  <button type="button" id="ns-save" style="background:#5DADE2; border:0; color:#000; padding:8px 22px; border-radius:6px; font-weight:700; cursor:pointer;">Crear sucursal</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+
+        document.getElementById('ns-activate').addEventListener('change', function() {
+            document.getElementById('ns-auth-fields').style.display = this.checked ? 'grid' : 'none';
+        });
+        document.getElementById('ns-cancel').addEventListener('click', () => modal.remove());
+        document.getElementById('ns-save').addEventListener('click', async function() {
+            const idnum = document.getElementById('ns-idnum').value.trim();
+            const name = document.getElementById('ns-name').value.trim();
+            const prefix = document.getElementById('ns-prefix').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+            const startNum = parseInt(document.getElementById('ns-startnum').value, 10) || 1001;
+            const localidad = document.getElementById('ns-localidad').value.trim();
+            const cp = document.getElementById('ns-cp').value.trim();
+            const province = document.getElementById('ns-province').value.trim();
+            const wantActivate = document.getElementById('ns-activate').checked;
+            const customEmail = document.getElementById('ns-email').value.trim().toLowerCase();
+            const password = document.getElementById('ns-password').value;
+
+            if (!idnum) { alert('Introduce el ID de la sucursal.'); return; }
+            if (!name) { alert('Introduce el nombre de la sucursal.'); return; }
+            if (!prefix) { alert('El prefijo de albarán no puede estar vacío.'); return; }
+            if (wantActivate && (!password || password.length < 6)) { alert('Si activas el acceso, la contraseña debe tener mínimo 6 caracteres.'); return; }
+
+            // Comprobar que el idNum no existe ya
+            const dup = await db.collection('users').where('idNum', '==', idnum).limit(1).get();
+            if (!dup.empty) { alert('Ya existe un cliente con ID #' + idnum + '. Elige otro.'); return; }
+
+            this.disabled = true;
+            this.textContent = 'Creando…';
+            try {
+                let newDocId, newAuthUid = null, loginEmail = null;
+
+                // 1. Crear Auth si toca
+                if (wantActivate) {
+                    // Determinar email para Auth: custom si lo pone, si no sintético
+                    let emailToUse = customEmail;
+                    if (!emailToUse) {
+                        emailToUse = typeof window.generateLoginEmail === 'function'
+                            ? window.generateLoginEmail({ idNum: idnum, name: name }).toLowerCase()
+                            : ('c' + idnum.toLowerCase().replace(/[^a-z0-9]/g, '') + '_' + Date.now().toString(36).slice(-4) + '@novapack.com');
+                    }
+                    const secApp = firebase.apps.find(a => a.name === 'Secondary') || firebase.initializeApp(firebaseConfig, 'Secondary');
+                    try {
+                        const cred = await secApp.auth().createUserWithEmailAndPassword(emailToUse, password);
+                        newAuthUid = cred.user.uid;
+                        loginEmail = emailToUse;
+                        newDocId = newAuthUid; // usar uid como docId (consistente con flujo create cliente)
+                        try { await secApp.auth().signOut(); } catch(e) {}
+                    } catch(authErr) {
+                        if (authErr.code === 'auth/email-already-in-use' && !customEmail) {
+                            // Reintentar con email sintético distinto
+                            alert('Email sintético colisionó (raro). Reintentar manualmente.');
+                            this.disabled = false; this.textContent = 'Crear sucursal'; return;
+                        }
+                        if (authErr.code === 'auth/email-already-in-use') {
+                            alert('Ese email ya tiene una cuenta Auth. Quita el email custom (dejaremos sintético) o usa otro distinto.');
+                            this.disabled = false; this.textContent = 'Crear sucursal'; return;
+                        }
+                        throw authErr;
+                    }
+                } else {
+                    newDocId = db.collection('users').doc().id;
+                }
+
+                // 2. Crear users/{newDocId}
+                const sucursalData = {
+                    idNum: idnum,
+                    name: name,
+                    parentClientId: parentId,
+                    nif: parent.nif || '',  // hereda NIF del padre
+                    tariffId: parent.tariffId || '',
+                    billingCompanyId: parent.billingCompanyId || '',
+                    paymentTerms: parent.paymentTerms || 'contado',
+                    iban: parent.iban || '',
+                    sepaRef: parent.sepaRef || '',
+                    sepaDate: parent.sepaDate || '',
+                    // Sucursal NO hereda flat rate — su facturación es por consumo real (Formato 2)
+                    isFlatRate: false,
+                    flatRateAmount: 0,
+                    localidad: localidad,
+                    cp: cp,
+                    province: province,
+                    role: 'client',
+                    accessActive: true,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    createdBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
+                };
+                if (newAuthUid) {
+                    sucursalData.authUid = newAuthUid;
+                    sucursalData.loginEmail = loginEmail;
+                    sucursalData.accessActivatedAt = firebase.firestore.FieldValue.serverTimestamp();
+                }
+                await db.collection('users').doc(newDocId).set(sucursalData);
+
+                // 3. comp_main para la sucursal
+                await db.collection('users').doc(newDocId).collection('companies').doc('comp_main').set({
+                    name: name,
+                    idNum: parseInt(idnum.replace(/\D/g, ''), 10) || null,
+                    nif: parent.nif || '',
+                    prefix: prefix,
+                    startNum: startNum,
+                    localidad: localidad,
+                    cp: cp,
+                    province: province,
+                    address: (localidad + (cp ? ' ' + cp : '')).trim(),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                // 4. Cache local
+                if (window.userMap) window.userMap[newDocId] = { id: newDocId, ...sucursalData };
+                if (window._advClientsCache) window._advClientsCache.push({ id: newDocId, ...sucursalData });
+
+                modal.remove();
+                alert('✅ Sucursal creada.\n\n' + (newAuthUid
+                    ? 'Login: ' + loginEmail + '\nContraseña: ' + password + '\n\nComunícaselo al responsable de la sucursal.'
+                    : 'Sin acceso online activado. Puedes activarlo después desde su ficha.'));
+                // Refrescar lista
+                _fichaLoadSucursales();
+                if (typeof loadUsers === 'function') loadUsers('current');
+            } catch(e) {
+                console.error(e);
+                alert('Error creando sucursal: ' + e.message);
+            } finally {
+                this.disabled = false;
+                this.textContent = 'Crear sucursal';
+            }
+        });
+    };
+
     async function _fichaWireAccessSection() {
         const d = _fichaClientData;
         if (!d) return;
+        // Cargar sucursales en paralelo si es padre
+        if (!d.parentClientId) _fichaLoadSucursales();
         // Carga comp_main para prefix + startNum
         try {
             const compDoc = await db.collection('users').doc(d.id).collection('companies').doc('comp_main').get();
