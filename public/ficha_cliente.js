@@ -155,9 +155,10 @@
 
     function _fichaPopulateTariffSelects() {
         const currentVal = _fichaClientData ? (_fichaClientData.tariffId || '') : '';
-        // fc-tariff-eco eliminado: el selector de Tarifa Global vive sólo en
-        // la pestaña Principal para evitar la duplicidad confusa.
-        ['fc-tariff'].forEach(selId => {
+        // fc-tariff vive en pestaña Principal, fc-tariff-eco en Económico —
+        // editan el mismo campo users/{id}.tariffId. Los sincronizamos al
+        // guardar (ver _fichaSaveAll abajo).
+        ['fc-tariff', 'fc-tariff-eco'].forEach(selId => {
             const sel = document.getElementById(selId);
             if (!sel) return;
             sel.innerHTML = '<option value="">-- Sin Tarifa Global --</option>';
@@ -178,6 +179,12 @@
                 if (t.id === currentVal) opt.selected = true;
                 sel.appendChild(opt);
             });
+            // Sincronización en vivo: cambiar uno actualiza el otro
+            sel.onchange = function() {
+                const otherId = selId === 'fc-tariff' ? 'fc-tariff-eco' : 'fc-tariff';
+                const other = document.getElementById(otherId);
+                if (other && other.value !== this.value) other.value = this.value;
+            };
         });
     }
 
@@ -998,11 +1005,21 @@
             ${_field('Fecha Mandato', 'fc-sepa-date', d.sepaDate, { type: 'date', minWidth: 'auto' })}
         </div>
 
-        ${_sectionTitle('sell', 'Cuota Plana', '#FFD700')}
-        <div style="background:rgba(255,215,0,0.04); border:1px solid rgba(255,215,0,0.15); border-radius:6px; padding:8px 12px; margin-bottom:6px; font-size:0.74rem; color:#aaa;">
-            \u2139\ufe0f La <strong style="color:#FFD700;">Tarifa Global</strong> se asigna en la pesta\u00f1a <strong>PRINCIPAL</strong>
-            (secci\u00f3n Relaciones \u2192 Tarifa Global). Aqu\u00ed controlas s\u00f3lo la cuota plana mensual.
-            ${d.tariffId ? `Tarifa actual: <code style="background:#0a0a0a; padding:1px 6px; border-radius:3px; color:#fff;">${d.tariffId}</code>` : '<span style="color:#FF9800;">Sin tarifa asignada todav\u00eda.</span>'}
+        ${_sectionTitle('sell', 'Tarifa y Cuota Plana', '#FFD700')}
+        <div style="display:grid; grid-template-columns: 1fr; gap:6px; margin-bottom:6px;">
+            <div style="min-width:auto;">
+                <label style="display:flex; justify-content:space-between; align-items:center; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">
+                    <span>Tarifa Global asignada</span>
+                    <span style="display:flex; gap:5px;">
+                        <button type="button" onclick="openTariffManager('${d.id}')" title="Personalizar precios o crear tarifa para este cliente" style="background:#FF6600; border:0; color:#fff; padding:2px 8px; border-radius:3px; font-size:0.65rem; font-weight:700; cursor:pointer;">\ud83d\udcb0 Gestionar</button>
+                        <button type="button" onclick="window._fichaReloadTariffs()" title="Recargar listado" style="background:#2d2d30; border:1px solid #3c3c3c; color:#aaa; padding:2px 7px; border-radius:3px; cursor:pointer; font-size:0.7rem;">\ud83d\udd04</button>
+                    </span>
+                </label>
+                <select id="fc-tariff-eco" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
+                    <option value="">-- Cargando... --</option>
+                </select>
+                <div style="font-size:0.65rem; color:#666; margin-top:3px;">\u2139\ufe0f Este selector es el mismo que el de la pesta\u00f1a Principal \u2014 actual\u00edzalo desde donde te resulte c\u00f3modo.</div>
+            </div>
         </div>
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
             ${_field('Cuota Plana', 'fc-flatrate', d.isFlatRate ? 'S\u00ed' : 'No', {
@@ -1013,6 +1030,11 @@
                 ]
             })}
             ${_field('Importe (\u20ac/mes)', 'fc-flatrate-amt', d.flatRateAmount || '', { type: 'number', minWidth: 'auto' })}
+        </div>
+        <div style="background:rgba(76,175,80,0.04); border:1px solid rgba(76,175,80,0.2); border-radius:6px; padding:8px 12px; margin-bottom:6px; font-size:0.72rem; color:#aaa;">
+            \ud83d\udca1 <strong style="color:#4CAF50;">Cuota Plana</strong> y <strong style="color:#FFD700;">Tarifa</strong> conviven:
+            la cuota plana a\u00f1ade un cargo fijo mensual (legacy), mientras que la tarifa v2 con item <code>flat_monthly</code> hace lo mismo pero pasa por el motor nuevo.
+            Si migraste con el bot\u00f3n "\ud83d\udd04 Migrar a v2", la cuota legacy queda a 0 y la cuota mensual est\u00e1 dentro de la tarifa.
         </div>
         ${d.isFlatRate && d.flatRateAmount > 0 ? `
         <div style="background:rgba(94,160,255,0.06); border:1px solid rgba(94,160,255,0.3); border-radius:6px; padding:10px 12px; margin:6px 0 10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -1640,7 +1662,14 @@
         if (getVal('fc-city') !== null) updates.localidad = getVal('fc-city');
         if (getVal('fc-province') !== null) updates.province = getVal('fc-province');
         if (getVal('fc-billing-company') !== null) updates.billingCompanyId = getVal('fc-billing-company');
-        if (getVal('fc-tariff') !== null) updates.tariffId = getVal('fc-tariff');
+        // fc-tariff (Principal) y fc-tariff-eco (Económico) editan el mismo
+        // tariffId. Cogemos el que tenga valor — están sincronizados en
+        // tiempo real vía onchange, pero por si el render no fue idempotente.
+        const tariffPrincipal = getVal('fc-tariff');
+        const tariffEco = getVal('fc-tariff-eco');
+        const tariffFinal = (tariffEco !== null && tariffEco !== '') ? tariffEco
+                          : (tariffPrincipal !== null ? tariffPrincipal : null);
+        if (tariffFinal !== null) updates.tariffId = tariffFinal;
 
         // Recogidas fields
         if (getVal('fc-pickup-cutoff-am') !== null) updates.pickupCutoffAM = getVal('fc-pickup-cutoff-am');
