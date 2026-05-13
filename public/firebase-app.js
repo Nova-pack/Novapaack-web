@@ -742,13 +742,29 @@ async function initTicketListener(retryCount = 0) {
         const q1 = db.collection('tickets').where('uid', 'in', finalVariants).limit(3000);
         const q2 = db.collection('tickets').where('clientIdNum', 'in', finalVariants).limit(3000);
 
+        // Helper: mostrar UN solo toast no bloqueante por error de listener.
+        // Antes hacíamos alert() que bloqueaba la UI repetidamente y dejaba al
+        // cliente sin poder pulsar botones.
+        let _ticketsErrorShown = false;
+        function _ticketsListenerErrorToast(label, err) {
+            console.error('[SYNC-LINEA] Error ' + label, err);
+            if (_ticketsErrorShown) return;
+            _ticketsErrorShown = true;
+            try {
+                const banner = document.createElement('div');
+                banner.style.cssText = 'position:fixed; top:10px; right:10px; max-width:340px; background:#7a2727; color:#fff; padding:10px 14px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.4); font-size:0.82rem; z-index:99999;';
+                banner.innerHTML = '<strong>⚠️ Sincronización limitada</strong><br>No hemos podido cargar todos los albaranes en tiempo real (' + (err && err.code ? err.code : 'error') + '). Refresca la página si no ves tus envíos. Los botones siguen activos.';
+                document.body.appendChild(banner);
+                setTimeout(() => { try { banner.remove(); } catch(e){} }, 8000);
+            } catch(_) {}
+        }
+
         const unsub1 = q1.onSnapshot(snap => {
             snap.forEach(doc => mergedTickets.set(doc.id, { ...doc.data(), docId: doc.id, docRef: doc }));
             q1Fired = true;
             processMapAndRender();
         }, err => {
-            alert("Error GRAVE Q1 en Escucha de Albaranes: " + err.message);
-            console.warn("Error Q1", err);
+            _ticketsListenerErrorToast('Q1', err);
             q1Fired = true; processMapAndRender();
         });
 
@@ -757,8 +773,7 @@ async function initTicketListener(retryCount = 0) {
             q2Fired = true;
             processMapAndRender();
         }, err => {
-            alert("Error GRAVE Q2 en Escucha de Albaranes: " + err.message);
-            console.warn("Error Q2", err);
+            _ticketsListenerErrorToast('Q2', err);
             q2Fired = true; processMapAndRender();
         });
 
