@@ -595,7 +595,8 @@
                     + '</tr>';
             });
             wrap.innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;"><thead><tr style="border-bottom:1px solid #444;"><th style="padding:8px; text-align:left; width:50px;">Activo</th><th style="text-align:left;">Artículo</th><th style="text-align:left;">Modo</th><th style="text-align:left; width:110px;">Precio (cliente)</th><th style="text-align:left;">Regla</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
-                + '<button id="tm-add-custom" style="margin-top:12px; background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Añadir artículo SOLO para este cliente</button>';
+                + '<button id="tm-add-custom" title="Añade un precio personalizado SOLO para este cliente. No crea tarifa global — solo override en su ficha." style="margin-top:12px; background:#5DADE2; border:0; color:#000; padding:7px 14px; border-radius:5px; cursor:pointer; font-weight:700;">+ Precio personalizado (solo este cliente)</button>'
+                + '<div style="margin-top:6px; font-size:0.7rem; color:#888;">ℹ️ Este botón añade un override en la ficha del cliente — no crea una tarifa nueva en globales. Si quieres crear una tarifa reusable usa <strong>+ Crear nueva</strong> de arriba.</div>';
 
             // Wire events
             wrap.querySelectorAll('tr[data-item-id]').forEach(row => {

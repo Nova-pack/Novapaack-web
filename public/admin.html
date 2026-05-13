@@ -4793,30 +4793,62 @@ window.runPublicTicketsBackfill = async function() {
 
 
         <div id="adv-tariffs-workspace" style="display:none; flex:1; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; flex-direction:column;">
-            <!-- TOOLBAR (same style as PRO billing toolbar) -->
+            <!-- TOOLBAR — simplificada 2026-05-14: una sola vista principal + opciones avanzadas -->
             <div style="background:linear-gradient(90deg, #001f3f, #003366); padding:5px 15px; display:flex; gap:10px; align-items:center;">
                 <button onclick="if(typeof window.toggleAdvTariffs === 'function') window.toggleAdvTariffs()" style="background:transparent; border:1px solid transparent; color:white; padding:4px 10px; font-size:0.85rem; cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'">◀ Volver</button>
                 <div style="width:1px; height:20px; background:#fff; opacity:0.3; margin:0 5px;"></div>
-                <button onclick="showTariffTab('global')" id="btn-tab-global" style="background:transparent; border:1px solid transparent; color:#4CAF50; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">bar_chart</span> Tarifas Globales</button>
-                <button onclick="showTariffTab('client')" id="btn-tab-client" style="background:transparent; border:1px solid transparent; color:#FFD700; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">person</span> Tarifas por Cliente</button>
-                <button onclick="showTariffTab('articles')" id="btn-tab-articles" style="background:transparent; border:1px solid transparent; color:#2196F3; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">inventory_2</span> Artículos</button>
-                <button onclick="showTariffTab('exclusive')" id="btn-tab-exclusive" style="background:transparent; border:1px solid transparent; color:#E040FB; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">star</span> Exclusivas</button>
-                <div style="width:1px; height:20px; background:#fff; opacity:0.3; margin:0 5px;"></div>
-                <button onclick="promptNewArticlePRO()" style="background:transparent; border:1px solid transparent; color:#66BB6A; padding:4px 10px; font-size:0.85rem; cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'">+ Nuevo Artículo</button>
+                <button onclick="showTariffTab('global')" id="btn-tab-global" style="background:transparent; border:1px solid transparent; color:#4CAF50; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">paid</span> Mis tarifas</button>
+                <button onclick="showTariffTab('client')" id="btn-tab-client" style="background:transparent; border:1px solid transparent; color:#FFD700; padding:4px 10px; font-size:0.85rem; cursor:pointer; font-weight:bold;" onmouseover="this.style.background='rgba(255,255,255,0.2)'" onmouseout="this.style.background='transparent'"><span class="material-symbols-outlined">link</span> Asignaciones a clientes</button>
+                <!-- Avanzado (legacy v1): oculto por defecto, accesible con un toggle si hace falta -->
+                <button onclick="document.getElementById('tariffs-legacy-tools').style.display = document.getElementById('tariffs-legacy-tools').style.display==='flex'?'none':'flex'" style="background:transparent; border:1px solid #555; color:#999; padding:4px 10px; font-size:0.75rem; cursor:pointer;" title="Mostrar/ocultar herramientas legacy (artículos v1, exclusivas)">⚙️ Avanzado</button>
+                <div id="tariffs-legacy-tools" style="display:none; gap:6px; align-items:center;">
+                    <div style="width:1px; height:20px; background:#fff; opacity:0.3; margin:0 5px;"></div>
+                    <button onclick="showTariffTab('articles')" id="btn-tab-articles" style="background:transparent; border:1px solid transparent; color:#2196F3; padding:4px 10px; font-size:0.78rem; cursor:pointer;" title="Editor v1 — artículos por tamaño (legacy)"><span class="material-symbols-outlined" style="font-size:0.9rem;">inventory_2</span> Artículos v1</button>
+                    <button onclick="showTariffTab('exclusive')" id="btn-tab-exclusive" style="background:transparent; border:1px solid transparent; color:#E040FB; padding:4px 10px; font-size:0.78rem; cursor:pointer;" title="Precios exclusivos v1 (legacy — usa overrides v2 en su lugar)"><span class="material-symbols-outlined" style="font-size:0.9rem;">star</span> Exclusivas v1</button>
+                    <button onclick="promptNewArticlePRO()" style="background:transparent; border:1px solid transparent; color:#66BB6A; padding:4px 10px; font-size:0.78rem; cursor:pointer;">+ Artículo v1</button>
+                </div>
                 <div style="margin-left:auto; color:white; font-size:0.85rem; font-weight:bold;"><span class="material-symbols-outlined">paid</span> Gestión de Tarifas</div>
             </div>
 
-            <!-- TAB: Global Tariffs -->
+            <!-- TAB: Global Tariffs — REDISEÑADO 2026-05-14 -->
             <div id="tariff-tab-global" style="flex:1; padding:15px;">
-                <div style="background:#252526; border-bottom:1px solid #3c3c3c; padding:8px 15px; display:flex; gap:10px; align-items:center; margin-bottom:10px;">
-                    <span style="color:#4CAF50; font-weight:bold; font-size:0.85rem;"><span class="material-symbols-outlined">bar_chart</span> Tarifa Global:</span>
-                    <input type="text" id="tariff-global-id" placeholder="ID o nombre de tarifa..." list="global-tariffs-datalist" style="padding:5px 10px; background:#1e1e1e; border:1px solid #555; color:white; border-radius:4px; width:200px; font-size:0.85rem;">
-                    <datalist id="global-tariffs-datalist"></datalist>
-                    <button class="btn btn-primary" id="btn-load-global-tariff" style="background:#4CAF50; border:none; color:white; padding:5px 15px; font-size:0.85rem; cursor:pointer; border-radius:4px;" title="Cargar tarifa seleccionada. Si es v2, abre el editor nuevo automáticamente.">Cargar</button>
-                    <button onclick="if(typeof window.openTariffBuilder===&quot;function&quot;){ window.openTariffBuilder(null); } else { alert(&quot;Editor v2 no cargado.&quot;); }" style="background:#FF6600; border:none; color:#fff; padding:5px 12px; font-size:0.85rem; cursor:pointer; border-radius:4px; font-weight:700;" title="Nuevo editor de tarifas v2 con modos por bulto/kg/expedición + reglas (descuento por volumen, mínimo, etc.)">🧮 + Nueva (v2)</button>
-                    <button onclick="promptCreateGlobalTariff()" style="background:transparent; border:1px solid #888; color:#aaa; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:4px;" title="Modelo antiguo (artículos por tamaño + peso por brackets)">+ Nueva (legacy)</button>
-                    <button id="btn-delete-global-tariff" onclick="deleteCurrentGlobalTariff()" style="display:none; background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:5px 12px; font-size:0.85rem; cursor:pointer; border-radius:4px;"><span class="material-symbols-outlined">delete</span> Eliminar</button>
+                <!-- BANNER EXPLICATIVO -->
+                <div style="background:linear-gradient(135deg, rgba(76,175,80,0.06), rgba(255,102,0,0.06)); border:1px solid rgba(255,102,0,0.25); border-radius:10px; padding:12px 16px; margin-bottom:14px;">
+                    <div style="font-size:0.95rem; color:#FF8A50; font-weight:700; margin-bottom:6px;">💡 Cómo funcionan las tarifas</div>
+                    <div style="font-size:0.78rem; color:#aaa; line-height:1.6;">
+                        <strong style="color:#4CAF50;">1. Crea una tarifa global</strong> con el botón naranja "+ Nueva tarifa" abajo. Eliges plantilla (Plana, Bulto, Kilo…) y editas los artículos.
+                        <strong style="color:#FFD700;">&nbsp;&nbsp;2. Asígnala a clientes</strong> desde la ficha de cada cliente (Tarifa Global del cabezal) o en bloque desde la pestaña "Asignaciones".
+                        <strong style="color:#5DADE2;">&nbsp;&nbsp;3. Personaliza por cliente</strong> si hace falta — desde la ficha → 💰 Tarifa y precios.
+                    </div>
                 </div>
+
+                <!-- ACCIÓN PRINCIPAL + BÚSQUEDA -->
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;">
+                    <button onclick="if(typeof window.openTariffBuilder==='function'){ window.openTariffBuilder(null); } else { alert('Editor v2 no cargado.'); }" style="background:#FF6600; border:none; color:#fff; padding:10px 20px; font-size:0.95rem; cursor:pointer; border-radius:8px; font-weight:700; box-shadow:0 2px 6px rgba(255,102,0,0.35);">🧮 + Nueva tarifa</button>
+                    <input type="text" id="tariff-cards-search" placeholder="🔍 Buscar tarifa por nombre..." oninput="if(typeof window.renderTariffCards==='function') window.renderTariffCards()" style="flex:1; min-width:240px; padding:9px 12px; background:#1e1e1e; border:1px solid #444; color:white; border-radius:6px; font-size:0.88rem;">
+                    <button onclick="if(typeof window.renderTariffCards==='function') window.renderTariffCards()" style="background:#252526; border:1px solid #444; color:#aaa; padding:8px 14px; font-size:0.82rem; cursor:pointer; border-radius:6px;" title="Recargar listado">🔄</button>
+                </div>
+
+                <!-- GRID DE CARDS -->
+                <div id="tariff-cards-container" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin-bottom:18px;">
+                    <div style="grid-column:1/-1; text-align:center; padding:60px 20px; color:#666; font-size:0.85rem;">Cargando tarifas…</div>
+                </div>
+
+                <!-- LEGACY ACCORDION -->
+                <details style="margin-top:24px; background:rgba(255,255,255,0.02); border:1px solid #2d2d30; border-radius:8px;">
+                    <summary style="cursor:pointer; padding:10px 14px; font-size:0.82rem; color:#888; user-select:none;">📦 Editor antiguo de tarifas (v1 legacy)</summary>
+                    <div style="padding:12px 14px; border-top:1px solid #2d2d30;">
+                        <p style="font-size:0.78rem; color:#aaa; margin:0 0 10px;">Si necesitas editar tarifas viejas con el modelo antiguo (artículos por tamaño + brackets de peso), usa estas herramientas. Las tarifas v2 se editan con el botón naranja de arriba.</p>
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <span style="color:#4CAF50; font-weight:bold; font-size:0.85rem;">Cargar tarifa v1:</span>
+                            <input type="text" id="tariff-global-id" placeholder="ID o nombre..." list="global-tariffs-datalist" style="padding:5px 10px; background:#1e1e1e; border:1px solid #555; color:white; border-radius:4px; width:200px; font-size:0.82rem;">
+                            <datalist id="global-tariffs-datalist"></datalist>
+                            <button class="btn btn-primary" id="btn-load-global-tariff" style="background:#4CAF50; border:none; color:white; padding:5px 14px; font-size:0.82rem; cursor:pointer; border-radius:4px;">Cargar</button>
+                            <button onclick="promptCreateGlobalTariff()" style="background:transparent; border:1px solid #888; color:#aaa; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:4px;">+ Nueva v1</button>
+                            <button id="btn-delete-global-tariff" onclick="deleteCurrentGlobalTariff()" style="display:none; background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:5px 12px; font-size:0.82rem; cursor:pointer; border-radius:4px;"><span class="material-symbols-outlined">delete</span> Eliminar</button>
+                        </div>
+                    </div>
+                </details>
                 <div id="tariff-editor-area" style="display:none;">
                     <!-- TARIFF MODE TOGGLE -->
                     <div style="margin-bottom:10px; display:flex; gap:8px; align-items:center; padding:6px 0;">
@@ -11101,6 +11133,135 @@ window.runPublicTicketsBackfill = async function() {
                 } catch (e) { console.error(e); }
             }
 
+            // ════════════════════════════════════════════════════════
+            //  TARIFA CARDS — vista limpia rediseñada 2026-05-14
+            // ════════════════════════════════════════════════════════
+            window.renderTariffCards = async function() {
+                const container = document.getElementById('tariff-cards-container');
+                if (!container) return;
+                const search = (document.getElementById('tariff-cards-search') || {}).value || '';
+                const searchLow = search.toLowerCase().trim();
+
+                container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:30px; color:#888;">Cargando…</div>';
+
+                let tariffs = [];
+                try {
+                    const snap = await db.collection('tariffs').get();
+                    snap.forEach(d => {
+                        const data = d.data() || {};
+                        tariffs.push({ id: d.id, ...data });
+                    });
+                } catch(e) {
+                    container.innerHTML = '<div style="grid-column:1/-1; color:#FF3B30; padding:30px; text-align:center;">Error cargando tarifas: ' + (e.message || '') + '</div>';
+                    return;
+                }
+
+                // Contar cuántos clientes usan cada tariffId
+                const clientCount = {};
+                if (window.userMap) {
+                    Object.values(window.userMap).forEach(u => {
+                        if (u.tariffId) {
+                            const k = String(u.tariffId);
+                            clientCount[k] = (clientCount[k] || 0) + 1;
+                            // Probar también con prefijo GLOBAL_ por si la tariffId del cliente está sin prefijo
+                            clientCount['GLOBAL_' + k] = (clientCount['GLOBAL_' + k] || 0) + 1;
+                        }
+                    });
+                }
+
+                // Filtro de búsqueda + sólo tarifas globales (los docs con prefijo GLOBAL_ son tarifas, el resto son tarifas-cliente legacy a esconder)
+                const filtered = tariffs.filter(t => {
+                    if (!t.id || !t.id.startsWith('GLOBAL_')) return false;
+                    if (!searchLow) return true;
+                    const hay = (t.name || '').toLowerCase() + ' ' + (t.id || '').toLowerCase();
+                    return hay.indexOf(searchLow) !== -1;
+                });
+
+                // Separar v2 vs v1
+                const v2 = filtered.filter(t => t.version === 2);
+                const v1 = filtered.filter(t => t.version !== 2);
+
+                // Ordenar por número de clientes (más usadas arriba) y luego alfabético
+                const sorter = (a, b) => {
+                    const ca = clientCount[a.id] || 0;
+                    const cb = clientCount[b.id] || 0;
+                    if (cb !== ca) return cb - ca;
+                    return (a.name || a.id).localeCompare(b.name || b.id);
+                };
+                v2.sort(sorter);
+                v1.sort(sorter);
+
+                if (v2.length === 0 && v1.length === 0) {
+                    container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:40px 20px; color:#888;">'
+                        + (search ? '🔍 Ningún resultado para "' + escapeHtml(search) + '".' : '📦 No hay tarifas todavía. Pulsa "🧮 + Nueva tarifa" arriba para crear la primera.')
+                        + '</div>';
+                    return;
+                }
+
+                const _esc = (typeof escapeHtml === 'function') ? escapeHtml : (s => String(s||'').replace(/</g,'&lt;'));
+
+                // Resumen de modos para cada tarifa v2
+                const summarizeModes = (items) => {
+                    if (!items || items.length === 0) return 'Sin artículos';
+                    const counts = {};
+                    items.forEach(it => {
+                        const m = it.mode || '?';
+                        counts[m] = (counts[m] || 0) + 1;
+                    });
+                    const labels = { per_package: 'bulto', per_kg: 'kg', per_expedition: 'expedición', per_expedition_unit: 'exp×bulto', flat_monthly: 'plana' };
+                    return Object.keys(counts).map(m => counts[m] + ' ' + (labels[m] || m)).join(' · ');
+                };
+
+                let html = '';
+
+                // V2 cards
+                v2.forEach(t => {
+                    const n = clientCount[t.id] || 0;
+                    const items = t.items || [];
+                    const modesSummary = summarizeModes(items);
+                    const hasFlatMonthly = items.some(it => it.mode === 'flat_monthly');
+                    const accentColor = hasFlatMonthly ? '#4CAF50' : '#FF8A50';
+                    html += '<div onclick="window.openTariffBuilder(\'' + _esc(t.id) + '\')" style="background:#1a1a1a; border:1px solid #333; border-left:3px solid ' + accentColor + '; border-radius:10px; padding:14px; cursor:pointer; transition:all 0.15s;" onmouseover="this.style.borderColor=\'#FF6600\'; this.style.background=\'#1f1f1f\'" onmouseout="this.style.borderColor=\'#333\'; this.style.borderLeftColor=\'' + accentColor + '\'; this.style.background=\'#1a1a1a\'">'
+                        + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
+                        + '  <div style="flex:1; min-width:0;">'
+                        + '    <div style="font-weight:700; color:#fff; font-size:0.95rem; margin-bottom:4px; word-break:break-word;">' + _esc(t.name || t.id) + (hasFlatMonthly ? ' <span style="color:#4CAF50; font-size:0.7rem; font-weight:600;">📊 plana</span>' : '') + '</div>'
+                        + '    <div style="font-size:0.7rem; color:#888; font-family:monospace; word-break:break-all;">' + _esc(t.id) + '</div>'
+                        + '  </div>'
+                        + '  <span style="background:rgba(76,175,80,0.18); color:#4CAF50; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700; white-space:nowrap;">v2</span>'
+                        + '</div>'
+                        + '<div style="font-size:0.78rem; color:#aaa; margin-top:10px;">' + items.length + ' artículo' + (items.length === 1 ? '' : 's') + (modesSummary !== 'Sin artículos' ? ' · ' + modesSummary : '') + '</div>'
+                        + '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px solid #2d2d30;">'
+                        + '  <span style="font-size:0.72rem; color:' + (n > 0 ? '#5DADE2' : '#666') + ';">' + (n > 0 ? '👥 ' + n + ' cliente' + (n === 1 ? '' : 's') + ' la usan' : 'Sin clientes asignados') + '</span>'
+                        + '  <span style="font-size:0.7rem; color:#FF8A50; font-weight:600;">✏️ Editar →</span>'
+                        + '</div>'
+                        + '</div>';
+                });
+
+                // V1 cards (estilo más apagado)
+                if (v1.length > 0) {
+                    html += '<div style="grid-column:1/-1; margin-top:8px; padding:8px 4px; font-size:0.78rem; color:#888; border-top:1px dashed #444;">📦 Tarifas antiguas (v1):</div>';
+                    v1.forEach(t => {
+                        const n = clientCount[t.id] || 0;
+                        const idShort = t.id.replace('GLOBAL_', '');
+                        html += '<div onclick="document.getElementById(\'tariff-global-id\').value=\'' + _esc(idShort) + '\'; document.getElementById(\'btn-load-global-tariff\').click(); this.closest(\'#tariff-tab-global\').querySelector(\'details\').open=true;" style="background:#1a1a1a; border:1px solid #2d2d30; border-left:3px solid #666; border-radius:10px; padding:12px; cursor:pointer; opacity:0.85;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.85\'">'
+                            + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
+                            + '  <div style="flex:1; min-width:0;">'
+                            + '    <div style="font-weight:600; color:#ddd; font-size:0.88rem; margin-bottom:3px; word-break:break-word;">' + _esc(t.name || idShort) + '</div>'
+                            + '    <div style="font-size:0.68rem; color:#666; font-family:monospace;">' + _esc(t.id) + '</div>'
+                            + '  </div>'
+                            + '  <span style="background:rgba(120,120,120,0.18); color:#999; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700;">v1</span>'
+                            + '</div>'
+                            + '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid #2d2d30;">'
+                            + '  <span style="font-size:0.7rem; color:' + (n > 0 ? '#5DADE2' : '#666') + ';">' + (n > 0 ? '👥 ' + n + ' cliente' + (n === 1 ? '' : 's') : 'Sin clientes') + '</span>'
+                            + '  <span style="font-size:0.68rem; color:#888;">Abrir editor legacy →</span>'
+                            + '</div>'
+                            + '</div>';
+                    });
+                }
+
+                container.innerHTML = html;
+            };
+
             async function populateGlobalTariffsDatalist() {
                 const globalDatalist = document.getElementById('global-tariffs-datalist');
                 const globalSelect = document.getElementById('new-user-tariff-id');
@@ -16282,7 +16443,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
             </div>
         </div>
 
-        <script src="billing_adv_v4.js"></script>
+        <script src="billing_adv_v4.js?v=20260514_clean"></script>
     
     <!-- MODAL REASIGNAR REPARTIDOR -->
     <div id="modal-ticket-reassign" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:102070; justify-content:center; align-items:center; padding:20px; overflow-y:auto;">
@@ -19026,7 +19187,7 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260513_welcome"></script>
-<script src="ficha_cliente.js?v=20260514_v2migrate"></script>
+<script src="ficha_cliente.js?v=20260514_clean"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260404"></script>
@@ -19041,7 +19202,7 @@ window.importTarifas50 = async () => {
 <script src="invoice_flatrate_multibranch.js?v=20260504_v2_pct"></script>
 <script src="invoice_per_branch.js?v=20260514_v2"></script>
 <script src="pricing_engine.js?v=20260514_phase5"></script>
-<script src="tariff_editor.js?v=20260504_phase2_extras"></script>
+<script src="tariff_editor.js?v=20260514_clean"></script>
 
 </body>
 </html>

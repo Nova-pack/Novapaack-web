@@ -1277,6 +1277,11 @@ window.showTariffTab = (tab) => {
         if(el) el.style.display = (t === tab) ? 'block' : 'none';
     });
     // Load data when switching
+    if(tab === 'global') {
+        // Cards-based view (rediseño 2026-05-14)
+        if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+        if (typeof populateGlobalTariffsDatalist === 'function') populateGlobalTariffsDatalist();
+    }
     if(tab === 'articles') {
         loadArticlesPRO();
         loadArticlesCount();
