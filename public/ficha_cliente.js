@@ -553,6 +553,152 @@
     };
 
     // ============================================================
+    //  MIGRACIÓN cuota plana legacy → tarifa v2 con flat_monthly
+    // ============================================================
+    // Convierte un cliente con isFlatRate=true + flatRateAmount=X en un
+    // cliente con tarifa v2 que contiene un item flat_monthly de X €/mes.
+    // Crea la tarifa global GLOBAL_PLANA_<idNum>_v2 si no existe, asigna
+    // tariffId al cliente, y limpia los flags legacy.
+    window._migrateClientFlatRateToV2 = async function(clientId) {
+        if (!clientId) return;
+        const c = (window.userMap && window.userMap[clientId])
+               || (window._advClientsCache && window._advClientsCache.find(x => x.id === clientId));
+        if (!c) { alert('Cliente no encontrado en cache.'); return; }
+        const flatAmt = Number(c.flatRateAmount) || 0;
+        if (flatAmt <= 0) { alert('Este cliente no tiene cuota plana legacy (flatRateAmount = 0). Nada que migrar.'); return; }
+
+        const tariffId = 'GLOBAL_PLANA_' + (c.idNum || clientId).toString().toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_v2';
+        const confirm1 = confirm(
+            'Migración cuota plana legacy → tarifa v2\n\n' +
+            'Cliente: ' + (c.name || c.idNum) + '\n' +
+            'Cuota actual: ' + flatAmt.toFixed(2) + ' €/mes (legacy)\n\n' +
+            'Acciones a realizar:\n' +
+            '  1. Crear tarifa global "' + tariffId + '" con un item flat_monthly de ' + flatAmt.toFixed(2) + ' €/mes\n' +
+            '  2. Asignar esta tarifa al cliente (users/' + clientId + '.tariffId)\n' +
+            '  3. Limpiar flags legacy (isFlatRate=false, flatRateAmount=0)\n\n' +
+            'El comportamiento de facturación será IDÉNTICO (cuota plana de ' + flatAmt.toFixed(2) + ' €/mes), ' +
+            'pero pasará por el motor nuevo y podrás añadirle artículos extras facturados aparte.\n\n' +
+            '¿Continuar?'
+        );
+        if (!confirm1) return;
+
+        try {
+            if (typeof showLoading === 'function') showLoading();
+
+            // 1. Crear/actualizar tarifa v2
+            const tariffPayload = {
+                name: 'Plana ' + (c.name || ('#' + c.idNum)),
+                version: 2,
+                items: [
+                    {
+                        id: 'cuota_mensual',
+                        name: 'Cuota mensual',
+                        mode: 'flat_monthly',
+                        basePrice: flatAmt,
+                        unit: 'mes',
+                        pricingRule: null
+                    }
+                ],
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin',
+                migratedFrom: 'legacy_flat_rate',
+                migratedFromClientId: clientId,
+                migratedAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
+            await db.collection('tariffs').doc(tariffId).set(tariffPayload, { merge: true });
+
+            // 2. Asignar al cliente + limpiar legacy
+            await db.collection('users').doc(clientId).update({
+                tariffId: tariffId,
+                isFlatRate: false,         // ⚠️ desactivamos el legacy para no doblar cobro
+                flatRateAmount: 0,
+                tariffMigratedFromLegacyAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            // 3. Update cache local + tariffsCache para que el render lo pille al vuelo
+            if (window.userMap && window.userMap[clientId]) {
+                Object.assign(window.userMap[clientId], {
+                    tariffId: tariffId,
+                    isFlatRate: false,
+                    flatRateAmount: 0
+                });
+            }
+            if (typeof tariffsCache !== 'undefined') {
+                tariffsCache[tariffId] = tariffPayload;
+            }
+            _fichaClientData = { ..._fichaClientData, tariffId: tariffId, isFlatRate: false, flatRateAmount: 0 };
+
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('✅ Migración completada.\n\nTarifa creada: ' + tariffId + '\nCliente actualizado.\n\nLa facturación seguirá emitiendo la misma cuota mensual.');
+            _fichaRender();
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            console.error('[migrate]', e);
+            alert('Error en migración: ' + e.message);
+        }
+    };
+
+    // Migración masiva: itera TODOS los clientes con cuota plana legacy
+    window._migrateAllFlatRateClientsToV2 = async function() {
+        if (!confirm('⚠️ MIGRACIÓN MASIVA\n\nVa a migrar TODOS los clientes con isFlatRate=true + flatRateAmount>0 al modelo v2.\n\nPara cada uno:\n  • Crea tarifa GLOBAL_PLANA_<idNum>_v2\n  • Asigna esa tarifa\n  • Limpia los flags legacy\n\nNO TOCA sucursales (los sucursales con isFlatRate=true son anomalía, no se migran automáticamente).\n\n¿Continuar?')) return;
+        try {
+            if (typeof showLoading === 'function') showLoading();
+            const snap = await db.collection('users').where('isFlatRate', '==', true).get();
+            const candidates = [];
+            snap.forEach(d => {
+                const data = d.data();
+                if (data.parentClientId) return; // skip sucursales
+                if ((Number(data.flatRateAmount) || 0) <= 0) return;
+                candidates.push({ id: d.id, ...data });
+            });
+
+            if (candidates.length === 0) {
+                if (typeof hideLoading === 'function') hideLoading();
+                alert('No hay clientes a migrar.');
+                return;
+            }
+
+            let ok = 0, fail = 0;
+            for (const c of candidates) {
+                try {
+                    const tariffId = 'GLOBAL_PLANA_' + (c.idNum || c.id).toString().toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_v2';
+                    await db.collection('tariffs').doc(tariffId).set({
+                        name: 'Plana ' + (c.name || ('#' + c.idNum)),
+                        version: 2,
+                        items: [{
+                            id: 'cuota_mensual',
+                            name: 'Cuota mensual',
+                            mode: 'flat_monthly',
+                            basePrice: Number(c.flatRateAmount) || 0,
+                            unit: 'mes',
+                            pricingRule: null
+                        }],
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        migratedFromClientId: c.id
+                    }, { merge: true });
+                    await db.collection('users').doc(c.id).update({
+                        tariffId: tariffId,
+                        isFlatRate: false,
+                        flatRateAmount: 0,
+                        tariffMigratedFromLegacyAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    ok++;
+                } catch(e) {
+                    console.error('[migrate-all]', c.id, e);
+                    fail++;
+                }
+            }
+
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('Migración masiva terminada.\n\n  Migrados OK: ' + ok + '\n  Fallidos: ' + fail + '\n\nRefresca el listado de clientes.');
+            if (typeof window.advLoadClients === 'function') window.advLoadClients();
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('Error en migración masiva: ' + e.message);
+        }
+    };
+
+    // ============================================================
     //  DIAGNÓSTICO DE CONFIGURACIÓN PADRE + SUCURSALES
     //  Lee Firestore en vivo y reporta qué está bien, qué tiene aviso
     //  y qué hay que arreglar para que la facturación mensual salga
@@ -842,6 +988,14 @@
             })}
             ${_field('Importe (\u20ac/mes)', 'fc-flatrate-amt', d.flatRateAmount || '', { type: 'number', minWidth: 'auto' })}
         </div>
+        ${d.isFlatRate && d.flatRateAmount > 0 ? `
+        <div style="background:rgba(94,160,255,0.06); border:1px solid rgba(94,160,255,0.3); border-radius:6px; padding:10px 12px; margin:6px 0 10px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div style="font-size:0.78rem; color:#aaa;">
+                \ud83d\udd04 <strong style="color:#5DADE2;">Migrar a Tarifa v2</strong>: convierte esta cuota legacy en una tarifa v2 con item <code>flat_monthly</code>. Funciona igual pero usa el motor nuevo (permite combinar con paletizados/extras facturados aparte).
+            </div>
+            <button type="button" onclick="window._migrateClientFlatRateToV2('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer; white-space:nowrap;">\ud83d\udd04 Migrar a v2</button>
+        </div>
+        ` : ''}
 
         ${_sectionTitle('tune', 'Subtarifa Especial (Precios Exclusivos)', '#E040FB')}
         <div style="background:rgba(224,64,251,0.05); border:1px solid rgba(224,64,251,0.2); border-radius:8px; padding:10px; margin-bottom:12px;">

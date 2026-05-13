@@ -501,10 +501,14 @@
             });
         });
 
-        // Calcular importe = flatRateAmount del padre (cuota plana)
-        const flatAmount = Number(parent.flatRateAmount) || 0;
+        // Calcular importe de la cuota plana del padre
+        // Soporta legacy (flatRateAmount) y v2 (items flat_monthly de la tarifa)
+        // vía el helper unificado window.getMonthlyFlatAmount.
+        const flatAmount = (typeof window.getMonthlyFlatAmount === 'function')
+            ? window.getMonthlyFlatAmount(parent.id)
+            : (Number(parent.flatRateAmount) || 0);
         if (flatAmount <= 0) {
-            if (!confirm('⚠️ El cliente padre NO tiene flatRateAmount configurado (o es 0).\n\nEdita su ficha y establece la cuota fija antes de emitir.\n\n¿Continuar con preview a 0 € de todos modos?')) return;
+            if (!confirm('⚠️ El cliente padre NO tiene cuota plana configurada (ni en flatRateAmount legacy ni en items flat_monthly v2).\n\nEdita su ficha o su tarifa antes de emitir.\n\n¿Continuar con preview a 0 € de todos modos?')) return;
         }
         const fiscalSender = (typeof window.invCompanyData === 'object' && window.invCompanyData) ? window.invCompanyData : {};
         const ivaRate = fiscalSender.iva || 21;

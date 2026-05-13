@@ -14000,26 +14000,80 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                 return calculateTicketPriceSync(t, uid, adminTicketCompID);
             }
 
+            // ════════════════════════════════════════════════════════
+            //  CUOTA PLANA MENSUAL — fuente única de verdad
+            // ════════════════════════════════════════════════════════
+            // Devuelve la cuota plana mensual que se debe facturar al cliente
+            // INDEPENDIENTEMENTE de los albaranes (las "líneas" planas no se
+            // cobran por ticket — esta función dice CUÁNTO añadir a la factura
+            // del mes en forma de cuota plana).
+            //
+            // Soporta dos modelos coexistiendo:
+            //   - Legacy: users/{uid}.isFlatRate === true → users/{uid}.flatRateAmount
+            //   - V2: tarifa con items mode='flat_monthly' → suma sus basePrice
+            //
+            // Si los dos coexisten, ganan los items v2 (más expresivos).
+            window.getMonthlyFlatAmount = function(uid) {
+                const uData = (window.userMap && window.userMap[uid]) || {};
+
+                // Intento V2 primero: ¿la tarifa asignada tiene items flat_monthly?
+                if (uData.tariffId && typeof window.pricingEngine !== 'undefined' && typeof tariffsCache !== 'undefined') {
+                    const tid = String(uData.tariffId).trim();
+                    const baseT = tariffsCache["GLOBAL_" + tid] ||
+                                  tariffsCache["GLOBAL_" + tid.padStart(3, '0')] ||
+                                  tariffsCache["GLOBAL_" + parseInt(tid)] ||
+                                  tariffsCache[tid] ||
+                                  tariffsCache["GLOBAL_" + tid + "_v2"];
+                    if (baseT && baseT.version === 2) {
+                        try {
+                            const overrides = uData.tariffOverrides || {};
+                            const resolved = window.pricingEngine.resolveTariff(baseT, overrides);
+                            let total = 0;
+                            (resolved.items || []).forEach(it => {
+                                if (it.mode === 'flat_monthly') total += Number(it.basePrice) || 0;
+                            });
+                            if (total > 0) return Math.round(total * 100) / 100;
+                        } catch(e) {
+                            console.warn('[FlatMonthly v2] error, fallback legacy:', e.message);
+                        }
+                    }
+                }
+
+                // Fallback legacy: isFlatRate=true + flatRateAmount
+                if (uData.isFlatRate === true) {
+                    return Number(uData.flatRateAmount) || 0;
+                }
+
+                return 0;
+            };
+
+            // Helper: detecta si el cliente está bajo cuota plana (cualquier modelo)
+            window.isClientFlatRate = function(uid) {
+                return window.getMonthlyFlatAmount(uid) > 0;
+            };
+
             function calculateTicketPriceSync(t, uid, compId) {
                 if (!t) return 0;
                 const uData = userMap[uid] || {};
 
-                // 🌟 TARIFA PLANA OVERRIDE 🌟
-                // Cortocircuito: si el cliente tiene tarifa plana MENSUAL, 
-                // el coste del transporte individual del albarán es SIEMPRE 0€
+                // 🌟 TARIFA PLANA OVERRIDE (legacy) 🌟
+                // Cortocircuito: si el cliente tiene tarifa plana MENSUAL legacy,
+                // el coste del transporte individual del albarán es SIEMPRE 0€.
+                // (La cuota plana se factura aparte al cerrar mes.)
                 if(uData.isFlatRate === true){
-                    return 0; // Se fuerza 0.00€ para todos los albaranes de este cliente
+                    return 0;
                 }
 
                 let baseT = null;
 
-                // 1. Precise Lookup Strategy
+                // 1. Precise Lookup Strategy — incluye soporte v2 (sufijo _v2)
                 if (uData.tariffId) {
                     const tid = String(uData.tariffId).trim();
-                    // Try literal, then numeric padding, then raw number
                     baseT = tariffsCache["GLOBAL_" + tid] ||
                         tariffsCache["GLOBAL_" + tid.padStart(3, '0')] ||
-                        tariffsCache["GLOBAL_" + parseInt(tid)];
+                        tariffsCache["GLOBAL_" + parseInt(tid)] ||
+                        tariffsCache[tid] ||
+                        tariffsCache["GLOBAL_" + tid + "_v2"];
                 }
 
                 // Fallback to personal tariff using any available ID key
@@ -14029,6 +14083,27 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                         (uData.authUid && tariffsCache[uData.authUid]) ||
                         (uData.email && tariffsCache[uData.email]) ||
                         {};
+                }
+
+                // ⭐ NUEVO: TARIFA V2 (motor pricingEngine) ⭐
+                // Si la tarifa cargada es v2 y el motor está disponible,
+                // delegamos el cálculo. Mantenemos legacy abajo como fallback
+                // para retrocompatibilidad con tarifas viejas sin migrar.
+                if (baseT && baseT.version === 2 && typeof window.pricingEngine !== 'undefined') {
+                    try {
+                        const overrides = uData.tariffOverrides || {};
+                        const resolved = window.pricingEngine.resolveTariff(baseT, overrides);
+                        let packagesList = (t.packagesList && t.packagesList.length > 0) ? t.packagesList : [{
+                            qty: parseInt(t.packages, 10) || 1,
+                            size: t.size || 'Bulto',
+                            weight: parseFloat(t.weight) || parseFloat(t.kilos) || 0
+                        }];
+                        const result = window.pricingEngine.priceTicket(packagesList, resolved);
+                        return result.total || 0;
+                    } catch(e) {
+                        console.warn('[PriceEngine v2] fallback to legacy por error:', e.message, 'ticket:', t.id);
+                        // Caemos al legacy abajo
+                    }
                 }
 
                 // ── WEIGHT-BASED TARIFF EARLY RETURN ──
@@ -18951,7 +19026,7 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260513_welcome"></script>
-<script src="ficha_cliente.js?v=20260513_emaillabel"></script>
+<script src="ficha_cliente.js?v=20260514_v2migrate"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260404"></script>
@@ -18964,8 +19039,8 @@ window.importTarifas50 = async () => {
 <script src="auto_assign.js?v=20260504"></script>
 <script src="heatmap.js?v=20260504"></script>
 <script src="invoice_flatrate_multibranch.js?v=20260504_v2_pct"></script>
-<script src="invoice_per_branch.js?v=20260504_v2_selector"></script>
-<script src="pricing_engine.js?v=20260504_phase1"></script>
+<script src="invoice_per_branch.js?v=20260514_v2"></script>
+<script src="pricing_engine.js?v=20260514_phase5"></script>
 <script src="tariff_editor.js?v=20260504_phase2_extras"></script>
 
 </body>
