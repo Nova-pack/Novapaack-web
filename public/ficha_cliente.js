@@ -145,7 +145,9 @@
 
     function _fichaPopulateTariffSelects() {
         const currentVal = _fichaClientData ? (_fichaClientData.tariffId || '') : '';
-        ['fc-tariff', 'fc-tariff-eco'].forEach(selId => {
+        // fc-tariff-eco eliminado: el selector de Tarifa Global vive sólo en
+        // la pestaña Principal para evitar la duplicidad confusa.
+        ['fc-tariff'].forEach(selId => {
             const sel = document.getElementById(selId);
             if (!sel) return;
             sel.innerHTML = '<option value="">-- Sin Tarifa Global --</option>';
@@ -819,14 +821,13 @@
             ${_field('Fecha Mandato', 'fc-sepa-date', d.sepaDate, { type: 'date', minWidth: 'auto' })}
         </div>
 
-        ${_sectionTitle('sell', 'Tarifas y Cuota Plana', '#FFD700')}
-        <div style="display:grid; grid-template-columns: 1fr 120px 140px; gap:6px; margin-bottom:6px;">
-            <div style="min-width:auto;">
-                <label style="display:block; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Tarifa Global</label>
-                <select id="fc-tariff-eco" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
-                    <option value="">-- Cargando... --</option>
-                </select>
-            </div>
+        ${_sectionTitle('sell', 'Cuota Plana', '#FFD700')}
+        <div style="background:rgba(255,215,0,0.04); border:1px solid rgba(255,215,0,0.15); border-radius:6px; padding:8px 12px; margin-bottom:6px; font-size:0.74rem; color:#aaa;">
+            \u2139\ufe0f La <strong style="color:#FFD700;">Tarifa Global</strong> se asigna en la pesta\u00f1a <strong>PRINCIPAL</strong>
+            (secci\u00f3n Relaciones \u2192 Tarifa Global). Aqu\u00ed controlas s\u00f3lo la cuota plana mensual.
+            ${d.tariffId ? `Tarifa actual: <code style="background:#0a0a0a; padding:1px 6px; border-radius:3px; color:#fff;">${d.tariffId}</code>` : '<span style="color:#FF9800;">Sin tarifa asignada todav\u00eda.</span>'}
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
             ${_field('Cuota Plana', 'fc-flatrate', d.isFlatRate ? 'S\u00ed' : 'No', {
                 type: 'select', minWidth: 'auto',
                 options: [
@@ -834,7 +835,7 @@
                     { value: 'S\u00ed', label: 'S\u00ed' }
                 ]
             })}
-            ${_field('Importe (\u20ac)', 'fc-flatrate-amt', d.flatRateAmount || '', { type: 'number', minWidth: 'auto' })}
+            ${_field('Importe (\u20ac/mes)', 'fc-flatrate-amt', d.flatRateAmount || '', { type: 'number', minWidth: 'auto' })}
         </div>
 
         ${_sectionTitle('tune', 'Subtarifa Especial (Precios Exclusivos)', '#E040FB')}
