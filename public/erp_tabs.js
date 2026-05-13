@@ -27,7 +27,9 @@
         'erp-tab-cooper',
         'erp-tab-analytics',
         'erp-tab-auto-assign',
-        'erp-tab-heatmap'
+        'erp-tab-heatmap',
+        'erp-tab-tariff-builder',
+        'erp-tab-tariff-manager'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -66,6 +68,8 @@
         'analytics':       { wsId: 'erp-tab-analytics',           title: 'Analítica',          icon: 'monitoring',         closeable: true },
         'auto-assign':     { wsId: 'erp-tab-auto-assign',         title: 'Auto-asignar',       icon: 'auto_awesome',       closeable: true },
         'heatmap':         { wsId: 'erp-tab-heatmap',             title: 'Heatmap retrasos',   icon: 'whatshot',           closeable: true },
+        'tariff-builder':  { wsId: 'erp-tab-tariff-builder',       title: 'Editor Tarifa',      icon: 'paid',               closeable: true },
+        'tariff-manager':  { wsId: 'erp-tab-tariff-manager',       title: 'Tarifa Cliente',     icon: 'price_change',       closeable: true },
     };
 
     // --- CORE API ---
