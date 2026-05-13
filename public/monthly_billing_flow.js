@@ -250,6 +250,22 @@
                 _mbGrouped[fid].tickets.push({ ...t, docId: doc.id });
             });
 
+            // Añadir clientes con cuota plana que NO tienen tickets este mes
+            // — se les debe facturar la cuota igualmente. Iteramos userMap
+            // buscando los que tengan flat (vía v2 flat_monthly o legacy)
+            // y no estén ya en _mbGrouped.
+            if (window.userMap && typeof window.getMonthlyFlatAmount === 'function') {
+                Object.values(window.userMap).forEach(u => {
+                    if (!u || !u.id) return;
+                    if (u.parentClientId) return; // sucursales NO cobran cuota plana propia
+                    if (_mbGrouped[u.id]) return; // ya está
+                    const flat = window.getMonthlyFlatAmount(u.id) || 0;
+                    if (flat > 0) {
+                        _mbGrouped[u.id] = { clientInfo: u, tickets: [], subtotal: 0, iva: 0, irpf: 0, total: 0 };
+                    }
+                });
+            }
+
             // Calculate totals per client
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             Object.values(_mbGrouped).forEach(g => {
@@ -262,13 +278,23 @@
                     t._price = price;
                     g.subtotal += price;
                 });
+                // ─── Cuota plana mensual ─────────────────────────────
+                // Si el cliente tiene cuota plana (v2 flat_monthly o legacy
+                // isFlatRate), añadimos la cuota como línea adicional. Sucursales
+                // skipped (la cuota vive en el padre, getMonthlyFlatAmount lo gestiona).
+                g.flatMonthly = 0;
+                if (typeof window.getMonthlyFlatAmount === 'function') {
+                    g.flatMonthly = window.getMonthlyFlatAmount(g.clientInfo.id) || 0;
+                }
+                g.extrasSubtotal = g.subtotal;        // tickets reales (paletizados, etc.)
+                g.subtotal = g.extrasSubtotal + g.flatMonthly; // total = extras + cuota
                 g.iva = g.subtotal * (ivaRate / 100);
                 const irpfRate = parseFloat(g.clientInfo.irpf) || 0;
                 g.irpf = g.subtotal * (irpfRate / 100);
                 g.total = g.subtotal + g.iva - g.irpf;
             });
 
-            // Remove zero-value clients
+            // Remove zero-value clients (ningún ticket Y sin cuota plana)
             Object.keys(_mbGrouped).forEach(k => {
                 if (_mbGrouped[k].subtotal <= 0) delete _mbGrouped[k];
             });
@@ -540,7 +566,8 @@
 
                 updateProgress(i + 1, `${client.name || 'Cliente ' + (i+1)}...`);
 
-                if (tkts.length === 0 || group.subtotal <= 0) continue;
+                // Mantener clientes con cuota plana incluso sin tickets este mes.
+                if (group.subtotal <= 0) continue;
 
                 const ticketsIdArray = [];
                 const ticketsDetailArray = [];
@@ -554,6 +581,18 @@
                         qty: 1, price: t._price || 0, discount: 0, iva: ivaRate, total: t._price || 0, ticketId: t.docId
                     });
                 });
+
+                // ─── Añadir línea de Cuota Plana Mensual si aplica ────
+                // Se factura encima de los albaranes (que son extras como
+                // paletizados, urgentes...). Es la cuota fija acordada.
+                if (group.flatMonthly && group.flatMonthly > 0) {
+                    const flatAmt = Number(group.flatMonthly) || 0;
+                    const monthLabel = invoiceDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+                    advancedGrid.push({
+                        description: `Cuota plana mensual — ${monthLabel}`,
+                        qty: 1, price: flatAmt, discount: 0, iva: ivaRate, total: flatAmt, ticketId: null
+                    });
+                }
 
                 const irpfRate = parseFloat(client.irpf) || 0;
                 // Reserve next number atomically for THIS invoice only.

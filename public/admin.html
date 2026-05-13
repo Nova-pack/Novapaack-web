@@ -14188,6 +14188,12 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
             window.getMonthlyFlatAmount = function(uid) {
                 const uData = (window.userMap && window.userMap[uid]) || {};
 
+                // CRITICO: las SUCURSALES no tienen cuota plana propia — la
+                // cuota es del CLIENTE PADRE, no se duplica por sucursal.
+                // Aunque la sucursal herede tariffId con flat_monthly, ignoramos
+                // ese item al calcular su cuota mensual.
+                if (uData.parentClientId) return 0;
+
                 // Intento V2 primero: ¿la tarifa asignada tiene items flat_monthly?
                 if (uData.tariffId && typeof window.pricingEngine !== 'undefined' && typeof tariffsCache !== 'undefined') {
                     const tid = String(uData.tariffId).trim();
@@ -19201,7 +19207,7 @@ window.importTarifas50 = async () => {
 <script src="ficha_cliente.js?v=20260514_diagv2"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
-<script src="monthly_billing_flow.js?v=20260404"></script>
+<script src="monthly_billing_flow.js?v=20260514_flat"></script>
 <script src="comunicaciones.js?v=20260404"></script>
 <script src="nif_enrichment.js?v=20260404"></script>
 <script src="erp_tabs.js?v=20260404"></script>
