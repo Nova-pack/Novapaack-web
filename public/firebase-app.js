@@ -686,9 +686,36 @@ async function initTicketListener(retryCount = 0) {
             idVariants.push(n.toString().padStart(4, '0'));
         }
 
+        // ─── Consolidado padre + sucursales ───
+        // Si este usuario es PADRE (tiene clientes con parentClientId apuntando a él),
+        // añadimos las identidades de sus sucursales al listener. Así el padre ve
+        // de un vistazo todos los albaranes de sus sedes en su panel online.
+        // Las sucursales NO ven a otros — solo los suyos.
+        let branchIdentities = [];
+        if (!userData.parentClientId) { // soy padre o cliente independiente
+            try {
+                const childSnap = await db.collection('users')
+                    .where('parentClientId', '==', userData.id || currentUser.uid)
+                    .limit(20)
+                    .get();
+                childSnap.forEach(doc => {
+                    const d = doc.data();
+                    if (d.idNum) branchIdentities.push(d.idNum.toString());
+                    if (d.authUid) branchIdentities.push(d.authUid);
+                });
+                if (branchIdentities.length > 0) {
+                    console.log('[SYNC-LINEA] Consolidando ' + childSnap.size + ' sucursales:', branchIdentities);
+                }
+            } catch(e) { console.warn('[SYNC-LINEA] No pude cargar sucursales:', e.message); }
+        }
+
         // Unión de todas las identidades posibles para búsqueda universal, asegurando que TODO sea String
-        const finalVariantsRaw = [...new Set([...idVariants, ...identityIds])].filter(v => v !== null && v !== undefined && v !== "");
+        const finalVariantsRaw = [...new Set([...idVariants, ...identityIds, ...branchIdentities])].filter(v => v !== null && v !== undefined && v !== "");
+        // Firestore "in" se limita a 10 valores. Si hay más, prima identidades propias.
         const finalVariants = finalVariantsRaw.map(v => String(v).trim()).slice(0, 10);
+        if (finalVariantsRaw.length > 10) {
+            console.warn('[SYNC-LINEA] Más de 10 identidades (' + finalVariantsRaw.length + '). Truncando a las primeras 10. Las sucursales por encima de ese límite no se mostrarán en el consolidado.');
+        }
 
         console.log(`[SYNC-LINEA] Escuchando Albaranes por UID/Alias:`, finalVariants);
         
