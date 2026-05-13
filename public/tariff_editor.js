@@ -403,29 +403,14 @@
     };
 
     function _renderTariffBuilder(tariff) {
-        // ─── ERP TAB MODE ──────────────────────────────────────
-        // En vez de modal overlay, renderizamos en el workspace
-        // erp-tab-tariff-builder y delegamos navegación al sistema
-        // de tabs (erpOpenTab/erpCloseTab).
-        const useERP = typeof window.erpOpenTab === 'function'
-                    && document.getElementById('erp-tab-tariff-builder');
-        let container;
-        if (useERP) {
-            const tabTitle = tariff.id ? 'Editar: ' + (tariff.name || tariff.id) : 'Nueva tarifa';
-            window.erpOpenTab('tariff-builder', { title: tabTitle, icon: 'paid', closeable: true });
-            container = document.getElementById('erp-tab-tariff-builder');
-            if (container) container.innerHTML = '';
-        } else {
-            // Fallback legacy modal
-            const existing = document.getElementById('tariff-builder-modal');
-            if (existing) existing.remove();
-            const modal = document.createElement('div');
-            modal.id = 'tariff-builder-modal';
-            modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100001; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
-            document.body.appendChild(modal);
-            container = modal;
-        }
-        const modal = container; // alias para que el resto del código siga funcionando
+        // Modal overlay simple (revertido del experimento ERP por bug
+        // "pantalla negra" reportado por user 2026-05-14).
+        const existing = document.getElementById('tariff-builder-modal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'tariff-builder-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100001; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+        document.body.appendChild(modal);
 
         modal.innerHTML = ''
             + '<div style="max-width:980px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:24px; color:#d4d4d4;">'
@@ -434,7 +419,7 @@
             + '  <div style="display:flex; gap:8px;">'
             + '    <button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button>'
             + (tariff.id ? '    <button id="tb-delete" style="background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600;" title="Eliminar esta tarifa del sistema">🗑️ Eliminar</button>' : '')
-            + (useERP ? '' : '    <button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button>')
+            + '    <button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button>'
             + '  </div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
@@ -672,18 +657,7 @@
         }
 
         renderRows();
-
-        // Función de cierre que funciona en ambos modos (ERP tab o modal legacy)
-        function _closeBuilder() {
-            if (useERP) {
-                if (typeof window.erpCloseTab === 'function') window.erpCloseTab('tariff-builder');
-                else { container.innerHTML = ''; container.style.display = 'none'; }
-            } else {
-                modal.remove();
-            }
-        }
-        const closeBtn = document.getElementById('tb-close');
-        if (closeBtn) closeBtn.onclick = _closeBuilder;
+        document.getElementById('tb-close').onclick = () => modal.remove();
 
         // ─── BOTÓN IMPORTAR CATÁLOGO BASE ─────────────────────────
         const importBtn = document.getElementById('tb-import-base');
@@ -757,7 +731,7 @@
             try {
                 const id = await _saveTariff(tariff);
                 alert('✅ Tarifa guardada: ' + id);
-                _closeBuilder();
+                modal.remove();
                 if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
             } catch(e) { alert('Error: ' + e.message); }
         };
@@ -805,7 +779,7 @@
                 try {
                     await db.collection('tariffs').doc(tariff.id).delete();
                     alert('✅ Tarifa eliminada: ' + tariff.id);
-                    _closeBuilder();
+                    modal.remove();
                     if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
                 } catch(e) {
                     alert('Error al eliminar: ' + e.message);
@@ -826,41 +800,19 @@
         if (client.tariffId) baseTariff = tariffs.find(t => t.id === client.tariffId) || await _loadTariff(client.tariffId);
         const overrides = { ...(client.tariffOverrides || {}) };
 
-        // ─── ERP TAB MODE ──────────────────────────────────────
-        const useERP = typeof window.erpOpenTab === 'function'
-                    && document.getElementById('erp-tab-tariff-manager');
-        let modal;
-        if (useERP) {
-            window.erpOpenTab('tariff-manager', {
-                title: 'Tarifa: ' + (client.name || clientId).slice(0, 30),
-                icon: 'price_change',
-                closeable: true
-            });
-            modal = document.getElementById('erp-tab-tariff-manager');
-            if (modal) modal.innerHTML = '';
-        } else {
-            const existing = document.getElementById('tariff-mgr-modal');
-            if (existing) existing.remove();
-            modal = document.createElement('div');
-            modal.id = 'tariff-mgr-modal';
-            modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100000; display:flex; flex-direction:column; padding:18px; overflow-y:auto;';
-            document.body.appendChild(modal);
-        }
-
-        function _closeManager() {
-            if (useERP) {
-                if (typeof window.erpCloseTab === 'function') window.erpCloseTab('tariff-manager');
-                else { modal.innerHTML = ''; modal.style.display = 'none'; }
-            } else {
-                modal.remove();
-            }
-        }
+        // Modal overlay simple (revertido del experimento ERP)
+        const existing = document.getElementById('tariff-mgr-modal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'tariff-mgr-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100000; display:flex; flex-direction:column; padding:18px; overflow-y:auto;';
+        document.body.appendChild(modal);
 
         modal.innerHTML = ''
             + '<div style="max-width:1000px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:22px; color:#d4d4d4;">'
             + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; gap:12px; flex-wrap:wrap;">'
             + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Tarifa & Precios — ' + _esc(client.name || clientId) + '</h2><div style="font-size:0.8rem; color:#aaa; margin-top:3px;">Asigna una tarifa base global y personaliza precios o reglas por artículo.</div></div>'
-            + '  <div style="display:flex; gap:6px; flex-wrap:wrap;"><button id="tm-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar</button>' + (useERP ? '' : '<button id="tm-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:5px; cursor:pointer;">Cerrar</button>') + '</div>'
+            + '  <div style="display:flex; gap:6px; flex-wrap:wrap;"><button id="tm-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar</button><button id="tm-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
             + '</div>'
 
             // Selector tarifa base
@@ -1003,20 +955,19 @@
             baseTariff = tariffs.find(t => t.id === v) || await _loadTariff(v);
             renderItems();
         });
-        document.getElementById('tm-new').onclick = () => { _closeManager(); window.openTariffBuilder(null); };
+        document.getElementById('tm-new').onclick = () => { modal.remove(); window.openTariffBuilder(null); };
         document.getElementById('tm-edit-base').onclick = () => {
             if (!baseTariff) { alert('Primero selecciona una tarifa base.'); return; }
-            _closeManager();
+            modal.remove();
             window.openTariffBuilder(baseTariff.id);
         };
-        const tmCloseBtn = document.getElementById('tm-close');
-        if (tmCloseBtn) tmCloseBtn.onclick = _closeManager;
+        document.getElementById('tm-close').onclick = () => modal.remove();
         document.getElementById('tm-save').onclick = async () => {
             const selBase = document.getElementById('tm-base').value;
             try {
                 await _saveClientOverrides(clientId, selBase, overrides);
                 alert('✅ Tarifa del cliente guardada.');
-                _closeManager();
+                modal.remove();
             } catch(e) { alert('Error: ' + e.message); }
         };
 
