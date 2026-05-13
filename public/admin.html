@@ -17622,16 +17622,17 @@ window.importTarifas50 = async () => {
         const name = document.getElementById('adv-cm-name').value.trim();
         const email = document.getElementById('adv-cm-email').value.trim().toLowerCase();
         const password = document.getElementById('adv-cm-password').value.trim();
+        const editId = document.getElementById('adv-cm-uid').value;
         if (!name) { alert('El nombre es obligatorio.'); return; }
         if (!email) { alert('El email es obligatorio.'); return; }
-        if (!password && !document.getElementById('adv-cm-uid').value) { alert('La clave es obligatoria para clientes nuevos.'); return; }
+        if (!editId && !password) { alert('La clave es obligatoria para clientes nuevos.'); return; }
 
+        // userData: payload Firestore (sin password en claro)
         const userData = {
             idNum: document.getElementById('adv-cm-idnum').value.trim(),
             name: name,
             nif: document.getElementById('adv-cm-nif').value.trim().toUpperCase(),
             email: email,
-            password: password,
             tariffId: document.getElementById('adv-cm-tariff').value.trim(),
             iban: document.getElementById('adv-cm-iban').value.trim().toUpperCase(),
             billingCompanyId: document.getElementById('adv-cm-billing-company').value,
@@ -17649,58 +17650,81 @@ window.importTarifas50 = async () => {
             role: 'client'
         };
 
-        const editId = document.getElementById('adv-cm-uid').value;
+        // Payload para subcolección companies/comp_main (datos de empresa)
+        const defaultCompanyData = {
+            name: userData.name || '',
+            nif: userData.nif || '',
+            address: `${userData.street || ''} ${userData.number || ''}`.trim(),
+            cp: userData.cp || '',
+            city: userData.localidad || '',
+            province: userData.province || '',
+            phone: userData.senderPhone || '',
+            email: userData.email || '',
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
         try {
+            // ─── MODO EDICIÓN ─────────────────────────────────────────
+            // Sólo actualizamos el doc existente. NO tocamos Firebase Auth
+            // (eso es responsabilidad de los botones "✉️ Cambiar login" /
+            //  "🔗 Vincular Auth" / "🔄 Reset password"), porque hacerlo
+            // aquí destruía la sesión del admin y duplicaba documentos.
             if (editId) {
                 await db.collection('users').doc(editId).update(userData);
-                if (window.userMap) window.userMap[editId] = { ...window.userMap[editId], ...userData };
-                alert('✅ Cliente actualizado.');
-                // Auto-generate default company payload
-                const defaultCompanyData = {
-                    name: userData.name || '',
-                    nif: userData.nif || '',
-                    address: `${userData.street || ''} ${userData.number || ''}`.trim(),
-                    cp: userData.cp || '',
-                    city: userData.localidad || '',
-                    province: userData.province || '',
-                    phone: userData.senderPhone || '',
-                    email: userData.email || '',
-                    createdAt: (typeof firebase !== 'undefined' && firebase.firestore) ? firebase.firestore.FieldValue.serverTimestamp() : new Date()
-                };
+                // Sincroniza también comp_main si quieres que la empresa principal refleje la dirección
+                try {
+                    await db.collection('users').doc(editId).collection('companies').doc('comp_main')
+                        .set(defaultCompanyData, { merge: true });
+                } catch(_){ /* opcional */ }
 
-                // Create via Firebase Auth + Firestore
-                if (typeof firebase !== 'undefined' && firebase.auth) {
-                    try {
-                        const currentUser = firebase.auth().currentUser;
-                        const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
-                        const newUid = cred.user.uid;
-                        userData.authUid = newUid;
-                        await db.collection('users').doc(newUid).set(userData);
-                        await db.collection('users').doc(newUid).collection('companies').doc('comp_main').set(defaultCompanyData);
-                        
-                        if (window.userMap) window.userMap[newUid] = userData;
-                        // Re-login as admin logic handled
-                        alert('✅ Cliente creado (ID: ' + userData.idNum + ') y configurado por defecto.');
-                    } catch(authErr) {
-                        // If auth fails, save just to Firestore
-                        const docRef = await db.collection('users').add(userData);
-                        await db.collection('users').doc(docRef.id).collection('companies').doc('comp_main').set(defaultCompanyData);
-                        if (window.userMap) window.userMap[docRef.id] = userData;
-                        alert('✅ Cliente creado (sin autenticación): ' + authErr.message);
-                    }
-                } else {
-                    const docRef = await db.collection('users').add(userData);
-                    await db.collection('users').doc(docRef.id).collection('companies').doc('comp_main').set(defaultCompanyData);
-                    if (window.userMap) window.userMap[docRef.id] = userData;
-                    alert('✅ Cliente creado con perfil predeterminado.');
-                }
+                if (window.userMap) window.userMap[editId] = { ...window.userMap[editId], ...userData };
+
+                document.getElementById('adv-client-modal').style.display = 'none';
+                if (typeof window.advLoadClients === 'function') window.advLoadClients();
+                if (typeof window.loadUsers === 'function') window.loadUsers();
+                alert('✅ Cliente actualizado correctamente.\n\nEmail guardado: ' + userData.email);
+                return;
             }
+
+            // ─── MODO CREACIÓN ────────────────────────────────────────
+            // Usamos una app Firebase secundaria para crear el usuario en
+            // Auth sin perder la sesión del admin actual.
+            let newDocId = null;
+            let createdAuthUid = null;
+
+            if (typeof firebase !== 'undefined' && firebase.auth && password) {
+                try {
+                    const secApp = firebase.apps.find(a => a.name === 'Secondary')
+                                || firebase.initializeApp(firebaseConfig, 'Secondary');
+                    const cred = await secApp.auth().createUserWithEmailAndPassword(email, password);
+                    createdAuthUid = cred.user.uid;
+                    await secApp.auth().signOut();
+                    userData.authUid = createdAuthUid;
+                    newDocId = createdAuthUid; // doc key = uid de Auth
+                    await db.collection('users').doc(newDocId).set(userData);
+                } catch(authErr) {
+                    // Fallback: guarda sólo en Firestore (sin Auth)
+                    const docRef = await db.collection('users').add(userData);
+                    newDocId = docRef.id;
+                    console.warn('[advSaveClientPro] Auth falló, doc creado sólo en Firestore:', authErr.message);
+                }
+            } else {
+                const docRef = await db.collection('users').add(userData);
+                newDocId = docRef.id;
+            }
+
+            await db.collection('users').doc(newDocId).collection('companies').doc('comp_main')
+                .set({ ...defaultCompanyData, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+
+            if (window.userMap) window.userMap[newDocId] = userData;
+
             document.getElementById('adv-client-modal').style.display = 'none';
-            // Reload clients if in that workspace
             if (typeof window.advLoadClients === 'function') window.advLoadClients();
             if (typeof window.loadUsers === 'function') window.loadUsers();
+            alert('✅ Cliente creado (ID: ' + userData.idNum + ')' + (createdAuthUid ? ' con acceso online listo.' : ' SIN acceso online (no se pudo crear Auth).'));
         } catch(e) {
-            alert('Error: ' + e.message);
+            console.error('[advSaveClientPro]', e);
+            alert('Error guardando cliente: ' + e.message);
         }
     };
 
