@@ -418,6 +418,10 @@
             + '  </div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
+            + '<div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; align-items:center;">'
+            + '  <button id="tb-import-base" type="button" style="background:#4CAF50; border:0; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.85rem;" title="Importa los 19 artículos base (S, PI, PP, BI, BP, V, GV, PLT-1..7, LN, LS, LF, LC, PA, AB) con sus precios. Edita libremente después.">📥 Importar catálogo base (19 artículos)</button>'
+            + '  <span style="font-size:0.72rem; color:#888;">Trae los códigos típicos (PP, PI, BP, BI, PLT-1..7, etc.) con precios del Excel. Luego edita lo que necesites o añade códigos custom (pms, psg, bms…) manualmente.</span>'
+            + '</div>'
             + '<div id="tb-zones-section" style="margin-bottom:14px;"></div>'
             + '<div id="tb-sections"></div>'
             + '<div id="tb-add-bar" style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
@@ -649,6 +653,63 @@
 
         renderRows();
         document.getElementById('tb-close').onclick = () => modal.remove();
+
+        // ─── BOTÓN IMPORTAR CATÁLOGO BASE ─────────────────────────
+        const importBtn = document.getElementById('tb-import-base');
+        if (importBtn) importBtn.onclick = async () => {
+            try {
+                importBtn.disabled = true;
+                importBtn.textContent = 'Cargando…';
+                const resp = await fetch('/novapack_articles_base.json?v=' + Date.now());
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const catalog = await resp.json();
+                const articles = (catalog && catalog.articles) || [];
+                if (!articles.length) throw new Error('Catálogo vacío');
+
+                const existingIds = new Set((tariff.items || []).map(it => it.id));
+                const newItems = [];
+                const skippedItems = [];
+                articles.forEach(a => {
+                    if (existingIds.has(a.code)) {
+                        skippedItems.push(a.code);
+                        return;
+                    }
+                    newItems.push({
+                        id: a.code,
+                        name: a.name,
+                        mode: a.mode,
+                        basePrice: Number(a.basePrice) || 0,
+                        unit: a.unit || '',
+                        category: a.category || '',
+                        conditions: a.conditions || null,
+                        pricingRule: null,
+                        pricesByZone: {}
+                    });
+                });
+
+                if (newItems.length === 0) {
+                    alert('Esta tarifa ya tiene los 18 códigos base (' + skippedItems.join(', ') + ').');
+                    return;
+                }
+
+                let msg = 'Se van a AÑADIR ' + newItems.length + ' artículo(s) del catálogo base a esta tarifa:\n\n';
+                msg += newItems.map(it => '  ' + it.id + ' — ' + it.name + ' — ' + (it.basePrice || 0) + ' €').join('\n');
+                if (skippedItems.length) msg += '\n\nYa existían (no se duplican): ' + skippedItems.join(', ');
+                msg += '\n\nDespués podrás editar precios, eliminar o añadir más libremente. ¿Continuar?';
+                if (!confirm(msg)) return;
+
+                tariff.items = (tariff.items || []).concat(newItems);
+                renderRows();
+                alert('✅ Añadidos ' + newItems.length + ' artículos. Recuerda pulsar 💾 Guardar tarifa para persistir.');
+            } catch(e) {
+                console.error('[import base]', e);
+                alert('Error importando catálogo: ' + e.message);
+            } finally {
+                importBtn.disabled = false;
+                importBtn.textContent = '📥 Importar catálogo base (19 artículos)';
+            }
+        };
+
         document.getElementById('tb-save').onclick = async () => {
             tariff.name = document.getElementById('tb-tariff-name').value.trim();
             if (!tariff.name) { alert('La tarifa necesita un nombre.'); return; }
