@@ -1652,7 +1652,6 @@
             var subject = encodeURIComponent('Bienvenido a NOVAPACK — Tus credenciales de acceso');
 
             var greet = opts.name ? 'Estimado/a ' + opts.name : 'Hola';
-            var idLine = opts.idNum ? '· ID Cliente: ' + opts.idNum : '';
             var usingSynthetic = loginCredential !== to;
 
             var body = '';
@@ -1664,7 +1663,6 @@
             body += '═══════════════════════════════════════\n';
             body += 'Usuario:      ' + loginCredential + '\n';
             if (pwd) body += 'Contraseña:   ' + pwd + '\n';
-            if (idLine) body += idLine + '\n';
             body += '\n';
             if (usingSynthetic) {
                 body += 'IMPORTANTE: el "Usuario" indicado arriba es un identificador interno asignado por NOVAPACK. Úsalo tal cual para entrar — no es una dirección de email a la que se pueda escribir. Toda la comunicación seguirá llegándote a este buzón (' + to + ').\n\n';
