@@ -1678,7 +1678,66 @@
             body += '  • Consultar el estado de tus envíos en tiempo real\n';
             body += '  • Descargar tus facturas y justificantes de entrega\n';
             body += '\n';
-            body += 'Si necesitas ayuda escribe a administracion@novapack.info o llámanos al teléfono de oficina.\n';
+            body += '═══════════════════════════════════════\n';
+            body += '   GUÍA RÁPIDA — TRES PASOS\n';
+            body += '═══════════════════════════════════════\n';
+            body += '\n';
+            body += '1) ENTRAR EN LA APP\n';
+            body += '   ───────────────────\n';
+            body += '   • Abre este enlace en tu navegador (Chrome, Edge, Firefox o Safari):\n';
+            body += '     ' + loginUrl + '\n';
+            body += '   • Introduce tu USUARIO y CONTRASEÑA del recuadro de arriba.\n';
+            body += '   • Listo. Ya estás dentro.\n';
+            body += '\n';
+            body += '2) INSTALAR EN EL ESCRITORIO (recomendado)\n';
+            body += '   ───────────────────────────────────────\n';
+            body += '   La app se instala como un programa normal — sin descargas, sin\n';
+            body += '   instaladores, en menos de 10 segundos. Después se abre con un\n';
+            body += '   icono propio igual que Word o Outlook.\n';
+            body += '\n';
+            body += '   EN CHROME / EDGE (ordenador):\n';
+            body += '     a) Una vez dentro de la app, mira la barra de direcciones.\n';
+            body += '     b) A la DERECHA del todo, antes de la estrella de marcadores,\n';
+            body += '        verás un iconito de un monitor con una flecha hacia abajo\n';
+            body += '        (⤓) o el texto "Instalar NOVAPACK".\n';
+            body += '     c) Pulsa → "Instalar" → se crea un acceso directo en tu\n';
+            body += '        escritorio y en el menú Inicio.\n';
+            body += '\n';
+            body += '   EN MÓVIL (Android / iPhone):\n';
+            body += '     a) Abre el enlace en Chrome (Android) o Safari (iPhone).\n';
+            body += '     b) Pulsa el menú "..." o el icono "Compartir".\n';
+            body += '     c) "Añadir a pantalla de inicio" → "Añadir".\n';
+            body += '     d) Aparecerá como una app más en tu móvil.\n';
+            body += '\n';
+            body += '3) VOLCAR TUS CLIENTES DESDE TU SISTEMA ANTIGUO\n';
+            body += '   ──────────────────────────────────────────────\n';
+            body += '   No tienes que escribir cliente a cliente. Si tienes un Excel,\n';
+            body += '   CSV o exportación de tu programa anterior, lo subes en un\n';
+            body += '   solo paso:\n';
+            body += '\n';
+            body += '   a) Dentro de la app, ve a la sección CLIENTES (en el menú\n';
+            body += '      lateral o pestaña superior).\n';
+            body += '   b) Pulsa el botón "📥 IMPORTAR EXCEL" (verde, arriba a la\n';
+            body += '      derecha del listado).\n';
+            body += '   c) Selecciona tu archivo .xlsx / .xls / .csv.\n';
+            body += '   d) El sistema detecta las columnas (Nombre, NIF, Dirección,\n';
+            body += '      Teléfono, Email, CP, Localidad…) y te muestra una\n';
+            body += '      previsualización para que confirmes antes de importar.\n';
+            body += '   e) Pulsa "Confirmar importación" y en unos segundos tendrás\n';
+            body += '      toda tu cartera dada de alta.\n';
+            body += '\n';
+            body += '   CONSEJOS PARA EL EXCEL:\n';
+            body += '     • La primera fila debe ser la cabecera con los nombres de\n';
+            body += '       las columnas (Nombre, NIF, Dirección, Teléfono…).\n';
+            body += '     • Si no encuentras la opción exportar a Excel en tu\n';
+            body += '       programa antiguo, mándanos el archivo a\n';
+            body += '       administracion@novapack.info y lo convertimos por ti.\n';
+            body += '\n';
+            body += '═══════════════════════════════════════\n';
+            body += '\n';
+            body += 'Si necesitas ayuda con cualquiera de los tres pasos, escríbenos\n';
+            body += 'a administracion@novapack.info o llámanos al teléfono de oficina.\n';
+            body += 'Te ayudamos a configurarlo en directo.\n';
             body += '\n';
             body += 'Un saludo,\n';
             body += 'Equipo NOVAPACK\n';
@@ -1746,7 +1805,8 @@
                 + '<div style="margin-bottom:10px;"><strong style="color:#FF8A50;">Asunto:</strong> <span id="mf-subject" style="color:#fff;">' + escapeHtml(opts.subject) + '</span> <button onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent); this.textContent=\'¡Copiado!\'; setTimeout(()=>this.textContent=\'📋 Copiar\',1500);" style="margin-left:8px; background:none; border:1px solid #555; color:#aaa; padding:2px 8px; border-radius:4px; cursor:pointer; font-size:0.7rem;">📋 Copiar</button></div>'
                 + '<div style="margin-bottom:14px;"><strong style="color:#FF8A50; display:block; margin-bottom:6px;">Mensaje:</strong><textarea id="mf-body" readonly style="width:100%; height:280px; background:#0a0a0a; border:1px solid #333; color:#d4d4d4; padding:10px; border-radius:6px; font-family:monospace; font-size:0.78rem; resize:vertical;">' + escapeHtml(opts.body) + '</textarea><button onclick="var ta=document.getElementById(\'mf-body\'); ta.select(); navigator.clipboard.writeText(ta.value); this.textContent=\'¡Copiado!\'; setTimeout(()=>this.textContent=\'📋 Copiar mensaje\',1500);" style="margin-top:6px; background:#FF4D00; border:none; color:#000; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:700;">📋 Copiar mensaje</button></div>'
                 + '<div style="display:flex; gap:8px; justify-content:flex-end;">'
-                + '  <a href="https://mail.google.com/mail/?view=cm&fs=1&to=' + encodeURIComponent(opts.to) + '&su=' + encodeURIComponent(opts.subject) + '" target="_blank" rel="noopener" style="background:#DB4437; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:0.85rem;">Abrir Gmail</a>'
+                + '  <a href="https://mail.google.com/mail/?view=cm&fs=1&to=' + encodeURIComponent(opts.to) + '&su=' + encodeURIComponent(opts.subject) + '&body=' + encodeURIComponent(opts.body) + '" target="_blank" rel="noopener" style="background:#DB4437; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:0.85rem;">Abrir Gmail con todo prerellenado</a>'
+                + '  <a href="https://outlook.live.com/mail/0/deeplink/compose?to=' + encodeURIComponent(opts.to) + '&subject=' + encodeURIComponent(opts.subject) + '&body=' + encodeURIComponent(opts.body) + '" target="_blank" rel="noopener" style="background:#0078D4; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:0.85rem;">Abrir Outlook</a>'
                 + '  <button onclick="document.getElementById(\'mail-fallback-modal\').remove();" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
                 + '</div>';
             modal.appendChild(box);
