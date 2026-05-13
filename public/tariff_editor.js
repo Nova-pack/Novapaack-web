@@ -376,7 +376,11 @@
             + '<div style="max-width:980px; width:100%; margin:0 auto; background:#1e1e1e; border-radius:12px; padding:24px; color:#d4d4d4;">'
             + '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
             + '  <div><h2 style="margin:0; color:#FF6600;">🧮 Constructor de tarifa' + (tariff._typePreset ? ' <span style="font-size:0.7rem; color:#FF8A50; background:rgba(255,102,0,0.10); padding:3px 9px; border-radius:8px; vertical-align:middle; margin-left:8px;">tipo: ' + _esc(TARIFF_TEMPLATES[tariff._typePreset] ? TARIFF_TEMPLATES[tariff._typePreset].label : tariff._typePreset) + '</span>' : '') + '</h2><div id="tb-name" style="font-size:0.85rem; color:#aaa; margin-top:3px;">' + (tariff._typePreset ? 'Plantilla cargada — puedes editar, añadir o quitar artículos libremente.' : 'Edición de tarifa existente') + '</div></div>'
-            + '  <div style="display:flex; gap:8px;"><button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button><button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button></div>'
+            + '  <div style="display:flex; gap:8px;">'
+            + '    <button id="tb-save" style="background:#FF6600; border:0; color:#fff; padding:8px 18px; border-radius:5px; font-weight:700; cursor:pointer;">💾 Guardar tarifa</button>'
+            + (tariff.id ? '    <button id="tb-delete" style="background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600;" title="Eliminar esta tarifa del sistema">🗑️ Eliminar</button>' : '')
+            + '    <button id="tb-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 18px; border-radius:5px; cursor:pointer;">Cerrar</button>'
+            + '  </div>'
             + '</div>'
             + '<div style="margin-bottom:12px;"><label style="font-size:0.78rem; color:#aaa;">Nombre tarifa</label><input type="text" id="tb-tariff-name" value="' + _esc(tariff.name || '') + '" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;"></div>'
             + '<div id="tb-sections"></div>'
@@ -498,8 +502,61 @@
                 const id = await _saveTariff(tariff);
                 alert('✅ Tarifa guardada: ' + id);
                 modal.remove();
+                // Refrescar el listado de cards si está visible
+                if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
             } catch(e) { alert('Error: ' + e.message); }
         };
+
+        // ─── Botón Eliminar (solo aparece si la tarifa ya está guardada) ───
+        const delBtn = document.getElementById('tb-delete');
+        if (delBtn) {
+            delBtn.onclick = async () => {
+                if (!tariff.id) { alert('Esta tarifa todavía no está guardada — pulsa Cerrar para descartar.'); return; }
+                // Contar cuántos clientes la tienen asignada
+                let usingCount = 0;
+                let usingList = [];
+                try {
+                    if (window.userMap) {
+                        Object.values(window.userMap).forEach(u => {
+                            if (u.tariffId && (u.tariffId === tariff.id || ('GLOBAL_' + u.tariffId) === tariff.id)) {
+                                usingCount++;
+                                if (usingList.length < 5) usingList.push((u.name || ('#' + (u.idNum || u.id))));
+                            }
+                        });
+                    }
+                } catch(_) {}
+
+                let msg = '¿Eliminar la tarifa "' + (tariff.name || tariff.id) + '"?\n\n';
+                msg += 'ID: ' + tariff.id + '\n\n';
+                if (usingCount > 0) {
+                    msg += '⚠️ ATENCIÓN: ' + usingCount + ' cliente' + (usingCount === 1 ? '' : 's') + ' tiene' + (usingCount === 1 ? '' : 'n') + ' esta tarifa asignada:\n';
+                    msg += '  ' + usingList.join('\n  ');
+                    if (usingCount > usingList.length) msg += '\n  ... y ' + (usingCount - usingList.length) + ' más';
+                    msg += '\n\nTras eliminar quedarán SIN tarifa asignada y los nuevos albaranes facturarán a 0 € hasta que les asignes otra.\n\n';
+                }
+                msg += 'Esta acción NO se puede deshacer. ¿Continuar?';
+
+                if (!confirm(msg)) return;
+
+                // Segunda confirmación si hay clientes usándola
+                if (usingCount > 0) {
+                    const confirmText = prompt('Para confirmar, escribe exactamente: ELIMINAR');
+                    if (confirmText !== 'ELIMINAR') {
+                        alert('Cancelado — la palabra de confirmación no coincide.');
+                        return;
+                    }
+                }
+
+                try {
+                    await db.collection('tariffs').doc(tariff.id).delete();
+                    alert('✅ Tarifa eliminada: ' + tariff.id);
+                    modal.remove();
+                    if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+                } catch(e) {
+                    alert('Error al eliminar: ' + e.message);
+                }
+            };
+        }
     };
 
     // ============ TARIFA MANAGER (vista cliente) ============
