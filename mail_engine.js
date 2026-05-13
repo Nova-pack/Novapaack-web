@@ -9,6 +9,7 @@
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 const { JSDOM } = require('jsdom');
+const nodemailer = require('nodemailer');
 const firebase = require('firebase/compat/app');
 require('firebase/compat/auth');
 require('firebase/compat/firestore');
@@ -268,6 +269,174 @@ async function lookupTicketPOD(db, ticketRef) {
         console.error(`[MAIL ENGINE] POD lookup error for ${ticketRef}:`, e.message);
         return { ready: false, reason: 'error_consulta' };
     }
+}
+
+// ============================================================
+// ENVÍO SALIENTE (SMTP) — procesa la cola /mailbox status:'queued'
+// ============================================================
+// Configuración SMTP opcional: si faltan SMTP_USER/PASS, sólo se loguea y
+// no se procesa nada. Así el motor IMAP sigue funcionando aunque el admin
+// no haya configurado todavía las credenciales SMTP.
+const SMTP_CONFIG_OK = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.ionos.es';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465', 10);
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const SMTP_BCC  = process.env.SMTP_BCC  || SMTP_USER; // copia oculta al admin
+const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || 'NOVAPACK';
+// Tope por ejecución para no saturar IONOS ni Firestore en un único disparo.
+const OUTGOING_BATCH_MAX = parseInt(process.env.OUTGOING_BATCH_MAX || '20', 10);
+
+let _smtpTransporter = null;
+function getSmtpTransporter() {
+    if (!SMTP_CONFIG_OK) return null;
+    if (_smtpTransporter) return _smtpTransporter;
+    _smtpTransporter = nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_PORT === 465,   // SSL para 465, STARTTLS para 587
+        auth: { user: SMTP_USER, pass: SMTP_PASS },
+        tls: { rejectUnauthorized: false }
+    });
+    return _smtpTransporter;
+}
+
+// Detecta si un cuerpo es HTML o texto plano (heurística simple)
+function looksLikeHtml(s) {
+    if (!s) return false;
+    return /<\/?(html|body|p|div|br|table|a|strong|b|i|ul|ol|li|h[1-6])\b/i.test(s);
+}
+
+/**
+ * Procesa la cola de salida una vez. Lee /mailbox docs con status:'queued'
+ * (o legacy 'outgoing'), los marca 'sending' para evitar doble envío si
+ * dos procesos coinciden, intenta enviarlos por SMTP y los marca 'sent'
+ * (con sentAt + messageId) o 'failed' (con errorMessage + errorCode).
+ */
+async function processOutgoingQueue(db) {
+    if (!SMTP_CONFIG_OK) {
+        console.log('[MAIL ENGINE] SMTP no configurado (faltan SMTP_USER/SMTP_PASS en .env) → salto cola saliente.');
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+    const transporter = getSmtpTransporter();
+    if (!transporter) return { sent: 0, failed: 0, skipped: 0 };
+
+    // Verificar conexión SMTP una vez por ejecución
+    try {
+        await transporter.verify();
+        console.log('[MAIL ENGINE] SMTP connected ✅ (' + SMTP_HOST + ':' + SMTP_PORT + ' as ' + SMTP_USER + ')');
+    } catch(e) {
+        console.error('[MAIL ENGINE] SMTP verify FAILED:', e.message);
+        console.error('[MAIL ENGINE] Revisa credenciales SMTP_HOST / SMTP_USER / SMTP_PASS en .env.');
+        return { sent: 0, failed: 0, skipped: 0, error: e.message };
+    }
+
+    // Cargar cola: status === 'queued' (nuevo) o status === 'outgoing' (legacy)
+    let queueDocs = [];
+    try {
+        const q1 = await db.collection('mailbox').where('status', '==', 'queued').limit(OUTGOING_BATCH_MAX).get();
+        q1.forEach(d => queueDocs.push({ id: d.id, ref: d.ref, ...d.data() }));
+        if (queueDocs.length < OUTGOING_BATCH_MAX) {
+            const q2 = await db.collection('mailbox').where('status', '==', 'outgoing').limit(OUTGOING_BATCH_MAX - queueDocs.length).get();
+            q2.forEach(d => queueDocs.push({ id: d.id, ref: d.ref, ...d.data() }));
+        }
+    } catch(e) {
+        console.error('[MAIL ENGINE] No pude leer la cola de salientes:', e.message);
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+
+    if (!queueDocs.length) {
+        console.log('[MAIL ENGINE] Cola saliente vacía.');
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+    console.log('[MAIL ENGINE] Procesando ' + queueDocs.length + ' correos salientes…');
+
+    let sent = 0, failed = 0, skipped = 0;
+    for (const doc of queueDocs) {
+        const id = doc.id;
+        const to = (doc.to || '').trim();
+        const subject = (doc.subject || '(sin asunto)').trim();
+        const body = doc.body || '';
+
+        if (!to || !to.includes('@')) {
+            console.warn('[MAIL ENGINE] Skip ' + id + ' — destinatario inválido: "' + to + '"');
+            await doc.ref.update({
+                status: 'failed',
+                errorMessage: 'Destinatario inválido o vacío',
+                errorCode: 'BAD_RECIPIENT',
+                failedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(()=>{});
+            failed++;
+            continue;
+        }
+
+        // Marca 'sending' (anti doble envío). Si ya está en 'sending' por otro
+        // proceso, lo saltamos.
+        try {
+            const fresh = await doc.ref.get();
+            const st = (fresh.exists && fresh.data().status) || '';
+            if (st !== 'queued' && st !== 'outgoing') {
+                skipped++;
+                continue;
+            }
+            await doc.ref.update({
+                status: 'sending',
+                sendingAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        } catch(e) {
+            console.warn('[MAIL ENGINE] No pude marcar sending ' + id + ':', e.message);
+            skipped++;
+            continue;
+        }
+
+        // Construir mensaje
+        const isHtml = looksLikeHtml(body);
+        const mailOpts = {
+            from: '"' + SMTP_FROM_NAME + '" <' + SMTP_USER + '>',
+            to: to,
+            subject: subject,
+            bcc: SMTP_BCC && SMTP_BCC !== to ? SMTP_BCC : undefined
+        };
+        if (isHtml) mailOpts.html = body;
+        else mailOpts.text = body;
+
+        try {
+            const info = await transporter.sendMail(mailOpts);
+            await doc.ref.update({
+                status: 'sent',
+                sentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                smtpMessageId: info.messageId || null,
+                smtpResponse: (info.response || '').toString().slice(0, 500),
+                sentVia: 'smtp_engine'
+            });
+            // Si el doc tenía clientId, marcamos también el doc del cliente
+            // como welcomeSentAt para que el chip se actualice de "queued" a
+            // "sent" en el listado de clientes.
+            try {
+                if (doc.clientId && (doc.type === 'outgoing_welcome' || doc.type === 'outgoing_pod')) {
+                    await db.collection('users').doc(doc.clientId).set({
+                        welcomeDeliveredAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+            console.log('[MAIL ENGINE] Sent ' + (doc.type || 'mail') + ' → ' + to + ' ✅ ' + (info.messageId || ''));
+            sent++;
+        } catch(e) {
+            const code = e.code || e.responseCode || 'SEND_FAIL';
+            const msg = (e.message || '').slice(0, 500);
+            console.error('[MAIL ENGINE] FAIL → ' + to + ' :: ' + code + ' :: ' + msg);
+            await doc.ref.update({
+                status: 'failed',
+                errorMessage: msg,
+                errorCode: String(code),
+                failedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(()=>{});
+            failed++;
+        }
+    }
+
+    console.log('[MAIL ENGINE] Saliente: ' + sent + ' enviados · ' + failed + ' fallidos · ' + skipped + ' saltados');
+    return { sent, failed, skipped };
 }
 
 async function run() {
@@ -601,6 +770,17 @@ async function main() {
     if (lastError) {
         console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
         console.error('[MAIL ENGINE] ⚠️  ALERTA: El buzón no se ha podido sincronizar. Revisa la conexión IMAP o las credenciales.');
+    }
+
+    // ── PROCESAR COLA SALIENTE ──
+    // Independiente del resultado IMAP: aunque la lectura entrante falle,
+    // intentamos enviar lo que tengamos en cola (los problemas IMAP y SMTP
+    // suelen ser independientes).
+    try {
+        const db = firebase.firestore();
+        await processOutgoingQueue(db);
+    } catch(e) {
+        console.error('[MAIL ENGINE] Error procesando cola saliente:', e.message);
     }
 
     process.exit(lastError ? 1 : 0);
