@@ -691,24 +691,36 @@ async function initTicketListener(retryCount = 0) {
         // añadimos las identidades de sus sucursales al listener. Así el padre ve
         // de un vistazo todos los albaranes de sus sedes en su panel online.
         // Las sucursales NO ven a otros — solo los suyos.
+        //
+        // IMPORTANTE: estamos DENTRO de un `new Promise((resolve, reject) => {...})`
+        // cuyo executor NO es async. Por eso NO podemos usar `await` aquí —
+        // hacerlo rompía el parse de TODO firebase-app.js (Autocristal vio cero
+        // botones funcionando). Usamos .then() y arrancamos el listener tras
+        // resolver la búsqueda (o inmediatamente si el usuario es sucursal).
         let branchIdentities = [];
-        if (!userData.parentClientId) { // soy padre o cliente independiente
-            try {
-                const childSnap = await db.collection('users')
-                    .where('parentClientId', '==', userData.id || currentUser.uid)
-                    .limit(20)
-                    .get();
-                childSnap.forEach(doc => {
-                    const d = doc.data();
-                    if (d.idNum) branchIdentities.push(d.idNum.toString());
-                    if (d.authUid) branchIdentities.push(d.authUid);
-                });
-                if (branchIdentities.length > 0) {
-                    console.log('[SYNC-LINEA] Consolidando ' + childSnap.size + ' sucursales:', branchIdentities);
-                }
-            } catch(e) { console.warn('[SYNC-LINEA] No pude cargar sucursales:', e.message); }
-        }
+        const branchPromise = userData.parentClientId
+            ? Promise.resolve()
+            : db.collection('users')
+                .where('parentClientId', '==', userData.id || currentUser.uid)
+                .limit(20)
+                .get()
+                .then(childSnap => {
+                    childSnap.forEach(doc => {
+                        const d = doc.data();
+                        if (d.idNum) branchIdentities.push(d.idNum.toString());
+                        if (d.authUid) branchIdentities.push(d.authUid);
+                    });
+                    if (branchIdentities.length > 0) {
+                        console.log('[SYNC-LINEA] Consolidando ' + childSnap.size + ' sucursales:', branchIdentities);
+                    }
+                })
+                .catch(e => { console.warn('[SYNC-LINEA] No pude cargar sucursales:', e.message); });
 
+        let mergedTickets = new Map();
+        let q1Fired = false, q2Fired = false;
+        let unsub1 = () => {}, unsub2 = () => {};
+
+        branchPromise.then(() => {
         // Unión de todas las identidades posibles para búsqueda universal, asegurando que TODO sea String
         const finalVariantsRaw = [...new Set([...idVariants, ...identityIds, ...branchIdentities])].filter(v => v !== null && v !== undefined && v !== "");
         // Firestore "in" se limita a 10 valores. Si hay más, prima identidades propias.
@@ -718,9 +730,6 @@ async function initTicketListener(retryCount = 0) {
         }
 
         console.log(`[SYNC-LINEA] Escuchando Albaranes por UID/Alias:`, finalVariants);
-        
-        let mergedTickets = new Map();
-        let q1Fired = false, q2Fired = false;
 
         const processMapAndRender = () => {
             let raw = Array.from(mergedTickets.values());
@@ -759,7 +768,7 @@ async function initTicketListener(retryCount = 0) {
             } catch(_) {}
         }
 
-        const unsub1 = q1.onSnapshot(snap => {
+        unsub1 = q1.onSnapshot(snap => {
             snap.forEach(doc => mergedTickets.set(doc.id, { ...doc.data(), docId: doc.id, docRef: doc }));
             q1Fired = true;
             processMapAndRender();
@@ -768,7 +777,7 @@ async function initTicketListener(retryCount = 0) {
             q1Fired = true; processMapAndRender();
         });
 
-        const unsub2 = q2.onSnapshot(snap => {
+        unsub2 = q2.onSnapshot(snap => {
             snap.forEach(doc => mergedTickets.set(doc.id, { ...doc.data(), docId: doc.id, docRef: doc }));
             q2Fired = true;
             processMapAndRender();
@@ -781,6 +790,7 @@ async function initTicketListener(retryCount = 0) {
         setTimeout(() => { if (isFirstLoad) { isFirstLoad = false; resolve(); } }, 3000);
 
         ticketListener = () => { unsub1(); unsub2(); };
+        }); // cierre de branchPromise.then
     });
 }
 
