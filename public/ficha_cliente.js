@@ -790,16 +790,64 @@
             if (parent.nif) add('ok', 'Tiene NIF: <code>' + _esc(parent.nif) + '</code>.');
             else add('warn', 'No tiene NIF — sus sucursales no podrán heredarlo y las facturas saldrán sin NIF.');
 
-            if (parent.isFlatRate) {
-                const amt = Number(parent.flatRateAmount) || 0;
-                if (amt > 0) add('ok', 'Tarifa plana mensual ACTIVA: <code>' + amt.toFixed(2).replace('.', ',') + ' €/mes</code>. Formato 1 emitirá esta cuota una vez al mes.');
-                else add('warn', 'isFlatRate=Sí pero flatRateAmount=0. La factura del Formato 1 saldrá a 0 €. Edita el importe en pestaña Económico.');
-            } else {
-                add('warn', 'isFlatRate=No. La facturación será por consumo real (Formato 2) — no se emitirá cuota plana. Si tenías acuerdo de cuota plana, márcalo en pestaña Económico.');
+            // ─── DETECTAR CUOTA PLANA (v2 manda; legacy como fallback) ───
+            // Cargar la tarifa asignada para ver si tiene items flat_monthly.
+            let v2FlatTotal = 0;
+            let v2FlatItems = [];
+            let tariffDocData = null;
+            if (parent.tariffId) {
+                try {
+                    const candidates = [parent.tariffId, 'GLOBAL_' + parent.tariffId];
+                    for (const tid of candidates) {
+                        try {
+                            const tdoc = await db.collection('tariffs').doc(tid).get();
+                            if (tdoc.exists) {
+                                tariffDocData = { id: tdoc.id, ...tdoc.data() };
+                                if (tariffDocData.version === 2 && Array.isArray(tariffDocData.items)) {
+                                    // Aplicar overrides del cliente
+                                    let resolvedItems = tariffDocData.items;
+                                    if (parent.tariffOverrides && typeof window.pricingEngine !== 'undefined') {
+                                        try {
+                                            const res = window.pricingEngine.resolveTariff(tariffDocData, parent.tariffOverrides);
+                                            resolvedItems = res.items || resolvedItems;
+                                        } catch(_) {}
+                                    }
+                                    resolvedItems.forEach(it => {
+                                        if (it.mode === 'flat_monthly') {
+                                            v2FlatTotal += Number(it.basePrice) || 0;
+                                            v2FlatItems.push(it);
+                                        }
+                                    });
+                                }
+                                break;
+                            }
+                        } catch(_) {}
+                    }
+                } catch(_) {}
             }
 
-            if (parent.tariffId) add('ok', 'Tarifa asignada: <code>' + _esc(parent.tariffId) + '</code>.');
-            else add('warn', 'Sin tariffId. Sus extras (paletizados, etc.) y los albaranes reales de sucursales no tendrán tarifa de referencia. Asigna una en pestaña Principal.');
+            // Cuota plana: combina v2 y legacy, da prioridad a v2 si existe
+            const legacyAmt = Number(parent.flatRateAmount) || 0;
+            if (v2FlatTotal > 0) {
+                add('ok', 'Cuota plana mensual ACTIVA (vía tarifa v2): <code>' + v2FlatTotal.toFixed(2).replace('.', ',') + ' €/mes</code>. Formato 1 emitirá esta cuota una vez al mes.');
+                if (parent.isFlatRate && legacyAmt > 0) {
+                    add('warn', 'Tienes ADEMÁS los campos legacy activos (isFlatRate=Sí, ' + legacyAmt.toFixed(2).replace('.', ',') + ' €). La v2 manda — los legacy se ignoran al facturar pero deberías limpiarlos para no confundir (pon Cuota Plana=No e Importe=0 en pestaña Económico, o desaparecerán solos cuando guardes).');
+                }
+            } else if (parent.isFlatRate && legacyAmt > 0) {
+                add('ok', 'Cuota plana mensual ACTIVA (legacy): <code>' + legacyAmt.toFixed(2).replace('.', ',') + ' €/mes</code>. Formato 1 emitirá esta cuota una vez al mes. Recomendación: migra a tarifa v2 con item flat_monthly desde la ficha → Económico → 🔄 Migrar a v2.');
+            } else if (parent.isFlatRate && legacyAmt === 0) {
+                add('warn', 'isFlatRate=Sí pero flatRateAmount=0 y la tarifa no tiene flat_monthly. La factura del Formato 1 saldrá a 0 €. Edita el importe o asigna tarifa v2 con cuota.');
+            } else {
+                add('warn', 'Sin cuota plana mensual. La facturación será por consumo real (Formato 2) — solo se cobrarán los albaranes individuales. Si tenías acuerdo de cuota plana, ponla desde 💰 Gestionar (item flat_monthly) o desde la pestaña Económico (legacy).');
+            }
+
+            if (parent.tariffId) {
+                let tariffLabel = parent.tariffId;
+                if (tariffDocData && tariffDocData.name) tariffLabel = tariffDocData.name + ' [' + (tariffDocData.version === 2 ? 'v2' : 'v1') + ']';
+                add('ok', 'Tarifa asignada: <code>' + _esc(tariffLabel) + '</code>.');
+            } else {
+                add('warn', 'Sin tariffId. Sus extras (paletizados, etc.) y los albaranes reales de sucursales no tendrán tarifa de referencia. Asigna una en pestaña Principal.');
+            }
 
             if (parentComp.prefix && parentComp.startNum) add('ok', 'Prefijo de albarán del padre: <code>' + _esc(parentComp.prefix) + '-' + parentComp.startNum + '</code>.');
             else add('warn', 'Falta prefijo o nº inicial de albarán en comp_main del padre.');
@@ -854,13 +902,17 @@
             }
 
             // ─── PREDICCIÓN DE FACTURACIÓN ───────────────────────────
-            const flat = Number(parent.flatRateAmount) || 0;
+            // Cuota efectiva: v2 manda, legacy como fallback (mismo orden que
+            // window.getMonthlyFlatAmount). El motor real factura por el
+            // primero que tenga > 0.
+            const effectiveFlat = v2FlatTotal > 0 ? v2FlatTotal : (Number(parent.flatRateAmount) || 0);
+            const flatSource = v2FlatTotal > 0 ? 'tarifa v2' : (parent.isFlatRate && parent.flatRateAmount > 0 ? 'legacy' : null);
             let predict = '';
-            if (parent.isFlatRate && flat > 0) {
-                predict += '<p><strong>📊 Formato 1 (consolidado tarifa plana):</strong> emite UNA factura al padre <strong>' + _esc(parent.name || '') + '</strong> por <code>' + flat.toFixed(2).replace('.', ',') + ' €</code>. Las sucursales aparecen como desglose informativo de volumen (sin precio).</p>';
-                predict += '<p><strong>📊 Formato 2 (factura por sucursal):</strong> emite UNA factura por cada sucursal con sus albaranes a precio real (según tariffId) + UNA factura al padre por la cuota plana <code>' + flat.toFixed(2).replace('.', ',') + ' €</code>. Total: <strong>' + (children.length + 1) + '</strong> facturas.</p>';
+            if (effectiveFlat > 0) {
+                predict += '<p><strong>📊 Formato 1 (consolidado tarifa plana):</strong> emite UNA factura al padre <strong>' + _esc(parent.name || '') + '</strong> por <code>' + effectiveFlat.toFixed(2).replace('.', ',') + ' €</code> (' + flatSource + '). Las sucursales aparecen como desglose informativo de volumen (sin precio).</p>';
+                predict += '<p><strong>📊 Formato 2 (factura por sucursal):</strong> emite UNA factura por cada sucursal con sus albaranes a precio real (según tariffId) + UNA factura al padre por la cuota plana <code>' + effectiveFlat.toFixed(2).replace('.', ',') + ' €</code>. Total: <strong>' + (children.length + 1) + '</strong> facturas.</p>';
             } else {
-                predict += '<p><strong>📊 Formato 1 NO aplicable</strong> (el padre no tiene cuota plana). Sólo Formato 2.</p>';
+                predict += '<p><strong>📊 Formato 1 NO aplicable</strong> (el padre no tiene cuota plana ni en v2 ni en legacy). Sólo Formato 2.</p>';
                 predict += '<p><strong>📊 Formato 2:</strong> emite UNA factura por cada sucursal con sus albaranes a precio real. Total: <strong>' + children.length + '</strong> facturas + 1 al padre si tiene movimientos propios.</p>';
             }
             const errs = issues.filter(i => i.level === 'err').length + childReports.reduce((a,r) => a + r.err.length, 0);
