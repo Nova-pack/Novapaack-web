@@ -125,18 +125,28 @@
         _fichaLoadTariffs();
     }
 
-    async function _fichaLoadTariffs() {
+    async function _fichaLoadTariffs(forceReload) {
         try {
-            if (_fichaTariffsCache.length === 0) {
-                const snap = await db.collection('tariffs').get();
-                _fichaTariffsCache = [];
-                snap.forEach(doc => {
-                    if (doc.id.startsWith('GLOBAL_')) {
-                        _fichaTariffsCache.push({ id: doc.id.replace('GLOBAL_', ''), label: 'Tarifa Global #' + doc.id.replace('GLOBAL_', '') });
-                    }
+            // IMPORTANTE: SIEMPRE recargar desde Firestore. Antes había una caché
+            // en memoria que solo se llenaba la primera vez → cuando creabas una
+            // tarifa nueva en otra pestaña y volvías a la ficha, no aparecía hasta
+            // refrescar la página entera. Ahora cada apertura de ficha pide los
+            // datos frescos. Es 1 lectura más, asumible.
+            const snap = await db.collection('tariffs').get();
+            _fichaTariffsCache = [];
+            snap.forEach(doc => {
+                if (!doc.id.startsWith('GLOBAL_')) return;
+                const data = doc.data() || {};
+                const shortId = doc.id.replace('GLOBAL_', '');
+                const niceName = data.name || shortId;
+                const versionTag = data.version === 2 ? ' [v2]' : ' [v1]';
+                _fichaTariffsCache.push({
+                    id: shortId,
+                    label: niceName + versionTag,
+                    sortKey: (niceName || shortId).toLowerCase()
                 });
-                _fichaTariffsCache.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-            }
+            });
+            _fichaTariffsCache.sort((a, b) => a.sortKey.localeCompare(b.sortKey, undefined, { numeric: true }));
             _fichaPopulateTariffSelects();
         } catch(e) {
             console.error('[Ficha] Error loading tariffs:', e);
@@ -151,6 +161,16 @@
             const sel = document.getElementById(selId);
             if (!sel) return;
             sel.innerHTML = '<option value="">-- Sin Tarifa Global --</option>';
+            // Inyectamos el valor actual del cliente PRIMERO aunque no esté en la
+            // lista cargada (puede ser una tarifa custom o legacy con id raro) —
+            // así nunca se "pierde" la selección al abrir la ficha.
+            if (currentVal && !_fichaTariffsCache.find(t => t.id === currentVal)) {
+                const opt = document.createElement('option');
+                opt.value = currentVal;
+                opt.textContent = currentVal + ' (asignada — no listada)';
+                opt.selected = true;
+                sel.appendChild(opt);
+            }
             _fichaTariffsCache.forEach(t => {
                 const opt = document.createElement('option');
                 opt.value = t.id;
@@ -160,6 +180,9 @@
             });
         });
     }
+
+    // Botón de refrescar manual por si el admin acaba de crear una tarifa
+    window._fichaReloadTariffs = function() { _fichaLoadTariffs(true); };
 
     // ============================================================
     //  SUB-TAB NAVIGATION
@@ -260,9 +283,12 @@
                     <span>Tarifa Global</span>
                     <button type="button" onclick="openTariffManager('${d.id}')" title="Gestionar la tarifa de este cliente: asignar tarifa global, personalizar precios o añadir cuota plana." style="background:#FF6600; border:0; color:#fff; padding:2px 8px; border-radius:3px; font-size:0.65rem; font-weight:700; cursor:pointer; letter-spacing:0;">💰 Tarifa y precios</button>
                 </label>
-                <select id="fc-tariff" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
-                    <option value="">-- Cargando... --</option>
-                </select>
+                <div style="display:flex; gap:4px;">
+                    <select id="fc-tariff" style="flex:1; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem;">
+                        <option value="">-- Cargando... --</option>
+                    </select>
+                    <button type="button" onclick="window._fichaReloadTariffs()" title="Recargar listado de tarifas globales (si acabas de crear una nueva en otra pestaña)" style="background:#2d2d30; border:1px solid #3c3c3c; color:#aaa; padding:0 8px; border-radius:4px; cursor:pointer; font-size:0.75rem;">🔄</button>
+                </div>
             </div>
         </div>
 
