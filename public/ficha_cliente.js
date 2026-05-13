@@ -225,8 +225,8 @@
 
         ${_sectionTitle('mail', 'Contacto', '#4CAF50')}
         <div style="display:grid; grid-template-columns: 1fr 1fr 140px; gap:6px; margin-bottom:6px;">
-            ${_field('Email (Login)', 'fc-email', d.email, { type: 'email', minWidth: 'auto' })}
-            ${_field('Email Administraci\u00f3n', 'fc-admin-email', d.adminEmail, { type: 'email', placeholder: 'admin@empresa.com', minWidth: 'auto' })}
+            ${_field('Email principal', 'fc-email', d.email, { type: 'email', placeholder: 'donde llegan las comunicaciones', minWidth: 'auto' })}
+            ${_field('Email Administraci\u00f3n', 'fc-admin-email', d.adminEmail, { type: 'email', placeholder: 'admin@empresa.com (opcional)', minWidth: 'auto' })}
             ${_field('Tel\u00e9fono', 'fc-phone', d.senderPhone || d.phone, { minWidth: 'auto' })}
         </div>
 
