@@ -263,7 +263,10 @@
                 <span id="fc-sucursales-count" style="color:#5DADE2; font-weight:700;">—</span> sucursales vinculadas
                 <span style="color:#666; margin-left:6px;">(comparten NIF, cada una con su propio login y prefijo)</span>
             </div>
-            <button type="button" onclick="window.openNewSucursalModal('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">+ Nueva sucursal</button>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" onclick="window.openInvoiceFormatModal('${d.id}')" style="background:#FF6600; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">📊 Facturar mes</button>
+                <button type="button" onclick="window.openNewSucursalModal('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">+ Nueva sucursal</button>
+            </div>
         </div>
         <div id="fc-sucursales-list" style="margin-bottom:10px;"></div>
         `}

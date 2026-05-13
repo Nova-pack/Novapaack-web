@@ -400,6 +400,217 @@
      * Modal de previsualización con todas las facturas y botones para
      * guardar / descargar.
      */
+    // ============ FORMAT SELECTOR ============
+    // Modal único que pregunta: mes + Formato 1 (consolidada) o Formato 2
+    // (por sucursal). Dispatcher hacia el generador adecuado.
+    window.openInvoiceFormatModal = function openInvoiceFormatModal(parentId) {
+        const old = document.getElementById('mb-format-select');
+        if (old) old.remove();
+        const parent = (window.userMap && window.userMap[parentId])
+                    || (window._advClientsCache && window._advClientsCache.find(c => c.id === parentId))
+                    || {};
+        const now = new Date();
+        const defaultMonth = now.getMonth() + 1;
+        const defaultYear = now.getFullYear();
+
+        const modal = document.createElement('div');
+        modal.id = 'mb-format-select';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:100001; display:flex; align-items:center; justify-content:center; padding:20px;';
+        modal.innerHTML = ''
+            + '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:24px; max-width:640px; width:100%; color:#d4d4d4;">'
+            + '<h3 style="margin:0 0 6px; color:#FF6600; font-size:1.05rem;">📊 Facturar mes — ' + _esc(parent.name || parentId) + '</h3>'
+            + '<p style="margin:0 0 18px; font-size:0.8rem; color:#888;">NIF compartido: ' + _esc(parent.nif || '—') + '. Elige periodo y formato.</p>'
+
+            + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Mes</label><select id="fs-month" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;">'
+            + ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+                .map((m, i) => '<option value="' + (i+1) + '"' + ((i+1) === defaultMonth ? ' selected' : '') + '>' + m + '</option>').join('')
+            + '  </select></div>'
+            + '  <div><label style="font-size:0.7rem; color:#aaa;">Año</label><input type="number" id="fs-year" value="' + defaultYear + '" min="2020" max="2099" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px; font-family:monospace;"></div>'
+            + '</div>'
+
+            + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">'
+            + '  <div onclick="document.getElementById(\'fs-f1\').click();" style="background:rgba(255,102,0,0.05); border:2px solid rgba(255,102,0,0.3); border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s;" onmouseover="this.style.borderColor=\'#FF6600\'" onmouseout="this.style.borderColor=\'rgba(255,102,0,0.3)\'">'
+            + '    <div style="font-size:1.1rem; margin-bottom:6px;">📄</div>'
+            + '    <div style="font-weight:700; color:#FF6600; font-size:0.92rem; margin-bottom:4px;">Formato 1 — Consolidada</div>'
+            + '    <div style="font-size:0.72rem; color:#aaa; line-height:1.4;">Una sola factura. Tarifa plana del padre. Bloque informativo con % volumen por sucursal.</div>'
+            + '    <button id="fs-f1" type="button" style="margin-top:10px; background:#FF6600; border:0; color:#fff; padding:6px 14px; border-radius:5px; font-weight:700; cursor:pointer; font-size:0.78rem; width:100%;">Vista previa</button>'
+            + '  </div>'
+            + '  <div onclick="document.getElementById(\'fs-f2\').click();" style="background:rgba(93,173,226,0.05); border:2px solid rgba(93,173,226,0.3); border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s;" onmouseover="this.style.borderColor=\'#5DADE2\'" onmouseout="this.style.borderColor=\'rgba(93,173,226,0.3)\'">'
+            + '    <div style="font-size:1.1rem; margin-bottom:6px;">📑</div>'
+            + '    <div style="font-weight:700; color:#5DADE2; font-size:0.92rem; margin-bottom:4px;">Formato 2 — Por sucursal</div>'
+            + '    <div style="font-size:0.72rem; color:#aaa; line-height:1.4;">Una factura por sede con actividad. Mismo NIF en todas. Importes según consumo real (no tarifa plana).</div>'
+            + '    <button id="fs-f2" type="button" style="margin-top:10px; background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:5px; font-weight:700; cursor:pointer; font-size:0.78rem; width:100%;">Vista previa</button>'
+            + '  </div>'
+            + '</div>'
+
+            + '<div style="margin-top:18px; text-align:right;">'
+            + '  <button type="button" id="fs-cancel" style="background:#333; border:1px solid #555; color:#fff; padding:7px 16px; border-radius:5px; cursor:pointer;">Cancelar</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+        document.getElementById('fs-cancel').onclick = () => modal.remove();
+        document.getElementById('fs-f1').onclick = (e) => {
+            e.stopPropagation();
+            const m = parseInt(document.getElementById('fs-month').value, 10);
+            const y = parseInt(document.getElementById('fs-year').value, 10);
+            modal.remove();
+            window.previewFlatRateConsolidatedModal(parentId, y, m);
+        };
+        document.getElementById('fs-f2').onclick = (e) => {
+            e.stopPropagation();
+            const m = parseInt(document.getElementById('fs-month').value, 10);
+            const y = parseInt(document.getElementById('fs-year').value, 10);
+            modal.remove();
+            window.previewBranchInvoicesModal(parentId, y, m);
+        };
+    };
+
+    // ============ FORMATO 1 — Vista previa consolidada (in-memory) ============
+    // Genera factura tarifa plana sin guardar, agrupando los albaranes del
+    // padre y todos sus hijos en el periodo. Muestra preview con botón
+    // "Guardar y emitir" que la persiste.
+    window.previewFlatRateConsolidatedModal = async function previewFlatRateConsolidatedModal(parentId, year, month) {
+        if (typeof showLoading === 'function') showLoading();
+        let data;
+        try {
+            data = await _loadBranchInvoiceData(parentId, year, month);
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('Error: ' + e.message);
+            return;
+        }
+        if (typeof hideLoading === 'function') hideLoading();
+        const { parent, sedes } = data;
+        if (sedes.length === 0) {
+            alert('No hay actividad de ' + parent.name + ' en ' + _monthLabel(year, month) + '. Nada que facturar.');
+            return;
+        }
+
+        // Construir ticketsDetail combinando todas las sedes
+        const allTicketsDetail = [];
+        sedes.forEach(s => {
+            s.tickets.forEach(t => {
+                allTicketsDetail.push({
+                    id: t.id,
+                    clientIdNum: (s.idNum || '').toString(),
+                    uid: s.id,
+                    compName: s.name,
+                    price: t.price || 0
+                });
+            });
+        });
+
+        // Calcular importe = flatRateAmount del padre (cuota plana)
+        const flatAmount = Number(parent.flatRateAmount) || 0;
+        if (flatAmount <= 0) {
+            if (!confirm('⚠️ El cliente padre NO tiene flatRateAmount configurado (o es 0).\n\nEdita su ficha y establece la cuota fija antes de emitir.\n\n¿Continuar con preview a 0 € de todos modos?')) return;
+        }
+        const fiscalSender = (typeof window.invCompanyData === 'object' && window.invCompanyData) ? window.invCompanyData : {};
+        const ivaRate = fiscalSender.iva || 21;
+        const irpfRate = parent.irpfRate || 0;
+        const iva = flatAmount * (ivaRate / 100);
+        const irpf = flatAmount * (irpfRate / 100);
+        const total = flatAmount + iva - irpf;
+        const yearShort = String(year).slice(-2);
+
+        const draft = {
+            invoiceId: '(preview · FAC-' + yearShort + '-XXX)',
+            date: new Date(year, month - 1, new Date().getDate()),
+            dueDate: null,
+            clientId: parent.id,
+            clientName: parent.name,
+            clientCIF: parent.nif || '',
+            subtotal: flatAmount, iva: iva, ivaRate: ivaRate, irpf: irpf, irpfRate: irpfRate,
+            total: total,
+            tickets: allTicketsDetail.map(t => t.id),
+            ticketsDetail: allTicketsDetail,
+            senderData: fiscalSender,
+            periodMonth: month, periodYear: year,
+            isFlatRateConsolidated: true
+        };
+
+        // Cargar branchesMap para que el builder agrupe correctamente
+        const branchesMap = {};
+        data.allSedes.forEach(s => {
+            const idn = (s.idNum || '').toString();
+            if (idn) branchesMap[idn] = s;
+            branchesMap[s.id] = s;
+        });
+
+        const html = typeof window.buildMultiBranchInvoiceHTML === 'function'
+            ? window.buildMultiBranchInvoiceHTML(draft, parent, branchesMap)
+            : '<p>Error: builder no disponible</p>';
+
+        // Modal preview
+        const old = document.getElementById('mb-f1-preview');
+        if (old) old.remove();
+        const modal = document.createElement('div');
+        modal.id = 'mb-f1-preview';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:99999; display:flex; flex-direction:column; padding:20px; overflow-y:auto;';
+        modal.innerHTML = ''
+            + '<div style="max-width:880px; width:100%; margin:0 auto 14px; display:flex; justify-content:space-between; align-items:center; color:#fff;">'
+            + '  <div>'
+            + '    <h3 style="margin:0; color:#FF6600; font-size:1.05rem;">📄 Formato 1 — Factura consolidada · ' + _esc(_monthLabel(year, month)) + '</h3>'
+            + '    <div style="font-size:0.78rem; color:#aaa; margin-top:3px;">' + _esc(parent.name) + ' · cuota plana ' + _money(flatAmount) + '</div>'
+            + '  </div>'
+            + '  <div style="display:flex; gap:8px;">'
+            + '    <button id="f1-save" style="background:#FF6600; border:0; color:#fff; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">💾 Guardar y facturar</button>'
+            + '    <button id="f1-close" style="background:#333; border:1px solid #555; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer;">Cerrar</button>'
+            + '  </div>'
+            + '</div>'
+            + '<div style="max-width:880px; width:100%; margin:0 auto; background:white; border-radius:8px;">' + html + '</div>';
+        document.body.appendChild(modal);
+        document.getElementById('f1-close').onclick = () => modal.remove();
+        document.getElementById('f1-save').onclick = async () => {
+            if (!confirm('Vas a EMITIR la factura consolidada de ' + parent.name + ' por ' + _money(flatAmount) + ' base.\n\nMarcará los ' + allTicketsDetail.length + ' albaranes implicados como facturados. ¿Continuar?')) return;
+            const btn = document.getElementById('f1-save');
+            btn.disabled = true; btn.textContent = 'Guardando…';
+            try {
+                // Reservar nº atómico
+                let nextNum;
+                if (typeof window.allocSequentialNumber === 'function') {
+                    nextNum = await window.allocSequentialNumber('sequence_counters/invoices_' + year, async () => {
+                        const seedSnap = await db.collection('invoices')
+                            .where('date', '>=', new Date(year, 0, 1))
+                            .where('date', '<', new Date(year + 1, 0, 1))
+                            .orderBy('date', 'desc').limit(10000).get();
+                        let max = 0;
+                        seedSnap.forEach(doc => {
+                            const m = (doc.data().invoiceId || '').match(/^FAC-\d{2}-(\d+)$/);
+                            if (m) { const s = parseInt(m[1], 10); if (s > max) max = s; }
+                            const n = doc.data().number || 0;
+                            if (n > max) max = n;
+                        });
+                        return max;
+                    });
+                } else {
+                    nextNum = Date.now() % 100000;
+                }
+                const invoiceId = 'FAC-' + yearShort + '-' + nextNum;
+                draft.invoiceId = invoiceId;
+                draft.number = nextNum;
+                if (typeof getOperatorStamp === 'function') Object.assign(draft, getOperatorStamp());
+                const invRef = await db.collection('invoices').add(draft);
+                // Marcar tickets
+                let batch = db.batch();
+                let opCount = 0;
+                for (const t of allTicketsDetail) {
+                    batch.update(db.collection('tickets').doc(t.id), {
+                        invoiceId: invRef.id, invoiceNum: invoiceId
+                    });
+                    if (++opCount >= 450) { await batch.commit(); batch = db.batch(); opCount = 0; }
+                }
+                if (opCount > 0) await batch.commit();
+                alert('✅ Factura consolidada emitida: ' + invoiceId);
+                modal.remove();
+            } catch(e) {
+                alert('Error: ' + e.message);
+                btn.disabled = false; btn.textContent = '💾 Guardar y facturar';
+            }
+        };
+    };
+
     window.previewBranchInvoicesModal = async function previewBranchInvoicesModal(parentId, year, month) {
         if (typeof showLoading === 'function') showLoading();
         let result;
