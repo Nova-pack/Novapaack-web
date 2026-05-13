@@ -732,55 +732,71 @@ async function main() {
         console.error('[MAIL ENGINE] Auth setup error:', e.message);
     }
 
-    // Pause switch (managed from admin UI). When config/admin.mailEngineEnabled
-    // is explicitly false, exit early without touching IMAP or Firestore writes.
+    // ── Flags de pausa (managed from admin UI) ──
+    // - config/admin.mailEngineEnabled === false → pausa la LECTURA IMAP
+    //   (no procesamos correos entrantes). La cola SALIENTE sigue activa.
+    // - config/admin.mailEngineOutgoingEnabled === false → pausa también
+    //   la cola saliente (flag opcional, por defecto true).
+    let skipImap = false;
+    let skipOutgoing = false;
     try {
         const cfgDoc = await firebase.firestore().collection('config').doc('admin').get();
         const cfg = cfgDoc.exists ? cfgDoc.data() : {};
         if (cfg.mailEngineEnabled === false) {
-            console.log('[MAIL ENGINE] Pausado por admin (config/admin.mailEngineEnabled=false). Saliendo sin procesar correos.');
-            try { await firebase.firestore().collection('config').doc('admin').set({
-                mailEngineLastSkippedAt: firebase.firestore.FieldValue.serverTimestamp(),
-                mailEngineLastReason: 'paused_by_admin'
-            }, { merge: true }); } catch(e) {}
-            try { await firebase.auth().signOut(); } catch(e) {}
-            return;
+            skipImap = true;
+            console.log('[MAIL ENGINE] 🟠 IMAP pausado por admin (mailEngineEnabled=false). Saltando lectura entrante.');
+        }
+        if (cfg.mailEngineOutgoingEnabled === false) {
+            skipOutgoing = true;
+            console.log('[MAIL ENGINE] 🟠 Cola saliente pausada por admin (mailEngineOutgoingEnabled=false).');
         }
     } catch(e) {
         console.warn('[MAIL ENGINE] No pude leer flag de pausa:', e.message);
     }
 
     let lastError = null;
-    for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
-        try {
-            console.log(`[MAIL ENGINE] Attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
-            await run();
-            lastError = null;
-            break;
-        } catch(e) {
-            lastError = e;
-            console.error(`[MAIL ENGINE] Attempt ${attempt} failed: ${e.message}`);
-            if (attempt < IMAP_MAX_RETRIES) {
-                console.log(`[MAIL ENGINE] Retrying in ${IMAP_RETRY_DELAY_MS / 1000}s...`);
-                await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
+    if (!skipImap) {
+        for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
+            try {
+                console.log(`[MAIL ENGINE] Attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
+                await run();
+                lastError = null;
+                break;
+            } catch(e) {
+                lastError = e;
+                console.error(`[MAIL ENGINE] Attempt ${attempt} failed: ${e.message}`);
+                if (attempt < IMAP_MAX_RETRIES) {
+                    console.log(`[MAIL ENGINE] Retrying in ${IMAP_RETRY_DELAY_MS / 1000}s...`);
+                    await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
+                }
             }
         }
-    }
 
-    if (lastError) {
-        console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
-        console.error('[MAIL ENGINE] ⚠️  ALERTA: El buzón no se ha podido sincronizar. Revisa la conexión IMAP o las credenciales.');
+        if (lastError) {
+            console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
+            console.error('[MAIL ENGINE] ⚠️  ALERTA: El buzón no se ha podido sincronizar. Revisa la conexión IMAP o las credenciales.');
+        }
+    } else {
+        // Registro de la pausa para que el admin vea cuándo fue el último ciclo
+        try { await firebase.firestore().collection('config').doc('admin').set({
+            mailEngineLastSkippedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            mailEngineLastReason: 'imap_paused_by_admin'
+        }, { merge: true }); } catch(e) {}
     }
 
     // ── PROCESAR COLA SALIENTE ──
-    // Independiente del resultado IMAP: aunque la lectura entrante falle,
-    // intentamos enviar lo que tengamos en cola (los problemas IMAP y SMTP
-    // suelen ser independientes).
-    try {
-        const db = firebase.firestore();
-        await processOutgoingQueue(db);
-    } catch(e) {
-        console.error('[MAIL ENGINE] Error procesando cola saliente:', e.message);
+    // Se ejecuta INDEPENDIENTEMENTE del estado de IMAP: aunque el admin
+    // tenga pausada la lectura del buzón entrante, las bienvenidas y
+    // demás emails salientes deben enviarse igual.
+    if (!skipOutgoing) {
+        try {
+            const db = firebase.firestore();
+            await processOutgoingQueue(db);
+        } catch(e) {
+            console.error('[MAIL ENGINE] Error procesando cola saliente:', e.message);
+        }
+    } else {
+        console.log('[MAIL ENGINE] Cola saliente saltada por flag de pausa.');
     }
 
     process.exit(lastError ? 1 : 0);
