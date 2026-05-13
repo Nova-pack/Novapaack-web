@@ -11221,39 +11221,50 @@ window.runPublicTicketsBackfill = async function() {
                     const modesSummary = summarizeModes(items);
                     const hasFlatMonthly = items.some(it => it.mode === 'flat_monthly');
                     const accentColor = hasFlatMonthly ? '#4CAF50' : '#FF8A50';
-                    html += '<div onclick="window.openTariffBuilder(\'' + _esc(t.id) + '\')" style="background:#1a1a1a; border:1px solid #333; border-left:3px solid ' + accentColor + '; border-radius:10px; padding:14px; cursor:pointer; transition:all 0.15s;" onmouseover="this.style.borderColor=\'#FF6600\'; this.style.background=\'#1f1f1f\'" onmouseout="this.style.borderColor=\'#333\'; this.style.borderLeftColor=\'' + accentColor + '\'; this.style.background=\'#1a1a1a\'">'
-                        + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
-                        + '  <div style="flex:1; min-width:0;">'
-                        + '    <div style="font-weight:700; color:#fff; font-size:0.95rem; margin-bottom:4px; word-break:break-word;">' + _esc(t.name || t.id) + (hasFlatMonthly ? ' <span style="color:#4CAF50; font-size:0.7rem; font-weight:600;">📊 plana</span>' : '') + '</div>'
-                        + '    <div style="font-size:0.7rem; color:#888; font-family:monospace; word-break:break-all;">' + _esc(t.id) + '</div>'
+                    html += '<div style="background:#1a1a1a; border:1px solid #333; border-left:3px solid ' + accentColor + '; border-radius:10px; padding:14px; position:relative; transition:all 0.15s;" onmouseover="this.style.borderColor=\'#FF6600\'; this.style.background=\'#1f1f1f\'" onmouseout="this.style.borderColor=\'#333\'; this.style.borderLeftColor=\'' + accentColor + '\'; this.style.background=\'#1a1a1a\'">'
+                        + '<div onclick="window.openTariffBuilder(\'' + _esc(t.id) + '\')" style="cursor:pointer;">'
+                        + '  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
+                        + '    <div style="flex:1; min-width:0;">'
+                        + '      <div style="font-weight:700; color:#fff; font-size:0.95rem; margin-bottom:4px; word-break:break-word;">' + _esc(t.name || t.id) + (hasFlatMonthly ? ' <span style="color:#4CAF50; font-size:0.7rem; font-weight:600;">📊 plana</span>' : '') + '</div>'
+                        + '      <div style="font-size:0.7rem; color:#888; font-family:monospace; word-break:break-all;">' + _esc(t.id) + '</div>'
+                        + '    </div>'
+                        + '    <span style="background:rgba(76,175,80,0.18); color:#4CAF50; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700; white-space:nowrap;">v2</span>'
                         + '  </div>'
-                        + '  <span style="background:rgba(76,175,80,0.18); color:#4CAF50; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700; white-space:nowrap;">v2</span>'
+                        + '  <div style="font-size:0.78rem; color:#aaa; margin-top:10px;">' + items.length + ' artículo' + (items.length === 1 ? '' : 's') + (modesSummary !== 'Sin artículos' ? ' · ' + modesSummary : '') + '</div>'
                         + '</div>'
-                        + '<div style="font-size:0.78rem; color:#aaa; margin-top:10px;">' + items.length + ' artículo' + (items.length === 1 ? '' : 's') + (modesSummary !== 'Sin artículos' ? ' · ' + modesSummary : '') + '</div>'
                         + '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px solid #2d2d30;">'
-                        + '  <span style="font-size:0.72rem; color:' + (n > 0 ? '#5DADE2' : '#666') + ';">' + (n > 0 ? '👥 ' + n + ' cliente' + (n === 1 ? '' : 's') + ' la usan' : 'Sin clientes asignados') + '</span>'
-                        + '  <span style="font-size:0.7rem; color:#FF8A50; font-weight:600;">✏️ Editar →</span>'
+                        + '  <span style="font-size:0.72rem; color:' + (n > 0 ? '#5DADE2' : '#666') + ';">' + (n > 0 ? '👥 ' + n + ' cliente' + (n === 1 ? '' : 's') : 'Sin clientes') + '</span>'
+                        + '  <div style="display:flex; gap:5px;">'
+                        + '    <button onclick="event.stopPropagation(); window.openTariffBuilder(\'' + _esc(t.id) + '\')" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; font-weight:600;" title="Editar">✏️</button>'
+                        + '    <button onclick="event.stopPropagation(); window.deleteTariffById(\'' + _esc(t.id) + '\')" style="background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; font-weight:600;" title="Eliminar tarifa">🗑️</button>'
+                        + '  </div>'
                         + '</div>'
                         + '</div>';
                 });
 
-                // V1 cards (estilo más apagado)
+                // V1 cards (estilo más apagado, con botones edit/delete directos)
                 if (v1.length > 0) {
                     html += '<div style="grid-column:1/-1; margin-top:8px; padding:8px 4px; font-size:0.78rem; color:#888; border-top:1px dashed #444;">📦 Tarifas antiguas (v1):</div>';
                     v1.forEach(t => {
                         const n = clientCount[t.id] || 0;
                         const idShort = t.id.replace('GLOBAL_', '');
-                        html += '<div onclick="document.getElementById(\'tariff-global-id\').value=\'' + _esc(idShort) + '\'; document.getElementById(\'btn-load-global-tariff\').click(); this.closest(\'#tariff-tab-global\').querySelector(\'details\').open=true;" style="background:#1a1a1a; border:1px solid #2d2d30; border-left:3px solid #666; border-radius:10px; padding:12px; cursor:pointer; opacity:0.85;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.85\'">'
-                            + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
-                            + '  <div style="flex:1; min-width:0;">'
-                            + '    <div style="font-weight:600; color:#ddd; font-size:0.88rem; margin-bottom:3px; word-break:break-word;">' + _esc(t.name || idShort) + '</div>'
-                            + '    <div style="font-size:0.68rem; color:#666; font-family:monospace;">' + _esc(t.id) + '</div>'
+                        const openLegacy = "document.getElementById('tariff-global-id').value='" + _esc(idShort) + "'; document.getElementById('btn-load-global-tariff').click(); this.closest('#tariff-tab-global').querySelector('details').open=true;";
+                        html += '<div style="background:#1a1a1a; border:1px solid #2d2d30; border-left:3px solid #666; border-radius:10px; padding:12px; opacity:0.85;" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.85\'">'
+                            + '<div onclick="' + openLegacy + '" style="cursor:pointer;">'
+                            + '  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
+                            + '    <div style="flex:1; min-width:0;">'
+                            + '      <div style="font-weight:600; color:#ddd; font-size:0.88rem; margin-bottom:3px; word-break:break-word;">' + _esc(t.name || idShort) + '</div>'
+                            + '      <div style="font-size:0.68rem; color:#666; font-family:monospace;">' + _esc(t.id) + '</div>'
+                            + '    </div>'
+                            + '    <span style="background:rgba(120,120,120,0.18); color:#999; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700;">v1</span>'
                             + '  </div>'
-                            + '  <span style="background:rgba(120,120,120,0.18); color:#999; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:700;">v1</span>'
                             + '</div>'
                             + '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid #2d2d30;">'
                             + '  <span style="font-size:0.7rem; color:' + (n > 0 ? '#5DADE2' : '#666') + ';">' + (n > 0 ? '👥 ' + n + ' cliente' + (n === 1 ? '' : 's') : 'Sin clientes') + '</span>'
-                            + '  <span style="font-size:0.68rem; color:#888;">Abrir editor legacy →</span>'
+                            + '  <div style="display:flex; gap:5px;">'
+                            + '    <button onclick="event.stopPropagation(); ' + openLegacy + '" style="background:transparent; border:1px solid #5DADE2; color:#5DADE2; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; font-weight:600;" title="Abrir editor legacy v1">✏️</button>'
+                            + '    <button onclick="event.stopPropagation(); window.deleteTariffById(\'' + _esc(t.id) + '\')" style="background:transparent; border:1px solid #FF3B30; color:#FF3B30; padding:3px 9px; border-radius:4px; cursor:pointer; font-size:0.7rem; font-weight:600;" title="Eliminar tarifa v1">🗑️</button>'
+                            + '  </div>'
                             + '</div>'
                             + '</div>';
                     });
@@ -16443,7 +16454,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
             </div>
         </div>
 
-        <script src="billing_adv_v4.js?v=20260514_clean"></script>
+        <script src="billing_adv_v4.js?v=20260514_delete2"></script>
     
     <!-- MODAL REASIGNAR REPARTIDOR -->
     <div id="modal-ticket-reassign" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:102070; justify-content:center; align-items:center; padding:20px; overflow-y:auto;">

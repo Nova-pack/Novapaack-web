@@ -1431,17 +1431,74 @@ window.promptCreateGlobalTariff = async () => {
 };
 
 window.deleteCurrentGlobalTariff = async () => {
-    if (!window.currentTariffUID || !window.currentTariffUID.startsWith('GLOBAL_')) return;
-    const name = window.currentTariffUID.replace('GLOBAL_', '');
-    if (!confirm('¿Eliminar la tarifa global #' + name + ' y todos sus artículos?')) return;
+    if (!window.currentTariffUID) {
+        alert('No hay tarifa cargada para eliminar.\n\nCarga primero una tarifa con el botón "Cargar" y luego pulsa Eliminar.');
+        return;
+    }
+    if (!window.currentTariffUID.startsWith('GLOBAL_')) {
+        alert('Solo se pueden eliminar tarifas globales desde aquí (la actual: ' + window.currentTariffUID + ').');
+        return;
+    }
+    return window.deleteTariffById(window.currentTariffUID);
+};
+
+// Borrado directo de una tarifa por su docId (lo usan las cards v1 y v2).
+window.deleteTariffById = async (tariffDocId) => {
+    if (!tariffDocId) { alert('ID de tarifa vacío.'); return; }
+
+    // Contar clientes que la usan
+    let usingCount = 0;
+    let usingList = [];
     try {
-        await db.collection('tariffs').doc(window.currentTariffUID).delete();
-        document.getElementById('tariff-editor-area').style.display = 'none';
-        document.getElementById('btn-delete-global-tariff').style.display = 'none';
-        document.getElementById('tariff-global-id').value = '';
+        if (window.userMap) {
+            Object.values(window.userMap).forEach(u => {
+                if (!u.tariffId) return;
+                const tid = String(u.tariffId);
+                if (tid === tariffDocId || ('GLOBAL_' + tid) === tariffDocId || tariffDocId === ('GLOBAL_' + tid)) {
+                    usingCount++;
+                    if (usingList.length < 5) usingList.push((u.name || ('#' + (u.idNum || u.id))));
+                }
+            });
+        }
+    } catch(_) {}
+
+    let msg = '¿Eliminar la tarifa "' + tariffDocId + '"?\n\n';
+    if (usingCount > 0) {
+        msg += '⚠️ ATENCIÓN: ' + usingCount + ' cliente' + (usingCount === 1 ? '' : 's') + ' la tiene' + (usingCount === 1 ? '' : 'n') + ' asignada:\n';
+        msg += '  ' + usingList.join('\n  ');
+        if (usingCount > usingList.length) msg += '\n  ... y ' + (usingCount - usingList.length) + ' más';
+        msg += '\n\nTras eliminar quedarán SIN tarifa asignada.\n\n';
+    }
+    msg += 'Esta acción NO se puede deshacer. ¿Continuar?';
+
+    if (!confirm(msg)) return;
+
+    if (usingCount > 0) {
+        const confirmText = prompt('Para confirmar, escribe exactamente: ELIMINAR');
+        if (confirmText !== 'ELIMINAR') {
+            alert('Cancelado.');
+            return;
+        }
+    }
+
+    try {
+        await db.collection('tariffs').doc(tariffDocId).delete();
+        // Limpiar UI legacy si estaba abierta
+        const editorArea = document.getElementById('tariff-editor-area');
+        if (editorArea) editorArea.style.display = 'none';
+        const delBtn = document.getElementById('btn-delete-global-tariff');
+        if (delBtn) delBtn.style.display = 'none';
+        const inp = document.getElementById('tariff-global-id');
+        if (inp) inp.value = '';
+        window.currentTariffUID = null;
+        // Refrescar listados
         if (typeof populateGlobalTariffsDatalist === 'function') populateGlobalTariffsDatalist();
-        console.log('Tarifa eliminada:', window.currentTariffUID);
-    } catch(e) { console.error('Error eliminando tarifa:', e); }
+        if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+        alert('✅ Tarifa eliminada: ' + tariffDocId);
+    } catch(e) {
+        console.error('Error eliminando tarifa:', e);
+        alert('Error al eliminar: ' + e.message);
+    }
 };
 
 window.promptNewArticlePRO = () => {
