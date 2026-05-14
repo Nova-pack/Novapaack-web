@@ -250,6 +250,174 @@
         }
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  AUTO-DETECCIÓN DE TELÉFONO DE RUTA POR CP
+    // ════════════════════════════════════════════════════════════
+    // Las rutas se configuran en Control de Rutas → config/phones/list.
+    // Cada ruta tiene: number (tel repartidor), label, coverageZones
+    // (CPs/localidades separados por comas).
+    //
+    // IMPORTANTE: cada cliente (PADRE o SUCURSAL) usa SU PROPIO CP.
+    // Una sucursal de Sevilla en otro pueblo tiene su ruta propia,
+    // no hereda la del padre.
+    let _fichaRoutesCache = null;
+
+    async function _fichaLoadRoutes(forceReload) {
+        if (_fichaRoutesCache && !forceReload) return _fichaRoutesCache;
+        const routes = [];
+        try {
+            const snap = await db.collection('config').doc('phones').collection('list').get();
+            snap.forEach(doc => {
+                const d = doc.data() || {};
+                routes.push({
+                    id: doc.id,
+                    label: (d.label || '').toString().trim(),
+                    number: (d.number || '').toString().trim(),
+                    driverName: (d.driverName || '').toString().trim(),
+                    coverageZones: (d.coverageZones || '').toString()
+                });
+            });
+        } catch(e) { console.warn('[ficha] no pude cargar rutas:', e.message); }
+        _fichaRoutesCache = routes;
+        return routes;
+    }
+
+    function _normTxt(s) {
+        return (s || '').toString().normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    }
+
+    // Devuelve { number, label, driverName } de la ruta que cubre ese CP/localidad, o null.
+    function _fichaMatchRoute(routes, cp, localidad) {
+        const cpStr = (cp || '').toString().trim().replace(/\s/g, '');
+        const locNorm = _normTxt(localidad);
+        if (!cpStr && !locNorm) return null;
+
+        // Recorremos rutas; recogemos matches con prioridad.
+        let exactCp = null, prefixCp = null, locMatch = null;
+        for (const r of routes) {
+            if (!r.number) continue;
+            // Tokens: coverageZones + label
+            const tokens = (r.coverageZones + ',' + r.label)
+                .split(',').map(t => t.trim()).filter(Boolean);
+            for (const tk of tokens) {
+                const tkClean = tk.replace(/\s/g, '');
+                // ¿es un CP (sólo dígitos)?
+                if (/^\d+$/.test(tkClean)) {
+                    if (cpStr) {
+                        if (cpStr === tkClean) { exactCp = exactCp || r; }
+                        else if (cpStr.startsWith(tkClean) && tkClean.length >= 2) { prefixCp = prefixCp || r; }
+                    }
+                } else {
+                    // es una localidad / provincia
+                    const tkNorm = _normTxt(tk);
+                    if (locNorm && tkNorm && (locNorm === tkNorm || locNorm.includes(tkNorm) || tkNorm.includes(locNorm))) {
+                        locMatch = locMatch || r;
+                    }
+                }
+            }
+        }
+        const winner = exactCp || prefixCp || locMatch;
+        return winner ? { number: winner.number, label: winner.label, driverName: winner.driverName } : null;
+    }
+
+    // Detecta y rellena el campo fc-default-route-phone de la ficha actual.
+    window._fichaDetectRoutePhone = async function(silent) {
+        const cpEl = document.getElementById('fc-cp');
+        const locEl = document.getElementById('fc-city');
+        const phoneEl = document.getElementById('fc-default-route-phone');
+        if (!phoneEl) return;
+        const cp = cpEl ? cpEl.value.trim() : (_fichaClientData && _fichaClientData.cp) || '';
+        const loc = locEl ? locEl.value.trim() : (_fichaClientData && _fichaClientData.localidad) || '';
+        if (!cp && !loc) {
+            if (!silent) alert('Rellena primero el CP o la localidad del cliente para poder detectar su ruta.');
+            return;
+        }
+        const routes = await _fichaLoadRoutes();
+        if (!routes.length) {
+            if (!silent) alert('No hay rutas configuradas en Control de Rutas todavía.');
+            return;
+        }
+        const match = _fichaMatchRoute(routes, cp, loc);
+        if (!match) {
+            if (!silent) alert('Ningún recorrido cubre el CP ' + cp + (loc ? ' / ' + loc : '') + '.\n\nRevisa las zonas de cobertura en Control de Rutas o rellénalo a mano.');
+            return;
+        }
+        phoneEl.value = match.number;
+        if (!silent) {
+            _fichaShowToast('✓ Ruta detectada: ' + (match.label || match.number) + (match.driverName ? ' (' + match.driverName + ')' : ''));
+        }
+        return match;
+    };
+
+    // ── BULK: auto-asignar teléfono de ruta a TODOS los clientes ──
+    // Recorre users (padres Y sucursales), cada uno con SU CP.
+    window._bulkAssignRoutePhones = async function() {
+        const routes = await _fichaLoadRoutes(true);
+        if (!routes.length) {
+            alert('No hay rutas configuradas en Control de Rutas. Crea al menos una con sus zonas de cobertura primero.');
+            return;
+        }
+        const mode = confirm(
+            'AUTO-ASIGNAR TELÉFONO DE RUTA A TODOS LOS CLIENTES\n\n' +
+            'Recorre todos los clientes (padres y sucursales) y, según el CP de cada uno, ' +
+            'les asigna el teléfono de ruta de recogidas que le corresponde según Control de Rutas.\n\n' +
+            '[Aceptar] = SOLO rellena los que están VACÍOS (no toca los ya configurados).\n' +
+            '[Cancelar] = abortar.\n\n' +
+            '¿Continuar (solo vacíos)?'
+        );
+        if (!mode) return;
+
+        try {
+            if (typeof showLoading === 'function') showLoading();
+            const snap = await db.collection('users').get();
+            let assigned = 0, skipped = 0, noMatch = 0, noCp = 0;
+            let batch = db.batch();
+            let ops = 0;
+            const noMatchList = [];
+
+            snap.forEach(doc => {
+                const u = doc.data() || {};
+                if (u.role === 'admin') return;
+                // Solo vacíos
+                if (u.defaultRoutePhone && u.defaultRoutePhone.toString().trim()) { skipped++; return; }
+                const cp = (u.cp || '').toString().trim();
+                const loc = (u.localidad || u.city || '').toString().trim();
+                if (!cp && !loc) { noCp++; return; }
+                const match = _fichaMatchRoute(routes, cp, loc);
+                if (!match) {
+                    noMatch++;
+                    if (noMatchList.length < 10) noMatchList.push((u.name || u.idNum || doc.id) + ' (CP ' + (cp || '—') + ')');
+                    return;
+                }
+                batch.update(db.collection('users').doc(doc.id), {
+                    defaultRoutePhone: match.number,
+                    defaultRoutePhoneAutoAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                ops++;
+                assigned++;
+                if (window.userMap && window.userMap[doc.id]) window.userMap[doc.id].defaultRoutePhone = match.number;
+                if (ops >= 450) { batch.commit(); batch = db.batch(); ops = 0; }
+            });
+            if (ops > 0) await batch.commit();
+
+            if (typeof hideLoading === 'function') hideLoading();
+            let msg = 'AUTO-ASIGNACIÓN TERMINADA\n\n';
+            msg += '  ✅ Asignados: ' + assigned + '\n';
+            msg += '  ⏭️  Saltados (ya tenían): ' + skipped + '\n';
+            msg += '  ⚠️  Sin ruta que cubra su CP: ' + noMatch + '\n';
+            msg += '  ❔ Sin CP ni localidad: ' + noCp + '\n';
+            if (noMatchList.length) {
+                msg += '\nSin cobertura (primeros 10):\n  ' + noMatchList.join('\n  ');
+                msg += '\n\n→ Revisa las zonas de cobertura en Control de Rutas para estos CPs.';
+            }
+            alert(msg);
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            console.error('[bulk route phones]', e);
+            alert('Error en la asignación masiva: ' + e.message);
+        }
+    };
+
     // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
     async function _fichaAutoSaveTariffId(newTariffId) {
         if (!_fichaClientId) return;
@@ -368,11 +536,18 @@
         </div>
 
         ${_sectionTitle('schedule', 'Configuraci\u00f3n de Recogidas', '#4CAF50')}
-        <div style="display:grid; grid-template-columns: 120px 120px 180px; gap:6px; margin-bottom:6px;">
+        <div style="display:grid; grid-template-columns: 120px 120px 1fr; gap:6px; margin-bottom:2px;">
             ${_field('Corte Ma\u00f1ana', 'fc-pickup-cutoff-am', d.pickupCutoffAM || '', { type: 'time', minWidth: 'auto' })}
             ${_field('Corte Tarde', 'fc-pickup-cutoff-pm', d.pickupCutoffPM || '', { type: 'time', minWidth: 'auto' })}
-            ${_field('Tlf. Ruta Defecto', 'fc-default-route-phone', d.defaultRoutePhone || '', { placeholder: '600123456', minWidth: 'auto' })}
+            <div style="min-width:auto;">
+                <label style="display:flex; justify-content:space-between; align-items:center; color:#888; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">
+                    <span>Tlf. Ruta Recogidas</span>
+                    <button type="button" onclick="window._fichaDetectRoutePhone()" title="Detectar autom\u00e1ticamente la ruta de recogidas seg\u00fan el CP de este cliente (Control de Rutas)" style="background:#4CAF50; border:0; color:#fff; padding:2px 8px; border-radius:3px; font-size:0.62rem; font-weight:700; cursor:pointer; letter-spacing:0;">\ud83d\udd0d Detectar por CP</button>
+                </label>
+                <input type="text" id="fc-default-route-phone" value="${d.defaultRoutePhone || ''}" placeholder="600123456 o pulsa Detectar" style="width:100%; padding:5px 7px; background:#2d2d30; border:1px solid #3c3c3c; color:#fff; border-radius:4px; font-size:0.8rem; box-sizing:border-box;">
+            </div>
         </div>
+        <div style="font-size:0.65rem; color:#666; margin-bottom:6px;">\u2139\ufe0f El tel\u00e9fono de ruta sale de <strong>Control de Rutas</strong> seg\u00fan las zonas de cobertura (CP). Cada sucursal usa SU propio CP.</div>
 
         ${_sectionTitle('account_tree', 'Relaciones', '#2196F3')}
         <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px; margin-bottom:6px;">
@@ -435,6 +610,15 @@
 
         // Hooks de preview y carga asíncrona de comp_main + estado de acceso
         setTimeout(_fichaWireAccessSection, 50);
+
+        // Auto-detección silenciosa del teléfono de ruta SI el campo está vacío.
+        // Usa el CP de ESTA ficha (parent o sucursal — cada una su CP).
+        setTimeout(function() {
+            const phoneEl = document.getElementById('fc-default-route-phone');
+            if (phoneEl && !phoneEl.value.trim()) {
+                try { window._fichaDetectRoutePhone(true); } catch(_) {}
+            }
+        }, 200);
     }
 
     function _fichaUpdateAlbaranPreview() {
