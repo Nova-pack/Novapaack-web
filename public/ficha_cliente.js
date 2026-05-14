@@ -189,21 +189,82 @@
         });
     }
 
+    // ── RESOLUCIÓN ROBUSTA DEL DOCID REAL DEL CLIENTE ───────────
+    // Problema: a veces la ficha se abre con un ID que NO es el docId
+    // real de Firestore (es el authUid, o un alias cacheado). Al
+    // intentar update() Firestore lanza "No document to update".
+    // Esta función intenta:
+    //   1. ¿El doc existe en users/{_fichaClientId}? → ese es el bueno.
+    //   2. Si no → buscar users where authUid == _fichaClientId.
+    //   3. Si no → buscar por idNum.
+    // Si encuentra el real, ACTUALIZA _fichaClientId para futuros saves.
+    async function _fichaResolveRealDocId() {
+        if (!_fichaClientId) return null;
+        // 1. ¿Existe directamente?
+        try {
+            const d = await db.collection('users').doc(_fichaClientId).get();
+            if (d.exists) return _fichaClientId;
+        } catch(_) {}
+        // 2. Por authUid
+        try {
+            const snap = await db.collection('users').where('authUid', '==', _fichaClientId).limit(1).get();
+            if (!snap.empty) {
+                const realId = snap.docs[0].id;
+                console.warn('[ficha] docId corregido por authUid:', _fichaClientId, '→', realId);
+                _fichaClientId = realId;
+                return realId;
+            }
+        } catch(_) {}
+        // 3. Por idNum (si _fichaClientData lo tiene)
+        try {
+            const idNum = _fichaClientData && _fichaClientData.idNum;
+            if (idNum) {
+                const snap = await db.collection('users').where('idNum', '==', String(idNum)).limit(1).get();
+                if (!snap.empty) {
+                    const realId = snap.docs[0].id;
+                    console.warn('[ficha] docId corregido por idNum:', _fichaClientId, '→', realId);
+                    _fichaClientId = realId;
+                    return realId;
+                }
+            }
+        } catch(_) {}
+        return null; // no se pudo resolver
+    }
+
+    // Update resiliente: si el doc no existe en _fichaClientId, resuelve
+    // el real y reintenta. Lo usan autoSave y _fichaSaveAll.
+    async function _fichaUpdateUserDoc(updates) {
+        try {
+            await db.collection('users').doc(_fichaClientId).update(updates);
+            return _fichaClientId;
+        } catch(e) {
+            const notFound = (e && (e.code === 'not-found' || /No document to update/i.test(e.message || '')));
+            if (!notFound) throw e;
+            // Resolver el docId real y reintentar
+            const realId = await _fichaResolveRealDocId();
+            if (!realId) {
+                throw new Error('No se encontró el documento del cliente (ni por id, ni authUid, ni idNum). Recarga la lista de clientes.');
+            }
+            await db.collection('users').doc(realId).update(updates);
+            return realId;
+        }
+    }
+
     // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
     async function _fichaAutoSaveTariffId(newTariffId) {
         if (!_fichaClientId) return;
         try {
-            await db.collection('users').doc(_fichaClientId).update({
+            const savedId = await _fichaUpdateUserDoc({
                 tariffId: newTariffId,
                 tariffUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
-            // Update local cache
-            if (window.userMap && window.userMap[_fichaClientId]) {
-                window.userMap[_fichaClientId].tariffId = newTariffId;
+            // Update local cache (tanto en el id viejo como el resuelto)
+            if (window.userMap) {
+                if (window.userMap[savedId]) window.userMap[savedId].tariffId = newTariffId;
+                if (window.userMap[_fichaClientId]) window.userMap[_fichaClientId].tariffId = newTariffId;
             }
             _fichaClientData = { ..._fichaClientData, tariffId: newTariffId };
             _fichaShowToast('✓ Tarifa actualizada: ' + (newTariffId || 'sin tarifa'));
-            // Refrescar bloque cuota mensual (si la nueva tarifa cambia el flat_monthly)
             if (typeof _fichaWireFlatRateBlock === 'function') {
                 try { _fichaWireFlatRateBlock(); } catch(_) {}
             }
@@ -1913,16 +1974,20 @@
 
         try {
             if (typeof showLoading === 'function') showLoading();
+            let savedId = _fichaClientId;
             if (Object.keys(updates).length > 0) {
-                await db.collection('users').doc(_fichaClientId).update(updates);
+                // Update resiliente: corrige el docId si la ficha se abrió con
+                // un authUid o alias en vez del docId real.
+                savedId = await _fichaUpdateUserDoc(updates);
             }
             if (compMainUpdate) {
-                await db.collection('users').doc(_fichaClientId).collection('companies').doc('comp_main').set(compMainUpdate, { merge: true });
+                await db.collection('users').doc(savedId).collection('companies').doc('comp_main').set(compMainUpdate, { merge: true });
             }
 
-            // Update local cache
-            if (window.userMap && window.userMap[_fichaClientId]) {
-                Object.assign(window.userMap[_fichaClientId], updates);
+            // Update local cache (id resuelto + id original por si difieren)
+            if (window.userMap) {
+                if (window.userMap[savedId]) Object.assign(window.userMap[savedId], updates);
+                if (window.userMap[_fichaClientId]) Object.assign(window.userMap[_fichaClientId], updates);
             }
             _fichaClientData = { ..._fichaClientData, ...updates };
 
