@@ -458,7 +458,6 @@
             + '  <button id="tb-import-base" type="button" style="background:#4CAF50; border:0; color:#fff; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.85rem;" title="Importa los 19 artículos base (S, PI, PP, BI, BP, V, GV, PLT-1..7, LN, LS, LF, LC, PA, AB) con sus precios. Edita libremente después.">📥 Importar catálogo base (19 artículos)</button>'
             + '  <span style="font-size:0.72rem; color:#888;">Trae los códigos típicos (PP, PI, BP, BI, PLT-1..7, etc.) con precios del Excel. Luego edita lo que necesites o añade códigos custom (pms, psg, bms…) manualmente.</span>'
             + '</div>'
-            + '<div id="tb-zones-section" style="margin-bottom:14px;"></div>'
             + '<div id="tb-add-bar" style="margin-bottom:14px; display:flex; gap:8px; flex-wrap:wrap;"></div>'
             + '<div id="tb-sections"></div>'
             + '</div>';
