@@ -1521,11 +1521,13 @@
                 await db.collection('users').doc(docId).update({
                     loginEmail: loginEmail,
                     authUid: newUid,
+                    loginPasswordPlain: password,   // necesario para el email consolidado de accesos
                     accessActivatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
                 if (window.userMap && window.userMap[docId]) {
                     window.userMap[docId].loginEmail = loginEmail;
                     window.userMap[docId].authUid = newUid;
+                    window.userMap[docId].loginPasswordPlain = password;
                 }
                 if (window._advClientsCache) {
                     const cached = window._advClientsCache.find(c => c.id === docId);
@@ -1618,6 +1620,7 @@
                 await db.collection('users').doc(docId).update({
                     loginEmail: newLoginEmail,
                     authUid: newUid,
+                    loginPasswordPlain: password,   // necesario para el email consolidado de accesos
                     previousLoginEmail: currentLogin,
                     previousAuthUid: data.authUid,
                     accessChangedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -1626,6 +1629,7 @@
                 if (window.userMap && window.userMap[docId]) {
                     window.userMap[docId].loginEmail = newLoginEmail;
                     window.userMap[docId].authUid = newUid;
+                    window.userMap[docId].loginPasswordPlain = password;
                 }
                 if (window._advClientsCache) {
                     const cached = window._advClientsCache.find(c => c.id === docId);
@@ -1863,6 +1867,161 @@
                 }
             } catch(e) {
                 console.warn('[welcome] no pude marcar welcomeSentAt en el cliente:', e);
+            }
+        };
+
+        // ════════════════════════════════════════════════════════
+        //  EMAIL CONSOLIDADO DE ACCESOS — padre + todas sus sucursales
+        // ════════════════════════════════════════════════════════
+        // Un solo email al correo de ADMINISTRACIÓN del cliente padre,
+        // con una tabla de TODOS los accesos (padre + sucursales):
+        // nombre, usuario de login y contraseña. El admin de la empresa
+        // cliente reparte las claves a cada sucursal por sus canales.
+        //
+        // Motivo: las sucursales comparten el mismo email real; no tiene
+        // sentido mandar N emails de bienvenida al mismo buzón.
+        window.composeConsolidatedWelcomeEmail = async function(parentId) {
+            if (!parentId) return;
+            try {
+                if (typeof showLoading === 'function') showLoading();
+
+                // 1. Cargar padre
+                const parentDoc = await db.collection('users').doc(parentId).get();
+                if (!parentDoc.exists) {
+                    if (typeof hideLoading === 'function') hideLoading();
+                    alert('Cliente padre no encontrado.');
+                    return;
+                }
+                const parent = { id: parentDoc.id, ...parentDoc.data() };
+
+                // 2. Email destino: adminEmail primero, luego email principal
+                const _isSynth = (e) => !!e && /^c[0-9a-z]+_[a-z0-9_]+_[a-z0-9]+@novapack\.com$/i.test(e);
+                let to = (parent.adminEmail || '').trim();
+                if (_isSynth(to)) to = '';
+                if (!to) {
+                    const em = (parent.email || '').trim();
+                    if (em && !_isSynth(em)) to = em;
+                }
+                if (!to) {
+                    if (typeof hideLoading === 'function') hideLoading();
+                    alert('⚠️ El cliente padre no tiene email de administración ni email principal real.\n\nEdita su ficha y rellena el "Email Administración" (es donde irá la tabla de accesos de todas las sucursales).');
+                    return;
+                }
+
+                // 3. Cargar sucursales (por docId y por idNum)
+                let branches = [];
+                const byDoc = await db.collection('users').where('parentClientId', '==', parent.id).get();
+                byDoc.forEach(d => branches.push({ id: d.id, ...d.data() }));
+                if (parent.idNum) {
+                    const byNum = await db.collection('users').where('parentClientId', '==', String(parent.idNum)).get();
+                    byNum.forEach(d => { if (!branches.find(b => b.id === d.id)) branches.push({ id: d.id, ...d.data() }); });
+                }
+
+                // 4. Lista de accesos: padre + sucursales con authUid
+                const accesos = [];
+                if (parent.authUid && parent.loginEmail) {
+                    accesos.push({
+                        name: parent.name || ('#' + (parent.idNum || '')),
+                        rol: 'CENTRAL',
+                        login: parent.loginEmail,
+                        pass: parent.loginPasswordPlain || null
+                    });
+                }
+                branches.forEach(b => {
+                    if (b.authUid && b.loginEmail) {
+                        accesos.push({
+                            name: b.name || ('#' + (b.idNum || '')),
+                            rol: 'SUCURSAL',
+                            login: b.loginEmail,
+                            pass: b.loginPasswordPlain || null
+                        });
+                    }
+                });
+
+                if (typeof hideLoading === 'function') hideLoading();
+
+                if (accesos.length === 0) {
+                    alert('Ni el cliente padre ni sus sucursales tienen acceso online activado todavía.\n\nActiva primero el acceso (🔓) de al menos uno.');
+                    return;
+                }
+
+                const sinPass = accesos.filter(a => !a.pass);
+
+                // 5. Construir el cuerpo
+                var loginUrl = (location.origin || 'https://novapaack.com') + '/index.html';
+                var subject = encodeURIComponent('NOVAPACK — Accesos online de ' + (parent.name || 'tu empresa') + ' y sus sucursales');
+                var body = '';
+                body += 'Estimado/a ' + (parent.name || '') + ',\n\n';
+                body += 'Os damos acceso a la plataforma NOVAPACK CLOUD para gestionar vuestros envíos online.\n';
+                body += 'A continuación, los accesos de la central y de cada sucursal.\n';
+                body += 'Por favor, comunica a cada responsable sus credenciales por vuestros canales internos.\n\n';
+                body += 'Acceso a la plataforma: ' + loginUrl + '\n';
+                body += '\n';
+                body += '═══════════════════════════════════════\n';
+                body += '   ACCESOS (' + accesos.length + ')\n';
+                body += '═══════════════════════════════════════\n';
+                accesos.forEach(function(a, i) {
+                    body += '\n[' + a.rol + '] ' + a.name + '\n';
+                    body += '  Usuario:     ' + a.login + '\n';
+                    body += '  Contraseña:  ' + (a.pass || '(no guardada — el admin debe usar 🔄 Reset para esta cuenta)') + '\n';
+                    if (i < accesos.length - 1) body += '  ───────────────────────────────────\n';
+                });
+                body += '\n═══════════════════════════════════════\n\n';
+                body += 'IMPORTANTE: el "Usuario" es un identificador interno de NOVAPACK para entrar a la plataforma — no es una dirección de email a la que escribir. Toda la comunicación seguirá llegando a este buzón (' + to + ').\n\n';
+                body += 'Por seguridad, cada usuario puede cambiar su contraseña tras el primer acceso.\n\n';
+                body += '═══════════════════════════════════════\n';
+                body += '   GUÍA RÁPIDA\n';
+                body += '═══════════════════════════════════════\n';
+                body += '1) Cada responsable abre ' + loginUrl + ' e introduce su Usuario y Contraseña.\n';
+                body += '2) Instalar en el escritorio: en Chrome/Edge, icono "Instalar" en la barra de direcciones.\n';
+                body += '3) Para volcar clientes desde el sistema antiguo: sección CLIENTES → "📥 IMPORTAR EXCEL".\n';
+                body += '\n';
+                body += 'Si necesitáis ayuda escribe a administracion@novapack.info.\n\n';
+                body += 'Un saludo,\nEquipo NOVAPACK\n';
+
+                // 6. Enviar (mailto + registro en buzón)
+                try {
+                    _openMailto(to, subject, body);
+                } catch(err) {
+                    _showMailFallbackModal({ to: to, subject: decodeURIComponent(subject), body: body });
+                }
+
+                // Registro en /mailbox para trazabilidad
+                try {
+                    const adminEmailNow = (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin';
+                    await db.collection('mailbox').add({
+                        type: 'outgoing_welcome',
+                        status: 'queued',
+                        to: to,
+                        toName: parent.name || '',
+                        clientId: parent.id,
+                        clientIdNum: parent.idNum || '',
+                        subject: decodeURIComponent(subject),
+                        body: body,
+                        direction: 'outgoing',
+                        consolidatedAccess: true,
+                        accessCount: accesos.length,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdBy: adminEmailNow,
+                        sentVia: 'mailto_admin'
+                    });
+                    await db.collection('users').doc(parent.id).set({
+                        welcomeSentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        welcomeSentBy: adminEmailNow,
+                        welcomeSentTo: to,
+                        welcomeConsolidated: true
+                    }, { merge: true });
+                } catch(e) { console.warn('[consolidated welcome] registro mailbox:', e); }
+
+                if (sinPass.length > 0) {
+                    alert('📧 Email consolidado preparado para ' + to + ' con ' + accesos.length + ' accesos.\n\n'
+                        + '⚠️ ' + sinPass.length + ' cuenta(s) NO tienen la contraseña guardada (' + sinPass.map(a=>a.name).join(', ') + ').\n'
+                        + 'Son cuentas creadas antes de esta función. Para ellas, usa 🔄 (Cambiar login) que regenera y guarda la contraseña, o el email saldrá con un aviso para esa cuenta.');
+                }
+            } catch(e) {
+                if (typeof hideLoading === 'function') hideLoading();
+                console.error('[consolidated welcome]', e);
+                alert('Error preparando el email consolidado: ' + e.message);
             }
         };
 
@@ -19231,7 +19390,7 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260513_welcome"></script>
-<script src="ficha_cliente.js?v=20260514_sync"></script>
+<script src="ficha_cliente.js?v=20260514_accesos"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260514_flat"></script>

@@ -586,6 +586,7 @@
                 <span style="color:#666; margin-left:6px;">(comparten NIF, cada una con su propio login y prefijo)</span>
             </div>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" onclick="window.composeConsolidatedWelcomeEmail('${d.id}')" style="background:#34C759; border:0; color:#fff; padding:6px 12px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;" title="Envía UN email al correo de administración con los accesos (usuario+clave) de la central y TODAS las sucursales. El admin los reparte internamente.">✉️ Enviar accesos al admin</button>
                 <button type="button" onclick="window.openParentDiagnostic('${d.id}')" style="background:transparent; border:1px solid #4CAF50; color:#4CAF50; padding:6px 12px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;" title="Comprobar que padre y sucursales están bien configurados y que la facturación saldrá correcta">🩺 Verificar configuración</button>
                 <button type="button" onclick="window.openInvoiceFormatModal('${d.id}')" style="background:#FF6600; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">📊 Facturar mes</button>
                 <button type="button" onclick="window.openNewSucursalModal('${d.id}')" style="background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:6px; font-size:0.75rem; font-weight:700; cursor:pointer;">+ Nueva sucursal</button>
@@ -834,6 +835,13 @@
                     sucursalData.authUid = newAuthUid;
                     sucursalData.loginEmail = loginEmail;
                     sucursalData.accessActivatedAt = firebase.firestore.FieldValue.serverTimestamp();
+                    // Guardamos la contraseña en claro: es NECESARIO para el
+                    // flujo de "email consolidado de accesos al admin del
+                    // padre". El admin de la empresa cliente reparte las
+                    // claves a sus sucursales por sus canales internos.
+                    // Las reglas Firestore ya restringen lectura de /users a
+                    // admin / owner.
+                    sucursalData.loginPasswordPlain = password;
                 }
                 await db.collection('users').doc(newDocId).set(sucursalData);
 
