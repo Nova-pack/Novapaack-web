@@ -439,16 +439,25 @@ async function loadActiveTariff() {
 
     try {
         let tariffData = null;
-        // 1. Try Global Tariff if assigned
+
+        // 1. Tarifa global asignada — probar varias formas del docId
+        //    porque tariffId puede venir como 'GLOBAL_X_v2', 'X', etc.
         if (userData && userData.tariffId) {
-            const globalDoc = await db.collection('tariffs').doc("GLOBAL_" + userData.tariffId).get();
-            if (globalDoc.exists) {
-                tariffData = globalDoc.data();
-                console.log("Cargando Tarifa Global:", userData.tariffId);
+            const tid = String(userData.tariffId).trim();
+            const candidates = [tid, 'GLOBAL_' + tid, 'GLOBAL_' + tid + '_v2'];
+            for (const c of candidates) {
+                try {
+                    const d = await db.collection('tariffs').doc(c).get();
+                    if (d.exists) {
+                        tariffData = d.data();
+                        console.log("Cargando Tarifa Global:", c);
+                        break;
+                    }
+                } catch(e) {}
             }
         }
 
-        // 2. Fallback to Specific User Tariff
+        // 2. Fallback: tarifa específica del usuario (por su uid)
         if (!tariffData) {
             const userDoc = await db.collection('tariffs').doc(currentUser.uid).get();
             if (userDoc.exists) {
@@ -457,10 +466,31 @@ async function loadActiveTariff() {
             }
         }
 
-        if (tariffData && tariffData.items) {
+        if (!tariffData || !tariffData.items) return;
+
+        // ─── Extraer artículos según versión de la tarifa ───
+        if (Array.isArray(tariffData.items)) {
+            // V2: items es un array de objetos { id, name, mode, basePrice, ... }
+            let items = tariffData.items.slice();
+            // Aplicar overrides del cliente (precios/exclusiones personalizadas)
+            if (userData && userData.tariffOverrides && typeof window.pricingEngine !== 'undefined') {
+                try {
+                    const resolved = window.pricingEngine.resolveTariff(tariffData, userData.tariffOverrides);
+                    if (resolved && Array.isArray(resolved.items)) items = resolved.items;
+                } catch(e) { console.warn('resolveTariff falló, uso items base:', e.message); }
+            }
+            // El cliente NO elige "cuota mensual" como tipo de bulto → filtrar flat_monthly.
+            // Mostramos el NOMBRE del artículo (lo que el cliente entiende).
+            activeTariffArticles = items
+                .filter(it => it && it.mode !== 'flat_monthly')
+                .map(it => (it.name || it.id || '').toString().trim())
+                .filter(Boolean);
+        } else if (typeof tariffData.items === 'object') {
+            // V1 legacy: items es un objeto { "nombre artículo": precio }
             activeTariffArticles = Object.keys(tariffData.items);
-            console.log("Artículos de Tarifa activos:", activeTariffArticles);
         }
+
+        console.log("Artículos de Tarifa activos (" + activeTariffArticles.length + "):", activeTariffArticles);
     } catch (e) {
         console.warn("Error al cargar tarifa activa:", e);
     }
