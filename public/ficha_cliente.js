@@ -456,6 +456,12 @@
 
     // Botón de refrescar manual por si el admin acaba de crear una tarifa
     window._fichaReloadTariffs = function() { _fichaLoadTariffs(true); };
+    // Expuesto para que el constructor de tarifas pueda refrescar el bloque
+    // de cuota mensual de la ficha tras editar/guardar una tarifa.
+    // (función declarada más abajo — hoisted, así que la referencia es válida)
+    window._fichaWireFlatRateBlock = function() {
+        try { return _fichaWireFlatRateBlock(); } catch(e) { console.warn('[ficha] wireFlatRate:', e); }
+    };
 
     // ============================================================
     //  SUB-TAB NAVIGATION
@@ -1438,8 +1444,20 @@
     async function _fichaWireFlatRateBlock() {
         const wrap = document.getElementById('fc-cuota-block');
         if (!wrap) return;
+        if (!_fichaClientData) return;
+        // Refrescar _fichaClientData desde Firestore para que la cuota mostrada
+        // refleje el último estado (importante tras editar la tarifa en el
+        // constructor — el importe debe actualizarse aquí).
+        try {
+            if (_fichaClientId) {
+                const fresh = await db.collection('users').doc(_fichaClientId).get();
+                if (fresh.exists) {
+                    _fichaClientData = { ..._fichaClientData, ...fresh.data(), id: _fichaClientId };
+                }
+            }
+        } catch(_) {}
+        // d capturado DESPUÉS del refresh para que tenga el tariffId actual.
         const d = _fichaClientData;
-        if (!d) return;
 
         const _money = (n) => (Number(n) || 0).toFixed(2).replace('.', ',') + ' €';
 

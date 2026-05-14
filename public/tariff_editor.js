@@ -418,7 +418,12 @@
         }));
     }
 
-    window.openTariffBuilder = async function openTariffBuilder(tariffId) {
+    // openTariffBuilder(tariffId, assignToClientId)
+    //   tariffId         → tarifa existente a editar (null = nueva)
+    //   assignToClientId → si viene, tras guardar se asigna la tarifa a ese
+    //                      cliente automáticamente (lo usa "+ Crear nueva"
+    //                      desde el gestor de tarifa del cliente).
+    window.openTariffBuilder = async function openTariffBuilder(tariffId, assignToClientId) {
         let tariff;
         if (tariffId) {
             tariff = await _loadTariff(tariffId);
@@ -427,13 +432,13 @@
         if (!tariff) {
             // Pasa por el picker de tipo antes de entrar al editor
             return _openTariffTypePicker(function(preset) {
-                _renderTariffBuilder(preset);
+                _renderTariffBuilder(preset, assignToClientId);
             });
         }
-        _renderTariffBuilder(tariff);
+        _renderTariffBuilder(tariff, assignToClientId);
     };
 
-    function _renderTariffBuilder(tariff) {
+    function _renderTariffBuilder(tariff, assignToClientId) {
         // Modal overlay simple (revertido del experimento ERP por bug
         // "pantalla negra" reportado por user 2026-05-14).
         const existing = document.getElementById('tariff-builder-modal');
@@ -781,9 +786,45 @@
             }
             try {
                 const id = await _saveTariff(tariff);
-                alert('✅ Tarifa guardada: ' + id);
+
+                // ─── Si se creó/editó desde el gestor de un cliente, asignársela ──
+                let assignedMsg = '';
+                if (assignToClientId) {
+                    try {
+                        await db.collection('users').doc(assignToClientId).update({
+                            tariffId: id,
+                            tariffUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        if (window.userMap && window.userMap[assignToClientId]) {
+                            window.userMap[assignToClientId].tariffId = id;
+                        }
+                        assignedMsg = '\n\n👉 Asignada automáticamente al cliente.';
+                    } catch(e) {
+                        console.warn('[tariff] no pude auto-asignar al cliente:', e.message);
+                        assignedMsg = '\n\n⚠️ No se pudo auto-asignar al cliente: ' + e.message;
+                    }
+                }
+
+                alert('✅ Tarifa guardada: ' + id + assignedMsg);
                 modal.remove();
-                if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+
+                // ─── SINCRONIZACIÓN GLOBAL ───────────────────────────
+                // Refrescar TODO lo que muestre tarifas para que el cambio
+                // se vea sin tener que recargar la página.
+                if (typeof window.renderTariffCards === 'function') {
+                    try { window.renderTariffCards(); } catch(_) {}
+                }
+                if (typeof populateGlobalTariffsDatalist === 'function') {
+                    try { populateGlobalTariffsDatalist(); } catch(_) {}
+                }
+                // Si hay una ficha de cliente abierta: recargar su desplegable
+                // de tarifas y refrescar el bloque de cuota mensual.
+                if (typeof window._fichaReloadTariffs === 'function') {
+                    try { window._fichaReloadTariffs(); } catch(_) {}
+                }
+                if (typeof window._fichaWireFlatRateBlock === 'function') {
+                    try { window._fichaWireFlatRateBlock(); } catch(_) {}
+                }
             } catch(e) { alert('Error: ' + e.message); }
         };
 
@@ -1006,11 +1047,14 @@
             baseTariff = tariffs.find(t => t.id === v) || await _loadTariff(v);
             renderItems();
         });
-        document.getElementById('tm-new').onclick = () => { modal.remove(); window.openTariffBuilder(null); };
+        // "+ Crear nueva": abre el constructor y, al guardar, asigna
+        // automáticamente la tarifa nueva a ESTE cliente.
+        document.getElementById('tm-new').onclick = () => { modal.remove(); window.openTariffBuilder(null, clientId); };
         document.getElementById('tm-edit-base').onclick = () => {
             if (!baseTariff) { alert('Primero selecciona una tarifa base.'); return; }
             modal.remove();
-            window.openTariffBuilder(baseTariff.id);
+            // Editar la base — también la mantenemos asignada a este cliente.
+            window.openTariffBuilder(baseTariff.id, clientId);
         };
         document.getElementById('tm-close').onclick = () => modal.remove();
         document.getElementById('tm-save').onclick = async () => {
