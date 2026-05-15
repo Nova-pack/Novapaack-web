@@ -18,6 +18,7 @@ const MAILBOX_CATEGORIES = {
     consulta_albaran: { emoji: '📦', label: 'Consulta Albarán' },
     reclamacion:      { emoji: '⚠️', label: 'Reclamación' },
     facturacion:      { emoji: '🏢', label: 'Facturación' },
+    discrepancia:     { emoji: '✏️', label: 'Albaranes Discrepantes' },
     otro:             { emoji: '📧', label: 'Otros' }
 };
 

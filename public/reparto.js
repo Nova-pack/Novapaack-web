@@ -3913,6 +3913,7 @@ function initApp() {
             try {
                 await db.collection('mailbox').add({
                     type: 'outgoing_discrepancy',
+                    category: 'discrepancia',
                     status: 'queued',
                     direction: 'outgoing',
                     ticketRef: d.id || docId,
