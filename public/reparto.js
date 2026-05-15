@@ -4132,63 +4132,72 @@ function initApp() {
     // ============ DESTINATARIO ============
 
     // Carga destinatarios habituales del remitente seleccionado (porte PAGADO).
-    // Lee /tickets where senderUid == remitente.docId (last 50) y extrae únicos.
+    // Lee /tickets where senderUid == remitente.docId. Sin orderBy para evitar
+    // requerir índice compuesto. Limite alto y ordenamos por createdAt en JS.
     function _pndLoadHistoryDestinations() {
         if (!_pndPickedClient || !_pndPickedClient.docId) return Promise.resolve([]);
         if (_pndDestCacheHistory) return Promise.resolve(_pndDestCacheHistory);
-        return db.collection('tickets')
-            .where('senderUid', '==', _pndPickedClient.docId)
-            .orderBy('createdAt', 'desc')
-            .limit(50).get()
+
+        function _processSnap(snap) {
+            var seen = {};
+            var arr = [];
+            snap.forEach(function(s) {
+                var t = s.data() || {};
+                var name = t.receiver || t.clientName || '';
+                if (!name) return;
+                var cp = t.cp || t.receiverCp || '';
+                var loc = t.localidad || t.city || '';
+                var key = (name + '|' + cp + '|' + loc).toLowerCase();
+                if (seen[key]) { seen[key].count++; return; }
+                var rec = {
+                    source: 'history',
+                    name: name,
+                    cp: cp,
+                    localidad: loc,
+                    address: t.address || '',
+                    phone: t.phone || t.receiverPhone || '',
+                    nif: t.receiverNif || '',
+                    receiverUid: t.receiverUid || '',
+                    count: 1,
+                    _ts: (t.createdAt && typeof t.createdAt.toMillis === 'function') ? t.createdAt.toMillis() : 0
+                };
+                seen[key] = rec;
+                arr.push(rec);
+            });
+            arr.sort(function(a, b) {
+                // Prioridad: mas usados, luego mas recientes
+                var c = (b.count || 0) - (a.count || 0);
+                if (c !== 0) return c;
+                return (b._ts || 0) - (a._ts || 0);
+            });
+            return arr;
+        }
+
+        // Intento 1: senderUid (campo que escribimos hoy)
+        return db.collection('tickets').where('senderUid', '==', _pndPickedClient.docId).limit(200).get()
             .then(function(snap) {
-                var seen = {};
-                var arr = [];
-                snap.forEach(function(s) {
-                    var t = s.data() || {};
-                    var name = t.receiver || t.clientName || '';
-                    if (!name) return;
-                    var cp = t.cp || t.receiverCp || '';
-                    var loc = t.localidad || t.city || '';
-                    var key = (name + '|' + cp + '|' + loc).toLowerCase();
-                    if (seen[key]) { seen[key].count++; return; }
-                    var rec = {
-                        source: 'history',
-                        name: name,
-                        cp: cp,
-                        localidad: loc,
-                        address: t.address || '',
-                        phone: t.phone || t.receiverPhone || '',
-                        nif: t.receiverNif || '',
-                        receiverUid: t.receiverUid || '',
-                        count: 1
-                    };
-                    seen[key] = rec;
-                    arr.push(rec);
-                });
-                arr.sort(function(a, b) { return (b.count || 0) - (a.count || 0); });
-                _pndDestCacheHistory = arr;
-                return arr;
+                var arr = _processSnap(snap);
+                if (arr.length) { _pndDestCacheHistory = arr; return arr; }
+                // Intento 2: uid (campo legacy en tickets antiguos)
+                return db.collection('tickets').where('uid', '==', _pndPickedClient.docId).limit(200).get()
+                    .then(function(snap2) {
+                        var arr2 = _processSnap(snap2);
+                        if (arr2.length) { _pndDestCacheHistory = arr2; return arr2; }
+                        // Intento 3: nombre del remitente literal
+                        return db.collection('tickets').where('sender', '==', _pndPickedClient.name).limit(200).get()
+                            .then(function(snap3) {
+                                var arr3 = _processSnap(snap3);
+                                _pndDestCacheHistory = arr3;
+                                return arr3;
+                            });
+                    });
             })
             .catch(function(err) {
-                console.warn('[pnd] history dest fail (probable falta de senderUid en tickets antiguos):', err);
-                // Fallback: por nombre sender literal
-                return db.collection('tickets')
-                    .where('sender', '==', _pndPickedClient.name)
-                    .orderBy('createdAt', 'desc').limit(50).get()
+                console.warn('[pnd] history dest fail:', err && err.message);
+                // Fallback final: por nombre sender literal
+                return db.collection('tickets').where('sender', '==', _pndPickedClient.name).limit(200).get()
                     .then(function(snap) {
-                        var seen = {}; var arr = [];
-                        snap.forEach(function(s) {
-                            var t = s.data() || {};
-                            var name = t.receiver || t.clientName || '';
-                            if (!name) return;
-                            var cp = t.cp || '';
-                            var loc = t.localidad || t.city || '';
-                            var key = (name + '|' + cp + '|' + loc).toLowerCase();
-                            if (seen[key]) { seen[key].count++; return; }
-                            var rec = { source:'history', name:name, cp:cp, localidad:loc, address:t.address||'', phone:t.phone||'', nif:'', receiverUid:'', count:1 };
-                            seen[key] = rec; arr.push(rec);
-                        });
-                        arr.sort(function(a,b){ return (b.count||0)-(a.count||0); });
+                        var arr = _processSnap(snap);
                         _pndDestCacheHistory = arr;
                         return arr;
                     })
@@ -4215,16 +4224,41 @@ function initApp() {
             });
     }
 
+    function _pndShowDestStatus(msg, color) {
+        var wrap = document.getElementById('pnd-dest-results');
+        if (!wrap) return;
+        wrap.style.display = 'block';
+        wrap.innerHTML = '<div style="padding:10px; font-size:0.78rem; color:' + (color || '#888') + '; text-align:center;">' + msg + '</div>';
+    }
+
     function _pndPreloadDestSource() {
         if (_pndPorte === 'PAGADO') {
+            if (!_pndPickedClient || !_pndPickedClient.docId) {
+                _pndShowDestStatus('Selecciona primero el remitente arriba para ver sus destinatarios habituales.', '#FFB300');
+                return;
+            }
+            _pndShowDestStatus('Cargando destinatarios habituales…', '#5DADE2');
             _pndLoadHistoryDestinations().then(function(list) {
                 console.log('[pnd] destinatarios habituales:', list.length);
-                _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                if (!list.length) {
+                    _pndShowDestStatus('Sin historial de envíos para ' + (_pndPickedClient.name || 'este remitente') + '. Introduce el destinatario manualmente.', '#FFB300');
+                } else {
+                    _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                }
+            }).catch(function(err) {
+                _pndShowDestStatus('Error cargando historial: ' + (err.message || err), '#E53935');
             });
         } else if (_pndPorte === 'DEBIDO') {
+            _pndShowDestStatus('Cargando clientes NOVAPACK…', '#5DADE2');
             _pndLoadGlobalClients().then(function(list) {
                 console.log('[pnd] clientes globales:', list.length);
-                _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                if (!list.length) {
+                    _pndShowDestStatus('Directorio global vacío. Pídele al admin que pulse "📋 Reconstruir directorios" en Alertas Pickup.', '#FFB300');
+                } else {
+                    _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                }
+            }).catch(function(err) {
+                _pndShowDestStatus('Error cargando directorio: ' + (err.message || err), '#E53935');
             });
         }
     }
@@ -4253,8 +4287,11 @@ function initApp() {
         }
 
         if (!matches.length) {
+            // Si la lista origen está vacía, no machacar el mensaje de estado.
+            // Solo mostramos "sin resultados" si hay query y la fuente sí tiene datos.
+            if (!list.length) return;
             wrap.style.display = !q ? 'none' : 'block';
-            wrap.innerHTML = q ? '<div style="padding:10px; font-size:0.76rem; color:#888;">Sin resultados. Usa "introducir manualmente".</div>' : '';
+            wrap.innerHTML = q ? '<div style="padding:10px; font-size:0.76rem; color:#888;">Sin resultados para "' + _escDest(q) + '". Usa "introducir manualmente".</div>' : '';
             return;
         }
 
