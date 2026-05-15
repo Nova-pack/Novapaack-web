@@ -15870,7 +15870,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
             function initDriverIncidentsListener() {
                 if (driverIncidentsUnsub) driverIncidentsUnsub();
                 driverIncidentsUnsub = db.collection('tickets')
-                    .where('status', 'in', ['Incidencia', 'Devuelto'])
+                    .where('status', 'in', ['Incidencia', 'Devuelto', 'pending_confirmation', 'pending_client_completion'])
                     .onSnapshot(snap => {
                         const count = snap.docs.length;
                         const btn = document.getElementById('toolbar-btn-driver-incidents');
@@ -15891,7 +15891,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
 
                 try {
                     const snap = await db.collection('tickets')
-                        .where('status', 'in', ['Incidencia', 'Devuelto'])
+                        .where('status', 'in', ['Incidencia', 'Devuelto', 'pending_confirmation', 'pending_client_completion'])
                         .get();
 
                     if (snap.empty) {
@@ -15942,6 +15942,13 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                             tipo = '↩️ Devuelto';
                             tipoColor = '#9C27B0';
                             motivo = t.incidentReason || t.returnReason || 'Sin detalle';
+                        } else if (t.status === 'pending_client_completion') {
+                            tipo = '📦 Pre-albarán';
+                            tipoColor = '#E53935';
+                            var bultosMsg = (t.pickupBultos || 0) + ' bulto(s)';
+                            var porteMsg = t.paymentType ? (' · Porte ' + t.paymentType) : '';
+                            var destMsg = t.receiver ? (' · → ' + t.receiver) : ' · sin destinatario';
+                            motivo = 'Recogido sin albarán por ' + (t.pickupBy || 'repartidor') + ': ' + bultosMsg + porteMsg + destMsg + (t.pickupNote ? ' · ' + t.pickupNote : '');
                         }
 
                         html += '<tr style="border-bottom:1px solid #222;" onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'transparent\'">';

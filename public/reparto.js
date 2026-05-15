@@ -3916,11 +3916,25 @@ function initApp() {
             } catch(_) {}
 
             // Notificación al cliente en SU buzón (user_notifications)
+            // Resolver authUid del cliente — el listener del cliente filtra por
+            // uid == firebase auth uid, no por docId.
             try {
-                var notifUidD = d.uid || d.senderUid || '';
-                if (notifUidD) {
+                var clientDocIdD = d.uid || d.senderUid || '';
+                if (clientDocIdD) {
+                    var clientAuthUidD = '';
+                    try {
+                        var cliSnapD = await db.collection('users').doc(clientDocIdD).get();
+                        if (cliSnapD.exists) {
+                            var cdD = cliSnapD.data() || {};
+                            clientAuthUidD = cdD.authUid || cdD.uid || '';
+                        }
+                    } catch(_) {}
+                    if (!clientAuthUidD) {
+                        console.warn('[disc] cliente sin authUid — notificación no llegará. docId:', clientDocIdD);
+                    } else {
                     var notifDataD = {
-                        uid: notifUidD,
+                        uid: clientAuthUidD,
+                        clientDocId: clientDocIdD,
                         type: 'discrepancy',
                         title: '✏️ Discrepancia en albarán ' + (d.id || docId),
                         body: 'El repartidor ha registrado una corrección de artículos en la recogida. Motivo: ' + (reason || '(sin motivo)') + '. La factura se emitirá según los items realmente recogidos.',
@@ -3932,6 +3946,7 @@ function initApp() {
                     };
                     if (photoUrl) notifDataD.photoURL = photoUrl;
                     await db.collection('user_notifications').add(notifDataD);
+                    }
                 }
             } catch(ne) { console.warn('No se pudo notificar al cliente:', ne); }
 
@@ -4667,29 +4682,46 @@ function initApp() {
             }
 
             // 5) Notificación al cliente (user_notifications)
+            // CRÍTICO: el listener del cliente filtra por uid == firebase auth uid,
+            // NO por docId de Firestore. Resolvemos el authUid del cliente y lo
+            // usamos como uid de la notificación.
             try {
                 if (clientInfo.docId) {
-                    var bodyParts = ['El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán.'];
-                    bodyParts.push('Porte: ' + _pndPorte + '.');
-                    if (destInfo) bodyParts.push('Destinatario apuntado: ' + destInfo.name + (destInfo.localidad ? ' (' + destInfo.localidad + ')' : '') + '.');
-                    else bodyParts.push('Sin destinatario — complétalo desde tu app.');
-                    bodyParts.push('Plazo de 24h para completar/impugnar.');
-                    var notif = {
-                        uid: clientInfo.docId,
-                        type: 'pickup_no_albaran',
-                        title: '⚠️ Recogida sin albarán — completa en 24h',
-                        body: bodyParts.join(' '),
-                        ticketId: label,
-                        docId: newDocId,
-                        reportedBy: currentDriverName || '',
-                        bultos: bultos,
-                        paymentType: _pndPorte,
-                        impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                        read: false
-                    };
-                    if (photoUrl) notif.photoURL = photoUrl;
-                    await db.collection('user_notifications').add(notif);
+                    var clientAuthUid = '';
+                    try {
+                        var cliSnap = await db.collection('users').doc(clientInfo.docId).get();
+                        if (cliSnap.exists) {
+                            var cd = cliSnap.data() || {};
+                            clientAuthUid = cd.authUid || cd.uid || '';
+                        }
+                    } catch(authErr) { console.warn('[pnd] no se pudo leer authUid:', authErr); }
+
+                    if (!clientAuthUid) {
+                        console.warn('[pnd] cliente sin authUid — la notificación no llegará a su buzón. docId:', clientInfo.docId);
+                    } else {
+                        var bodyParts = ['El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán.'];
+                        bodyParts.push('Porte: ' + _pndPorte + '.');
+                        if (destInfo) bodyParts.push('Destinatario apuntado: ' + destInfo.name + (destInfo.localidad ? ' (' + destInfo.localidad + ')' : '') + '.');
+                        else bodyParts.push('Sin destinatario — complétalo desde tu app.');
+                        bodyParts.push('Plazo de 24h para completar/impugnar.');
+                        var notif = {
+                            uid: clientAuthUid,
+                            clientDocId: clientInfo.docId,
+                            type: 'pickup_no_albaran',
+                            title: '⚠️ Recogida sin albarán — completa en 24h',
+                            body: bodyParts.join(' '),
+                            ticketId: label,
+                            docId: newDocId,
+                            reportedBy: currentDriverName || '',
+                            bultos: bultos,
+                            paymentType: _pndPorte,
+                            impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            read: false
+                        };
+                        if (photoUrl) notif.photoURL = photoUrl;
+                        await db.collection('user_notifications').add(notif);
+                    }
                 }
             } catch(ne) { console.warn('[pnd] user notif fail:', ne); }
 
