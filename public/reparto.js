@@ -1699,6 +1699,11 @@ function initApp() {
             '</div>';
         }).join('');
 
+        // Exponer deliveries al scope global para que el copiloto (y otros módulos)
+        // puedan acceder sin necesidad de live access al IIFE de reparto.js.
+        try { window.deliveries = deliveries; } catch(_) {}
+        try { window.dispatchEvent(new CustomEvent('deliveries-rendered', { detail: { count: deliveries.length } })); } catch(_) {}
+
         // Card click → detail modal
         container.querySelectorAll('.delivery-card').forEach(function(card) {
             card.addEventListener('click', function(e) {
@@ -1881,6 +1886,7 @@ function initApp() {
     window.openGPS = openGPS;
 
     // --- DETAIL MODAL ---
+    window.showDetailModal = showDetailModal;
     function showDetailModal(d) {
         var modal = document.getElementById('detail-modal');
         var content = document.getElementById('modal-content');
