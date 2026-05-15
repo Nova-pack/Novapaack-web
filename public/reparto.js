@@ -1004,26 +1004,41 @@ function initApp() {
             showLoading();
             try {
                 currentDriverPhone = normalizePhone(user.phoneNumber);
-                console.log('[REPARTO] Autenticado:', currentDriverPhone);
+                console.log('[REPARTO] Autenticado. Teléfono crudo:', user.phoneNumber, '→ normalizado:', currentDriverPhone);
 
                 var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
                 var found = false;
                 var foundRouteLabel = '';
                 var driverNames = [];
+                var allRoutes = []; // para diagnóstico
+                var closeMatches = []; // por últimos 4 dígitos
 
                 phonesSnap.forEach(function(doc) {
                     var d = doc.data();
                     var routePhone = normalizePhone(d.number);
+                    allRoutes.push({ label: d.label || '(sin label)', raw: d.number, normalized: routePhone });
                     if (routePhone === currentDriverPhone) {
                         found = true;
                         foundRouteLabel = d.label || '';
-                        // Collect all configured driver names
                         if (d.driverName) driverNames.push(d.driverName);
                         if (d.driverName2) driverNames.push(d.driverName2);
                         if (d.driverName3) driverNames.push(d.driverName3);
                         if (d.driverName4) driverNames.push(d.driverName4);
+                    } else if (routePhone && currentDriverPhone && routePhone.slice(-4) === currentDriverPhone.slice(-4)) {
+                        closeMatches.push({ label: d.label || '?', raw: d.number, normalized: routePhone });
                     }
                 });
+
+                console.log('[REPARTO] Rutas configuradas en config/phones/list (' + allRoutes.length + '):', allRoutes);
+                if (!found) {
+                    console.warn('[REPARTO] ❌ NO se encontró ruta con teléfono ' + currentDriverPhone);
+                    if (closeMatches.length) {
+                        console.warn('[REPARTO] Rutas con últimos 4 dígitos coincidentes (posible typo en config):', closeMatches);
+                    }
+                    showToast('⚠️ Tu teléfono (' + currentDriverPhone + ') no está asignado a ninguna ruta. Avisa al admin para que lo configure en Control de Rutas.', 'warning', 8000);
+                } else {
+                    console.log('[REPARTO] ✅ Ruta encontrada:', foundRouteLabel);
+                }
 
                 currentRouteLabel = foundRouteLabel;
 
