@@ -3909,7 +3909,27 @@ function initApp() {
                 }
             } catch(_) {}
 
-            // Notificación al cliente vía mailbox (lo verá admin en buzón)
+            // Notificación al cliente en SU buzón (user_notifications)
+            try {
+                var notifUidD = d.uid || d.senderUid || '';
+                if (notifUidD) {
+                    var notifDataD = {
+                        uid: notifUidD,
+                        type: 'discrepancy',
+                        title: '✏️ Discrepancia en albarán ' + (d.id || docId),
+                        body: 'El repartidor ha registrado una corrección de artículos en la recogida. Motivo: ' + (reason || '(sin motivo)') + '. La factura se emitirá según los items realmente recogidos.',
+                        ticketId: d.id || docId,
+                        docId: docId,
+                        reportedBy: currentDriverName,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        read: false
+                    };
+                    if (photoUrl) notifDataD.photoURL = photoUrl;
+                    await db.collection('user_notifications').add(notifDataD);
+                }
+            } catch(ne) { console.warn('No se pudo notificar al cliente:', ne); }
+
+            // Notificación al admin vía mailbox (lo verá en buzón inteligente)
             try {
                 await db.collection('mailbox').add({
                     type: 'outgoing_discrepancy',
