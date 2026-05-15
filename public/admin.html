@@ -3433,6 +3433,9 @@ window.runPublicTicketsBackfill = async function() {
             <button id="trash-subtab-abonos" onclick="trashSwitchTab('abonos')" style="background:transparent; border:none; color:#888; padding:10px 24px; font-size:0.9rem; font-weight:bold; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; display:flex; align-items:center; gap:6px;">
                 <span class="material-symbols-outlined" style="font-size:1rem;">money_off</span> Abonos <span id="trash-count-abonos" style="background:#555; color:#ccc; border-radius:10px; padding:1px 7px; font-size:0.7rem; font-weight:900;">0</span>
             </button>
+            <button id="trash-subtab-users" onclick="trashSwitchTab('users')" style="background:transparent; border:none; color:#888; padding:10px 24px; font-size:0.9rem; font-weight:bold; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; display:flex; align-items:center; gap:6px;">
+                <span class="material-symbols-outlined" style="font-size:1rem;">person_remove</span> Clientes <span id="trash-count-users" style="background:#555; color:#ccc; border-radius:10px; padding:1px 7px; font-size:0.7rem; font-weight:900;">0</span>
+            </button>
         </div>
 
         <!-- Search + Actions -->
@@ -3468,6 +3471,7 @@ window.runPublicTicketsBackfill = async function() {
     var _trashTickets = [];
     var _trashInvoices = [];
     var _trashAbonos = [];
+    var _trashUsers = [];
     var _trashFiltered = [];
     var _currentTrashTab = 'tickets';
 
@@ -3486,16 +3490,18 @@ window.runPublicTicketsBackfill = async function() {
     function _getCurrentItems() {
         if (_currentTrashTab === 'invoices') return _trashInvoices;
         if (_currentTrashTab === 'abonos') return _trashAbonos;
+        if (_currentTrashTab === 'users') return _trashUsers;
         return _trashTickets;
     }
 
     window.trashSwitchTab = function(tab) {
         _currentTrashTab = tab;
-        var tabs = ['tickets', 'invoices', 'abonos'];
-        var colors = { tickets: '#FF9800', invoices: '#2196F3', abonos: '#9C27B0' };
+        var tabs = ['tickets', 'invoices', 'abonos', 'users'];
+        var colors = { tickets: '#FF9800', invoices: '#2196F3', abonos: '#9C27B0', users: '#E53935' };
         tabs.forEach(function(t) {
             var btn = document.getElementById('trash-subtab-' + t);
             var badge = document.getElementById('trash-count-' + t);
+            if (!btn) return;
             if (t === tab) {
                 btn.style.color = colors[t];
                 btn.style.borderBottomColor = colors[t];
@@ -3517,7 +3523,8 @@ window.runPublicTicketsBackfill = async function() {
             var results = await Promise.all([
                 db.collection('deleted_tickets').orderBy('_deletedAt', 'desc').limit(500).get(),
                 db.collection('deleted_invoices').orderBy('_deletedAt', 'desc').limit(500).get(),
-                db.collection('deleted_abonos').orderBy('_deletedAt', 'desc').limit(500).get()
+                db.collection('deleted_abonos').orderBy('_deletedAt', 'desc').limit(500).get(),
+                db.collection('deleted_users').orderBy('_deletedAt', 'desc').limit(500).get().catch(function(){ return { forEach: function(){} }; })
             ]);
 
             _trashTickets = [];
@@ -3526,14 +3533,18 @@ window.runPublicTicketsBackfill = async function() {
             results[1].forEach(function(doc) { _trashInvoices.push({ docId: doc.id, ...doc.data() }); });
             _trashAbonos = [];
             results[2].forEach(function(doc) { _trashAbonos.push({ docId: doc.id, ...doc.data() }); });
+            _trashUsers = [];
+            results[3].forEach(function(doc) { _trashUsers.push({ docId: doc.id, ...doc.data() }); });
 
             // Update badges
             var cT = document.getElementById('trash-count-tickets');
             var cI = document.getElementById('trash-count-invoices');
             var cA = document.getElementById('trash-count-abonos');
+            var cU = document.getElementById('trash-count-users');
             if (cT) cT.textContent = _trashTickets.length;
             if (cI) cI.textContent = _trashInvoices.length;
             if (cA) cA.textContent = _trashAbonos.length;
+            if (cU) cU.textContent = _trashUsers.length;
 
             _renderTrashStats();
             trashFilter();
@@ -3553,20 +3564,21 @@ window.runPublicTicketsBackfill = async function() {
             } else {
                 _trashFiltered = items.filter(function(t) {
                     return [t.id, t.sender, t.receiver, t.erpId, t._deleteReason, t._deleteSource, t.docId,
-                            t.invoiceNum, t.clientName, t.name, t.numero]
+                            t.invoiceNum, t.clientName, t.name, t.numero, t.idNum, t.cif, t.nif, t.email, t.companyName]
                         .join(' ').toLowerCase().indexOf(q) !== -1;
                 });
             }
             if (_currentTrashTab === 'tickets') _renderTrashTableTickets();
             else if (_currentTrashTab === 'invoices') _renderTrashTableInvoices();
-            else _renderTrashTableAbonos();
+            else if (_currentTrashTab === 'abonos') _renderTrashTableAbonos();
+            else _renderTrashTableUsers();
         }, 300);
     };
 
     function _renderTrashStats() {
         var el = document.getElementById('trash-stats');
         if (!el) return;
-        var total = _trashTickets.length + _trashInvoices.length + _trashAbonos.length;
+        var total = _trashTickets.length + _trashInvoices.length + _trashAbonos.length + _trashUsers.length;
         var html = '<div style="background:rgba(255,59,48,0.1); border:1px solid rgba(255,59,48,0.3); border-radius:8px; padding:8px 14px; text-align:center;">' +
             '<div style="font-size:1.3rem; font-weight:900; color:#FF3B30;">' + total + '</div>' +
             '<div style="font-size:0.7rem; color:#aaa;">Total papelera</div></div>';
@@ -3579,11 +3591,14 @@ window.runPublicTicketsBackfill = async function() {
         html += '<div style="background:rgba(156,39,176,0.1); border:1px solid rgba(156,39,176,0.3); border-radius:8px; padding:8px 14px; text-align:center;">' +
             '<div style="font-size:1.1rem; font-weight:900; color:#9C27B0;">' + _trashAbonos.length + '</div>' +
             '<div style="font-size:0.7rem; color:#888;">Abonos</div></div>';
+        html += '<div style="background:rgba(229,57,53,0.1); border:1px solid rgba(229,57,53,0.3); border-radius:8px; padding:8px 14px; text-align:center;">' +
+            '<div style="font-size:1.1rem; font-weight:900; color:#E53935;">' + _trashUsers.length + '</div>' +
+            '<div style="font-size:0.7rem; color:#888;">Clientes</div></div>';
         el.innerHTML = html;
     }
 
     function _emptyMsg() {
-        var labels = { tickets: 'albaranes', invoices: 'facturas', abonos: 'abonos' };
+        var labels = { tickets: 'albaranes', invoices: 'facturas', abonos: 'abonos', users: 'clientes' };
         return '<div style="padding:30px; text-align:center; color:#888;">' +
             '<span class="material-symbols-outlined" style="font-size:2rem; display:block; margin-bottom:8px;">delete_outline</span>' +
             'No hay ' + labels[_currentTrashTab] + ' en la papelera.</div>';
@@ -3714,6 +3729,54 @@ window.runPublicTicketsBackfill = async function() {
         listEl.innerHTML = html;
     }
 
+    function _renderTrashTableUsers() {
+        var listEl = document.getElementById('trash-list');
+        if (!listEl) return;
+        if (_trashFiltered.length === 0) { listEl.innerHTML = _emptyMsg(); return; }
+
+        var html = '<table style="width:100%; border-collapse:collapse; font-size:0.82rem;">';
+        html += '<thead><tr style="background:#1a1a2e; position:sticky; top:0; z-index:1;">';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Nº Cliente</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Nombre / Razón Social</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">NIF / CIF</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Localidad</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Eliminado</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Motivo</th>';
+        html += '<th style="padding:8px; text-align:left; color:#aaa;">Cascada</th>';
+        html += '<th style="padding:8px; text-align:center; color:#aaa; width:200px;">Acciones</th>';
+        html += '</tr></thead><tbody>';
+
+        _trashFiltered.forEach(function(u, i) {
+            var bg = i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)';
+            var reason = u._deleteReason || '-';
+            if (reason.length > 40) reason = reason.substring(0, 40) + '...';
+            var cascadeInfo = '';
+            var c = u._cascadeCounts || {};
+            var parts = [];
+            if (c.tickets) parts.push('🚚 ' + c.tickets);
+            if (c.invoices) parts.push('🧾 ' + c.invoices);
+            if (c.companies) parts.push('🏢 ' + c.companies);
+            cascadeInfo = parts.length ? parts.join(' · ') : '<span style="color:#666;">—</span>';
+
+            html += '<tr style="background:' + bg + '; border-bottom:1px solid #222;">';
+            html += '<td style="padding:6px 8px; color:#E53935; font-weight:bold;">' + _esc(u.idNum || u._originalDocId || u.docId) + '</td>';
+            html += '<td style="padding:6px 8px; color:#eee;">' + _esc(u.name || u.companyName || u.businessName || '-') + '</td>';
+            html += '<td style="padding:6px 8px; color:#ddd;">' + _esc(u.cif || u.nif || '-') + '</td>';
+            html += '<td style="padding:6px 8px; color:#ddd;">' + _esc(u.localidad || u.city || '-') + '</td>';
+            html += '<td style="padding:6px 8px; color:#888; font-size:0.78rem;">' + _formatDate(u._deletedAt) + '</td>';
+            html += '<td style="padding:6px 8px; color:#888; font-size:0.78rem;">' + _esc(reason) + '</td>';
+            html += '<td style="padding:6px 8px; color:#aaa; font-size:0.75rem;">' + cascadeInfo + '</td>';
+            html += '<td style="padding:6px 8px; text-align:center; white-space:nowrap;">' +
+                '<button onclick="restoreUser(\'' + u.docId + '\')" style="background:#4CAF50; border:none; color:white; padding:4px 10px; border-radius:4px; font-size:0.72rem; cursor:pointer; margin-right:4px; font-weight:bold;" title="Restaurar cliente">♻️ Restaurar</button>' +
+                '<button onclick="permanentDeleteTrash(\'users\',\'' + u.docId + '\')" style="background:#FF3B30; border:none; color:white; padding:4px 10px; border-radius:4px; font-size:0.72rem; cursor:pointer;" title="Eliminar definitivamente">Eliminar</button>' +
+                '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<p style="margin-top:14px; font-size:0.72rem; color:#888; line-height:1.5;">⚠️ Al restaurar un cliente vuelven sus datos básicos (ficha + sedes/destinations). Los albaranes y facturas asociados que se eliminaron en cascada están en sus respectivas pestañas — restáuralos uno a uno si los necesitas.</p>';
+        listEl.innerHTML = html;
+    }
+
     // --- RESTORE TICKET ---
     window.restoreTicket = async function(docId) {
         if (!confirm('Restaurar este albaran? Volvera a la coleccion de tickets activos.')) return;
@@ -3779,12 +3842,67 @@ window.runPublicTicketsBackfill = async function() {
         } catch(err) { alert('Error al restaurar abono: ' + err.message); }
     };
 
+    // --- RESTORE USER (cliente eliminado) ---
+    window.restoreUser = async function(docId) {
+        if (!confirm('¿Restaurar este cliente?\n\nVuelve la ficha del cliente y sus sedes/destinations a la colección activa.\n\nLos albaranes y facturas asociados están en sus respectivas pestañas — restáuralos por separado si los necesitas.')) return;
+        try {
+            var snap = await db.collection('deleted_users').doc(docId).get();
+            if (!snap.exists) { alert('No se encontró el cliente en la papelera.'); return; }
+            var data = snap.data();
+            var originalDocId = data._originalDocId || docId;
+            // Limpieza de metadata interna antes de re-escribir
+            delete data._deletedAt; delete data._deletedBy; delete data._deleteReason;
+            delete data._deleteSource; delete data._originalDocId; delete data._cascadeCounts;
+
+            // 1) Restaurar el doc del cliente
+            await db.collection('users').doc(originalDocId).set(data);
+
+            // 2) Restaurar subcollecciones espejadas (companies, destinations)
+            var subRestored = { companies: 0, destinations: 0 };
+            for (var subName of ['companies', 'destinations']) {
+                try {
+                    var subSnap = await db.collection('deleted_users').doc(docId).collection(subName).get();
+                    if (!subSnap.empty) {
+                        var batch = db.batch();
+                        subSnap.forEach(function(sd) {
+                            batch.set(db.collection('users').doc(originalDocId).collection(subName).doc(sd.id), sd.data());
+                            batch.delete(sd.ref);
+                        });
+                        await batch.commit();
+                        subRestored[subName] = subSnap.size;
+                    }
+                } catch(subErr) { console.warn('[restoreUser] sub ' + subName + ' fail:', subErr); }
+            }
+
+            // 3) Eliminar el doc espejo
+            await db.collection('deleted_users').doc(docId).delete();
+
+            alert('Cliente "' + (data.name || data.companyName || originalDocId) + '" restaurado.\n\nSedes recuperadas: ' + subRestored.companies + '\nDestinations recuperadas: ' + subRestored.destinations + '\n\nPara recuperar sus albaranes y facturas, ve a las pestañas correspondientes.');
+            loadTrashBin();
+            // refrescar el listado de clientes si está visible
+            if (typeof loadUsers === 'function') { try { loadUsers('first'); } catch(_) {} }
+        } catch(err) { alert('Error al restaurar cliente: ' + err.message); }
+    };
+
     // --- PERMANENT DELETE (generic) ---
     window.permanentDeleteTrash = async function(type, docId) {
-        var labels = { tickets: 'albaran', invoices: 'factura', abonos: 'abono' };
-        var cols = { tickets: 'deleted_tickets', invoices: 'deleted_invoices', abonos: 'deleted_abonos' };
+        var labels = { tickets: 'albaran', invoices: 'factura', abonos: 'abono', users: 'cliente' };
+        var cols = { tickets: 'deleted_tickets', invoices: 'deleted_invoices', abonos: 'deleted_abonos', users: 'deleted_users' };
         if (!confirm('ELIMINAR DEFINITIVAMENTE este ' + labels[type] + '?\n\nEsta accion NO se puede deshacer.')) return;
         try {
+            // Si es usuario, limpiar subcollecciones espejadas también
+            if (type === 'users') {
+                for (var subName of ['companies', 'destinations']) {
+                    try {
+                        var subSnap = await db.collection('deleted_users').doc(docId).collection(subName).get();
+                        if (!subSnap.empty) {
+                            var batch = db.batch();
+                            subSnap.forEach(function(sd) { batch.delete(sd.ref); });
+                            await batch.commit();
+                        }
+                    } catch(_) {}
+                }
+            }
             await db.collection(cols[type]).doc(docId).delete();
             alert((labels[type].charAt(0).toUpperCase() + labels[type].slice(1)) + ' eliminado definitivamente.');
             loadTrashBin();
@@ -9068,19 +9186,20 @@ window.runPublicTicketsBackfill = async function() {
             window.deleteUser = async (id) => {
                 const uData = userMap[id];
                 if (!uData) { alert("Error: Datos del cliente no encontrados en el sistema."); return; }
-                
-                const confirm1 = confirm(`⚠️ ALERTA: Vas a eliminar al cliente "${uData.name}".\n\n¿Estás completamente seguro de que quieres destruir su acceso?`);
+
+                const confirm1 = confirm(`⚠️ ALERTA: Vas a eliminar al cliente "${uData.name}".\n\nSe enviará a la 🗑️ PAPELERA junto con sus albaranes, facturas y sedes (todo recuperable durante 30 días o hasta vaciar la papelera).\n\n¿Continuar?`);
                 if (!confirm1) return;
-                
-                const code = prompt(`ESTA ACCIÓN NO SE PUEDE DESHACER.\nSe borrarán TODOS sus albaranes, facturas y sedes asociadas.\n\nEscribe "BORRAR" para confirmar la destrucción total:`);
+
+                const code = prompt(`Para confirmar el envío a papelera escribe "BORRAR".\n\n(Puedes restaurarlo después desde la 🗑️ Papelera en la barra superior).`);
                 if (code !== 'BORRAR') {
                     alert("Cancelado. El cliente NO ha sido eliminado.");
                     return;
                 }
+                const reason = prompt('Motivo del borrado (opcional, para auditoría):', '') || '';
 
                 showLoading();
                 try {
-                    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log(`[CASCADE DELETE] Iniciando borrado UID ${id}`);
+                    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log(`[SOFT DELETE] Iniciando borrado UID ${id}`);
                     let batch = db.batch();
                     let operationsCount = 0;
 
@@ -9094,61 +9213,117 @@ window.runPublicTicketsBackfill = async function() {
                     };
 
                     const targetIdNum = String(uData.idNum);
+                    const deleteMeta = {
+                        _deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        _deletedBy: (typeof currentUser !== 'undefined' && currentUser && currentUser.uid) ? currentUser.uid : 'admin',
+                        _deleteReason: reason,
+                        _deleteSource: 'cascade_user_delete:' + id
+                    };
 
-                    // 1. ELIMINAR ALBARANES ASOCIADOS (Global tickets collection)
-                    // Eliminamos tanto por UID interno como por el Nº Lógico (por si fallara algo)
+                    let countedTickets = 0, countedInvoices = 0, countedCompanies = 0, countedDestinations = 0;
+
+                    // 1. ALBARANES → /deleted_tickets (espejo) + delete del original
                     const qUID = await db.collection('tickets').where('uid', '==', id).get();
+                    const ticketIdsSeen = new Set();
                     for (const doc of qUID.docs) {
+                        ticketIdsSeen.add(doc.id);
+                        const tData = doc.data();
+                        batch.set(db.collection('deleted_tickets').doc(doc.id), Object.assign({}, tData, deleteMeta, { _originalDocId: doc.id }));
+                        operationsCount++;
                         batch.delete(doc.ref);
                         operationsCount++;
+                        countedTickets++;
                         await commitBatchIfNeeded();
                     }
 
                     if (targetIdNum && targetIdNum !== 'undefined') {
                         const qClientNum = await db.collection('tickets').where('clientIdNum', '==', targetIdNum).get();
                         for (const doc of qClientNum.docs) {
+                            if (ticketIdsSeen.has(doc.id)) continue;
+                            const tData = doc.data();
+                            batch.set(db.collection('deleted_tickets').doc(doc.id), Object.assign({}, tData, deleteMeta, { _originalDocId: doc.id }));
+                            operationsCount++;
                             batch.delete(doc.ref);
                             operationsCount++;
+                            countedTickets++;
                             await commitBatchIfNeeded();
                         }
                     }
 
-                    // 2. ELIMINAR FACTURAS ASOCIADAS
+                    // 2. FACTURAS → /deleted_invoices (espejo) + delete del original
                     const invUID = await db.collection('invoices').where('uid', '==', id).get();
+                    const invoiceIdsSeen = new Set();
                     for (const doc of invUID.docs) {
+                        invoiceIdsSeen.add(doc.id);
+                        const iData = doc.data();
+                        batch.set(db.collection('deleted_invoices').doc(doc.id), Object.assign({}, iData, deleteMeta, { _originalDocId: doc.id }));
+                        operationsCount++;
                         batch.delete(doc.ref);
                         operationsCount++;
+                        countedInvoices++;
                         await commitBatchIfNeeded();
                     }
-                    
+
                     if (targetIdNum && targetIdNum !== 'undefined') {
                         const invClientNum = await db.collection('invoices').where('clientIdNum', '==', targetIdNum).get();
                         for (const doc of invClientNum.docs) {
+                            if (invoiceIdsSeen.has(doc.id)) continue;
+                            const iData = doc.data();
+                            batch.set(db.collection('deleted_invoices').doc(doc.id), Object.assign({}, iData, deleteMeta, { _originalDocId: doc.id }));
+                            operationsCount++;
                             batch.delete(doc.ref);
                             operationsCount++;
+                            countedInvoices++;
                             await commitBatchIfNeeded();
                         }
                     }
 
-                    // 3. ELIMINAR SUBCOLECCIONES INTERNAS (Sedes/Companies)
+                    // 3. SUBCOLECCIONES (Sedes/Companies) → espejo en /deleted_users/{id}/companies
                     const compSnap = await db.collection('users').doc(id).collection('companies').get();
                     for (const doc of compSnap.docs) {
+                        batch.set(db.collection('deleted_users').doc(id).collection('companies').doc(doc.id), doc.data());
+                        operationsCount++;
                         batch.delete(doc.ref);
                         operationsCount++;
+                        countedCompanies++;
                         await commitBatchIfNeeded();
                     }
 
-                    // 4. ELIMINAR DOCUMENTO MATRIZ DEL USUARIO
+                    // 3b. Destinations → espejo
+                    try {
+                        const destSnap = await db.collection('users').doc(id).collection('destinations').get();
+                        for (const doc of destSnap.docs) {
+                            batch.set(db.collection('deleted_users').doc(id).collection('destinations').doc(doc.id), doc.data());
+                            operationsCount++;
+                            batch.delete(doc.ref);
+                            operationsCount++;
+                            countedDestinations++;
+                            await commitBatchIfNeeded();
+                        }
+                    } catch(_) {}
+
+                    // 4. DOCUMENTO MATRIZ DEL USUARIO → /deleted_users/{id} (espejo) + delete original
+                    const cascadeCounts = { tickets: countedTickets, invoices: countedInvoices, companies: countedCompanies, destinations: countedDestinations };
+                    batch.set(db.collection('deleted_users').doc(id),
+                        Object.assign({}, uData, deleteMeta, { _originalDocId: id, _cascadeCounts: cascadeCounts }));
+                    operationsCount++;
                     batch.delete(db.collection('users').doc(id));
-                    
+                    operationsCount++;
+
+                    // 5. NOTA: el directorio global de clientes y los directorios por ruta
+                    // contendrán al cliente borrado hasta que admin pulse "Reconstruir
+                    // directorios" en Alertas Pickup. El cliente ya no podrá ser elegido
+                    // como remitente (sin doc en /users) pero todavía aparece en el
+                    // autocomplete del repartidor hasta el rebuild.
+
                     // Final commit
                     await batch.commit();
-                    
-                    alert(`✅ Cliente "${uData.name}" y todos sus datos han sido purgados del sistema.`);
+
+                    alert(`✅ Cliente "${uData.name}" enviado a Papelera.\n\nEn cascada también van a papelera:\n  • ${countedTickets} albaranes\n  • ${countedInvoices} facturas\n  • ${countedCompanies} sedes\n  • ${countedDestinations} destinations\n\nPuedes restaurarlo desde 🗑️ Papelera (toolbar superior).\n\n⚠️ Recuerda reconstruir los directorios en Alertas Pickup.`);
                     loadUsers('first'); // Recargar página 1
                 } catch (err) {
-                    console.error("Error durante Delete Cascade:", err);
-                    alert("Error crítico durante el borrado continuo: " + err.message);
+                    console.error("Error durante Soft Delete Cascade:", err);
+                    alert("Error crítico durante el borrado: " + err.message);
                 } finally {
                     hideLoading();
                 }

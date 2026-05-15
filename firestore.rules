@@ -112,6 +112,15 @@ service cloud.firestore {
       allow read: if isAuth();
       allow write: if isAdmin();
     }
+    match /deleted_users/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+      // Subcoleccion espejada (companies, destinations) del cliente borrado
+      match /{subcol}/{subDocId} {
+        allow read: if isAdmin();
+        allow write: if isAdmin();
+      }
+    }
 
     // ─── BLACKLIST (auth read, admin write) ───
     match /deleted_erp_ids/{docId} {
