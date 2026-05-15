@@ -5784,6 +5784,7 @@ window.runPublicTicketsBackfill = async function() {
                 <h1>Rutas y Repartidores</h1>
                 <div style="display:flex; gap:8px;">
                     <button class="btn" id="btn-bulk-route-phones" style="background:#4CAF50; color:#fff; border:0;" title="Recorre TODOS los clientes (padres y sucursales) y les asigna el teléfono de ruta según su CP">🔍 Auto-asignar tel. ruta a todos los clientes</button>
+                    <button class="btn" id="btn-route-dir-rebuild" style="background:#2196F3; color:#fff; border:0;" title="Reconstruye el directorio de clientes por ruta (espejo en /config/route_directories). Necesario para que el repartidor pueda buscar sus clientes en la app móvil.">📋 Reconstruir directorio repartidores</button>
                     <button class="btn btn-primary" id="btn-add-phone">+ NUEVA RUTA</button>
                 </div>
             </div>
@@ -11273,6 +11274,12 @@ window.runPublicTicketsBackfill = async function() {
             const btnBulkRoutePhones = document.getElementById('btn-bulk-route-phones');
             if (btnBulkRoutePhones) btnBulkRoutePhones.onclick = () => {
                 if (typeof window._bulkAssignRoutePhones === 'function') window._bulkAssignRoutePhones();
+                else alert('Función no disponible — recarga la página (Ctrl+F5).');
+            };
+            // Reconstruir directorio de rutas (para que el repartidor pueda buscar clientes)
+            const btnRouteDirRebuild = document.getElementById('btn-route-dir-rebuild');
+            if (btnRouteDirRebuild) btnRouteDirRebuild.onclick = () => {
+                if (typeof window._routeDirectoryRebuildAll === 'function') window._routeDirectoryRebuildAll();
                 else alert('Función no disponible — recarga la página (Ctrl+F5).');
             };
             window.openNewUserModal = () => {
@@ -19390,7 +19397,7 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260402"></script>
 <script src="mailbox_manager.js?v=20260515_pickup_no_doc"></script>
-<script src="ficha_cliente.js?v=20260514_accesos"></script>
+<script src="ficha_cliente.js?v=20260515_route_directory"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260514_flat"></script>

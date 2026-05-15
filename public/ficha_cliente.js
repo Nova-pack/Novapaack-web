@@ -400,12 +400,22 @@
             });
             if (ops > 0) await batch.commit();
 
+            // Reconstruir directorio de rutas tras el bulk (no bloqueante)
+            let dirInfo = '';
+            try {
+                if (typeof window._routeDirectoryRebuildCore === 'function') {
+                    const r = await window._routeDirectoryRebuildCore();
+                    dirInfo = '\n  📋 Directorio repartidores: ' + r.phones + ' rutas / ' + r.totalClients + ' clientes';
+                }
+            } catch(dErr) { console.warn('[bulk] rebuild dir fail:', dErr); }
+
             if (typeof hideLoading === 'function') hideLoading();
             let msg = 'AUTO-ASIGNACIÓN TERMINADA\n\n';
             msg += '  ✅ Asignados: ' + assigned + '\n';
             msg += '  ⏭️  Saltados (ya tenían): ' + skipped + '\n';
             msg += '  ⚠️  Sin ruta que cubra su CP: ' + noMatch + '\n';
             msg += '  ❔ Sin CP ni localidad: ' + noCp + '\n';
+            msg += dirInfo;
             if (noMatchList.length) {
                 msg += '\nSin cobertura (primeros 10):\n  ' + noMatchList.join('\n  ');
                 msg += '\n\n→ Revisa las zonas de cobertura en Control de Rutas para estos CPs.';
@@ -417,6 +427,148 @@
             alert('Error en la asignación masiva: ' + e.message);
         }
     };
+
+    // ====================================================
+    // DIRECTORIO DE RUTAS — espejo /users → /config/route_directories/list/{phone}
+    // Necesario porque las reglas Firestore no permiten al repartidor hacer
+    // list() sobre /users (es solo admin). El espejo contiene solo los campos
+    // públicos mínimos para que la app del repartidor pueda autocompletar
+    // clientes de SU ruta sin filtrar datos sensibles (contraseñas, emails, etc.).
+    // ====================================================
+
+    function _routeDirNormPhone(p) {
+        if (!p) return '';
+        var s = String(p).replace(/[^0-9]/g, '');
+        if (s.length === 11 && s.indexOf('34') === 0) s = s.slice(2);
+        if (s.length === 12 && s.indexOf('034') === 0) s = s.slice(3);
+        return s;
+    }
+
+    function _routeDirClientPayload(docId, u) {
+        return {
+            docId: docId,
+            idNum: u.idNum || '',
+            name: u.companyName || u.businessName || u.name || u.nombreFiscal || '(sin nombre)',
+            nif: u.cif || u.nif || '',
+            cp: u.cp || '',
+            localidad: u.localidad || u.city || '',
+            compId: u.compId || u.companyId || ''
+        };
+    }
+
+    function _routeDirListRoot() {
+        return db.collection('config').doc('route_directories').collection('list');
+    }
+
+    // Update transaccional para UN cliente que cambió su tel. de ruta.
+    // oldPhone/newPhone pueden venir vacíos (entra o sale del directorio).
+    window._routeDirectoryUpdateForClient = async function(oldPhone, newPhone, userDocId, userData) {
+        try {
+            var oldNorm = _routeDirNormPhone(oldPhone);
+            var newNorm = _routeDirNormPhone(newPhone);
+            if (oldNorm === newNorm && !newNorm) return;
+            var payload = _routeDirClientPayload(userDocId, userData);
+            var listRoot = _routeDirListRoot();
+
+            // Quitar del antiguo si cambió
+            if (oldNorm && oldNorm !== newNorm) {
+                var oldRef = listRoot.doc(oldNorm);
+                await db.runTransaction(async function(tx) {
+                    var snap = await tx.get(oldRef);
+                    if (!snap.exists) return;
+                    var arr = (snap.data().clients || []).filter(function(c) {
+                        return c.docId !== userDocId && (!payload.idNum || c.idNum !== payload.idNum);
+                    });
+                    tx.set(oldRef, {
+                        phone: oldNorm,
+                        clients: arr,
+                        count: arr.length,
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                });
+            }
+
+            // Añadir/actualizar en el nuevo
+            if (newNorm) {
+                var newRef = listRoot.doc(newNorm);
+                await db.runTransaction(async function(tx) {
+                    var snap = await tx.get(newRef);
+                    var arr = snap.exists ? (snap.data().clients || []).filter(function(c) {
+                        return c.docId !== userDocId && (!payload.idNum || c.idNum !== payload.idNum);
+                    }) : [];
+                    arr.push(payload);
+                    arr.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                    tx.set(newRef, {
+                        phone: newNorm,
+                        clients: arr,
+                        count: arr.length,
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                });
+            }
+        } catch(e) {
+            console.warn('[routeDir] update single fail:', e);
+        }
+    };
+
+    // Reconstruye TODO el directorio escaneando /users. Sin prompt.
+    async function _routeDirectoryRebuildCore() {
+        var snap = await db.collection('users').get();
+        var byPhone = {};
+        snap.forEach(function(doc) {
+            var u = doc.data() || {};
+            if (u.role === 'admin') return;
+            var phoneNorm = _routeDirNormPhone(u.defaultRoutePhone);
+            if (!phoneNorm) return;
+            if (!byPhone[phoneNorm]) byPhone[phoneNorm] = [];
+            byPhone[phoneNorm].push(_routeDirClientPayload(doc.id, u));
+        });
+        var phones = Object.keys(byPhone);
+        var listRoot = _routeDirListRoot();
+        var batch = db.batch();
+        var ops = 0;
+        var totalClients = 0;
+        for (var i = 0; i < phones.length; i++) {
+            var p = phones[i];
+            var arr = byPhone[p];
+            arr.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+            totalClients += arr.length;
+            batch.set(listRoot.doc(p), {
+                phone: p,
+                clients: arr,
+                count: arr.length,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            ops++;
+            if (ops >= 450) { await batch.commit(); batch = db.batch(); ops = 0; }
+        }
+        if (ops > 0) await batch.commit();
+        return { phones: phones.length, totalClients: totalClients };
+    }
+
+    // Versión pública con prompt + alert (botón admin)
+    window._routeDirectoryRebuildAll = async function() {
+        if (!confirm(
+            'RECONSTRUIR DIRECTORIO DE RUTAS\n\n' +
+            'Escanea todos los clientes y reescribe /config/route_directories/list/* ' +
+            '(un documento por teléfono de ruta, con los clientes mínimos: NIF, nombre, CP, localidad).\n\n' +
+            'Es necesario para que los repartidores puedan buscar clientes de SU ruta en la app sin permisos de admin.\n\n' +
+            '¿Continuar?'
+        )) return;
+        try {
+            if (typeof showLoading === 'function') showLoading();
+            var res = await _routeDirectoryRebuildCore();
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('DIRECTORIO RECONSTRUIDO ✅\n\nRutas escritas: ' + res.phones + '\nClientes totales: ' + res.totalClients);
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            console.error('[routeDir rebuild]', e);
+            alert('Error reconstruyendo: ' + e.message);
+        }
+    };
+
+    // Exponer también para que el bulk de tel. de rutas lo dispare automáticamente
+    window._routeDirectoryRebuildCore = _routeDirectoryRebuildCore;
 
     // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
     async function _fichaAutoSaveTariffId(newTariffId) {
@@ -2185,6 +2337,7 @@
         try {
             if (typeof showLoading === 'function') showLoading();
             let savedId = _fichaClientId;
+            const oldRoutePhone = (_fichaClientData && _fichaClientData.defaultRoutePhone) || '';
             if (Object.keys(updates).length > 0) {
                 // Update resiliente: corrige el docId si la ficha se abrió con
                 // un authUid o alias en vez del docId real.
@@ -2200,6 +2353,25 @@
                 if (window.userMap[_fichaClientId]) Object.assign(window.userMap[_fichaClientId], updates);
             }
             _fichaClientData = { ..._fichaClientData, ...updates };
+
+            // Sincronizar directorio de rutas si cambió el tel. de ruta
+            // (o si cambiaron CP/localidad/nombre/NIF que aparecen en el directorio).
+            try {
+                const newRoutePhone = updates.defaultRoutePhone !== undefined
+                    ? updates.defaultRoutePhone
+                    : oldRoutePhone;
+                const touchesDirFields = Object.prototype.hasOwnProperty.call(updates, 'defaultRoutePhone')
+                    || Object.prototype.hasOwnProperty.call(updates, 'cp')
+                    || Object.prototype.hasOwnProperty.call(updates, 'localidad')
+                    || Object.prototype.hasOwnProperty.call(updates, 'companyName')
+                    || Object.prototype.hasOwnProperty.call(updates, 'businessName')
+                    || Object.prototype.hasOwnProperty.call(updates, 'cif')
+                    || Object.prototype.hasOwnProperty.call(updates, 'nif');
+                if (touchesDirFields && typeof window._routeDirectoryUpdateForClient === 'function') {
+                    window._routeDirectoryUpdateForClient(oldRoutePhone, newRoutePhone, savedId, _fichaClientData)
+                        .catch(function(){});
+                }
+            } catch(rde) { console.warn('[ficha save] dir sync fail:', rde); }
 
             alert('✅ Ficha de cliente actualizada correctamente.' + (compMainUpdate ? '\n\n📦 Prefijo / nº albarán también guardados.' : ''));
 

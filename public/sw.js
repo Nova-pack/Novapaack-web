@@ -1,4 +1,4 @@
-const CACHE_NAME = 'novapack-repartidor-v10';
+const CACHE_NAME = 'novapack-repartidor-v11';
 const urlsToCache = [
     '/reparto.html',
     '/reparto.css',

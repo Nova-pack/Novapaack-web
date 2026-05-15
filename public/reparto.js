@@ -4018,43 +4018,34 @@ function initApp() {
         }
         _pndRouteClientsLoading = true;
         var phoneNorm = normalizePhone(currentDriverPhone || '');
-        return db.collection('users').where('defaultRoutePhone', '==', phoneNorm).limit(500).get()
+        // Lee del directorio público en /config/route_directories/list/{phoneNorm}
+        // (admin lo mantiene espejando /users sin exponer datos sensibles).
+        // Las reglas Firestore permiten read isAuth() en /config/{parent}/list/{id}.
+        var ref = db.collection('config').doc('route_directories').collection('list').doc(phoneNorm);
+        return ref.get()
             .then(function(snap) {
                 var list = [];
-                snap.forEach(function(s) {
-                    var d = s.data() || {};
-                    list.push({
-                        docId: s.id,
-                        idNum: d.idNum || '',
-                        name: d.companyName || d.businessName || d.name || d.nombreFiscal || '(sin nombre)',
-                        nif: d.cif || d.nif || '',
-                        cp: d.cp || '',
-                        localidad: d.localidad || d.city || '',
-                        defaultRoutePhone: d.defaultRoutePhone || '',
-                        compId: d.compId || d.companyId || ''
-                    });
-                });
-                // Si la consulta exacta no devuelve nada, fallback: traer un set acotado y filtrar por últimos 4
+                if (snap.exists) {
+                    var data = snap.data() || {};
+                    list = (data.clients || []).slice();
+                }
+                // Fallback: si por algún motivo no existe el doc para este teléfono,
+                // probar por últimos 4 dígitos buscando entre los docs del directorio
                 if (!list.length && phoneNorm) {
-                    return db.collection('users').limit(1000).get().then(function(snap2) {
-                        var tail = phoneNorm.slice(-4);
-                        snap2.forEach(function(s) {
-                            var d = s.data() || {};
-                            var rp = normalizePhone(d.defaultRoutePhone || '');
-                            if (rp && rp.slice(-4) === tail) {
-                                list.push({
-                                    docId: s.id,
-                                    idNum: d.idNum || '',
-                                    name: d.companyName || d.businessName || d.name || d.nombreFiscal || '(sin nombre)',
-                                    nif: d.cif || d.nif || '',
-                                    cp: d.cp || '',
-                                    localidad: d.localidad || d.city || '',
-                                    defaultRoutePhone: d.defaultRoutePhone || '',
-                                    compId: d.compId || d.companyId || ''
-                                });
+                    var tail = phoneNorm.slice(-4);
+                    return db.collection('config').doc('route_directories').collection('list').get().then(function(allSnap) {
+                        allSnap.forEach(function(s) {
+                            var dp = (s.id || '').replace(/[^0-9]/g, '');
+                            if (dp && dp.slice(-4) === tail) {
+                                var arr = (s.data().clients || []);
+                                list = list.concat(arr);
                             }
                         });
                         list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                        _pndRouteClientsCache = list;
+                        _pndRouteClientsLoading = false;
+                        return list;
+                    }).catch(function(){
                         _pndRouteClientsCache = list;
                         _pndRouteClientsLoading = false;
                         return list;
@@ -4067,7 +4058,7 @@ function initApp() {
             })
             .catch(function(err) {
                 _pndRouteClientsLoading = false;
-                console.warn('[pnd] load route clients fail:', err);
+                console.warn('[pnd] route directory load fail:', err);
                 _pndRouteClientsCache = [];
                 return [];
             });
