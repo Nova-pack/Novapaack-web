@@ -218,7 +218,7 @@
     </style>
 
     <!-- App Logic -->
-    <script src="reparto.js?v=20260515_disc_user_notif" defer></script>
+    <script src="reparto.js?v=20260515_pickup_no_doc" defer></script>
     <script src="copiloto.js" defer></script>
     <script src="ocr.js" defer></script>
 </head>
@@ -501,6 +501,18 @@
                     <button class="btn btn-outline btn-sm" id="btn-ocr-scan" style="flex:1; color:#5DADE2; border-color:rgba(93,173,226,0.3);"><span class="material-symbols-outlined" style="font-size:1rem;">document_scanner</span> OCR Etiqueta (si el QR no lee)</button>
                 </div>
                 <div id="ocr-status" style="font-size:0.78rem; color:var(--text-dim); margin-top:6px; min-height:1em;"></div>
+
+                <!-- Recogida sin albarán -->
+                <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.12);">
+                    <button class="btn" id="btn-open-pickup-no-doc" style="width:100%; background:#E53935; color:#fff; border:0; padding:14px; border-radius:10px; font-weight:900; font-size:0.92rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
+                        <span class="material-symbols-outlined">report</span>
+                        📦 RECOGIDA SIN ALBARÁN
+                    </button>
+                    <p style="font-size:0.7rem; color:var(--text-dim); margin:6px 0 0; text-align:center; line-height:1.4;">
+                        Si el cliente te entrega bultos sin albarán/etiqueta.
+                        Crea un pre-albarán con foto y conteo. El cliente lo completa en su app.
+                    </p>
+                </div>
             </div>
 
             <!-- Scan Result -->
@@ -739,6 +751,70 @@
         </div>
 
         <button id="disc-save" style="width:100%; background:#FF9800; border:0; color:#000; padding:16px; border-radius:10px; font-weight:900; font-size:1rem; cursor:pointer;">✅ GUARDAR DISCREPANCIA</button>
+    </div>
+</div>
+
+<!-- ===== MODAL: RECOGIDA SIN ALBARÁN (PRE-ALBARÁN) ===== -->
+<div id="pickup-no-doc-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.92); z-index:100001; padding:14px; overflow-y:auto;">
+    <div style="max-width:560px; margin:0 auto; background:#1a1a1a; border:2px solid #E53935; border-radius:14px; padding:16px; color:#eee;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0; color:#E53935; font-size:1rem; font-weight:900;">📦 RECOGIDA SIN ALBARÁN</h3>
+            <button id="pnd-close" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(229,57,53,0.08); border:1px solid rgba(229,57,53,0.3); border-radius:8px; padding:10px; margin-bottom:14px; font-size:0.78rem; line-height:1.45;">
+            ℹ️ Genera un <strong>pre-albarán</strong> con tu conteo + foto. El cliente recibirá un aviso para completarlo en 24h. Si no lo hace, prevalecen los datos que aquí registres.
+        </div>
+
+        <!-- Paso 1: Cliente origen -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">1️⃣ CLIENTE QUE ENTREGA</label>
+            <input type="text" id="pnd-client-search" placeholder="Busca por nombre o NIF…" autocomplete="off" style="width:100%; padding:11px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
+            <div id="pnd-client-results" style="max-height:180px; overflow-y:auto; margin-top:4px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; display:none;"></div>
+            <div id="pnd-client-picked" style="display:none; margin-top:8px; padding:10px; background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.4); border-radius:8px; font-size:0.85rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-weight:800; color:#4CAF50;" id="pnd-client-picked-name">—</div>
+                        <div style="font-size:0.7rem; color:#aaa; margin-top:2px;" id="pnd-client-picked-meta">—</div>
+                    </div>
+                    <button id="pnd-client-clear" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Cambiar</button>
+                </div>
+            </div>
+            <button id="pnd-client-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Cliente no encontrado · introducir manualmente</button>
+            <div id="pnd-client-manual-wrap" style="display:none; margin-top:8px; gap:6px;">
+                <input type="text" id="pnd-client-manual-name" placeholder="Nombre comercial del cliente" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:6px;">
+                <input type="text" id="pnd-client-manual-nif" placeholder="NIF / CIF (opcional)" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
+            </div>
+        </div>
+
+        <!-- Paso 2: Conteo + foto -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">2️⃣ Nº DE BULTOS RECOGIDOS</label>
+            <input type="number" id="pnd-bultos" inputmode="numeric" min="1" max="999" value="1" style="width:100%; padding:18px; background:#0a0a0a; border:2px solid #E53935; color:#fff; border-radius:10px; font-size:1.6rem; font-weight:900; text-align:center; box-sizing:border-box;">
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">📷 FOTO DEL LOTE (obligatoria)</label>
+            <input type="file" id="pnd-photo-input" accept="image/*" capture="environment" style="display:none;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button id="pnd-take-photo" style="flex:1; background:rgba(255,255,255,0.08); border:1px solid #555; color:#fff; padding:14px; border-radius:8px; cursor:pointer; font-weight:700;">📷 Tomar foto del lote</button>
+                <span id="pnd-photo-status" style="font-size:0.75rem; color:#FF8A50; min-width:80px;">Sin foto</span>
+            </div>
+            <img id="pnd-photo-preview" style="display:none; width:100%; max-height:180px; object-fit:contain; border-radius:8px; margin-top:8px; border:1px solid #333;">
+            <p style="font-size:0.68rem; color:#888; margin:6px 0 0; line-height:1.4;">Captura el lote agrupado para tener evidencia visual del volumen.</p>
+        </div>
+
+        <details style="margin-bottom:14px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-size:0.78rem; color:#bbb; font-weight:700;">+ Datos adicionales (opcional)</summary>
+            <div style="margin-top:10px;">
+                <label style="display:block; font-size:0.72rem; color:#aaa; margin-bottom:4px;">Peso aproximado (kg)</label>
+                <input type="number" id="pnd-weight" inputmode="decimal" step="0.1" min="0" placeholder="—" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:8px;">
+                <label style="display:block; font-size:0.72rem; color:#aaa; margin-bottom:4px;">Descripción / observaciones</label>
+                <textarea id="pnd-note" rows="2" placeholder="P. ej. 3 cajas grandes + 1 sobre…" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; resize:vertical; font-family:inherit;"></textarea>
+            </div>
+        </details>
+
+        <button id="pnd-save" style="width:100%; background:#E53935; border:0; color:#fff; padding:16px; border-radius:10px; font-weight:900; font-size:1rem; cursor:pointer;">✅ CREAR PRE-ALBARÁN</button>
+        <p style="font-size:0.68rem; color:#888; margin:8px 0 0; text-align:center; line-height:1.4;">El cliente recibirá una notificación en su buzón con foto, conteo y plazo de 24h para completar/impugnar.</p>
     </div>
 </div>
 

@@ -3970,5 +3970,426 @@ function initApp() {
         }
     });
 
+    // ============================================================
+    // RECOGIDA SIN ALBARÁN — Pre-albarán generado por el repartidor
+    // ============================================================
+    // Estado local del modal
+    var _pndPhotoFile = null;
+    var _pndPhotoDataUrl = '';
+    var _pndPickedClient = null;     // { docId, idNum, name, nif, cp, localidad, defaultRoutePhone }
+    var _pndManualMode = false;
+    var _pndRouteClientsCache = null; // array
+    var _pndRouteClientsLoading = false;
+
+    function _pndCompressPhoto(file) {
+        return new Promise(function(resolve, reject) {
+            try {
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    var img = new Image();
+                    img.onload = function() {
+                        var maxW = 1280;
+                        var scale = Math.min(1, maxW / img.width);
+                        var w = Math.round(img.width * scale);
+                        var h = Math.round(img.height * scale);
+                        var canvas = document.createElement('canvas');
+                        canvas.width = w; canvas.height = h;
+                        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                        resolve(canvas.toDataURL('image/jpeg', 0.72));
+                    };
+                    img.onerror = function() { reject(new Error('No se pudo procesar la imagen')); };
+                    img.src = e.target.result;
+                };
+                reader.onerror = function() { reject(new Error('No se pudo leer el archivo')); };
+                reader.readAsDataURL(file);
+            } catch(err) { reject(err); }
+        });
+    }
+
+    function _pndLoadRouteClients() {
+        if (_pndRouteClientsCache) return Promise.resolve(_pndRouteClientsCache);
+        if (_pndRouteClientsLoading) {
+            // Si ya hay carga en curso, espera con un poll corto
+            return new Promise(function(resolve) {
+                var t = setInterval(function() {
+                    if (_pndRouteClientsCache) { clearInterval(t); resolve(_pndRouteClientsCache); }
+                }, 200);
+            });
+        }
+        _pndRouteClientsLoading = true;
+        var phoneNorm = normalizePhone(currentDriverPhone || '');
+        return db.collection('users').where('defaultRoutePhone', '==', phoneNorm).limit(500).get()
+            .then(function(snap) {
+                var list = [];
+                snap.forEach(function(s) {
+                    var d = s.data() || {};
+                    list.push({
+                        docId: s.id,
+                        idNum: d.idNum || '',
+                        name: d.companyName || d.businessName || d.name || d.nombreFiscal || '(sin nombre)',
+                        nif: d.cif || d.nif || '',
+                        cp: d.cp || '',
+                        localidad: d.localidad || d.city || '',
+                        defaultRoutePhone: d.defaultRoutePhone || '',
+                        compId: d.compId || d.companyId || ''
+                    });
+                });
+                // Si la consulta exacta no devuelve nada, fallback: traer un set acotado y filtrar por últimos 4
+                if (!list.length && phoneNorm) {
+                    return db.collection('users').limit(1000).get().then(function(snap2) {
+                        var tail = phoneNorm.slice(-4);
+                        snap2.forEach(function(s) {
+                            var d = s.data() || {};
+                            var rp = normalizePhone(d.defaultRoutePhone || '');
+                            if (rp && rp.slice(-4) === tail) {
+                                list.push({
+                                    docId: s.id,
+                                    idNum: d.idNum || '',
+                                    name: d.companyName || d.businessName || d.name || d.nombreFiscal || '(sin nombre)',
+                                    nif: d.cif || d.nif || '',
+                                    cp: d.cp || '',
+                                    localidad: d.localidad || d.city || '',
+                                    defaultRoutePhone: d.defaultRoutePhone || '',
+                                    compId: d.compId || d.companyId || ''
+                                });
+                            }
+                        });
+                        list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                        _pndRouteClientsCache = list;
+                        _pndRouteClientsLoading = false;
+                        return list;
+                    });
+                }
+                list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                _pndRouteClientsCache = list;
+                _pndRouteClientsLoading = false;
+                return list;
+            })
+            .catch(function(err) {
+                _pndRouteClientsLoading = false;
+                console.warn('[pnd] load route clients fail:', err);
+                _pndRouteClientsCache = [];
+                return [];
+            });
+    }
+
+    function _pndRenderClientResults(query) {
+        var wrap = document.getElementById('pnd-client-results');
+        if (!wrap) return;
+        var q = (query || '').trim().toLowerCase();
+        if (!q) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+        var list = _pndRouteClientsCache || [];
+        var matches = list.filter(function(c) {
+            var hay = (c.name + ' ' + c.nif + ' ' + c.localidad).toLowerCase();
+            return hay.indexOf(q) !== -1;
+        }).slice(0, 20);
+        if (!matches.length) {
+            wrap.style.display = 'block';
+            wrap.innerHTML = '<div style="padding:10px; font-size:0.78rem; color:#888;">Sin resultados. Usa "introducir manualmente".</div>';
+            return;
+        }
+        wrap.style.display = 'block';
+        wrap.innerHTML = matches.map(function(c) {
+            var nifLine = c.nif ? (' · ' + escapeHtml(c.nif)) : '';
+            var locLine = c.localidad ? (' · ' + escapeHtml(c.localidad)) : '';
+            return '<div class="pnd-client-item" data-docid="' + escapeHtml(c.docId) + '" style="padding:9px 11px; border-bottom:1px solid #2a2a2a; cursor:pointer; font-size:0.85rem;">' +
+                '<div style="font-weight:700; color:#fff;">' + escapeHtml(c.name) + '</div>' +
+                '<div style="font-size:0.7rem; color:#888; margin-top:2px;">' + escapeHtml(c.idNum || '—') + nifLine + locLine + '</div>' +
+            '</div>';
+        }).join('');
+        Array.prototype.forEach.call(wrap.querySelectorAll('.pnd-client-item'), function(el) {
+            el.addEventListener('click', function() {
+                var docId = this.dataset.docid;
+                var found = (_pndRouteClientsCache || []).filter(function(c){ return c.docId === docId; })[0];
+                if (found) _pndPickClient(found);
+            });
+        });
+    }
+
+    function _pndPickClient(c) {
+        _pndPickedClient = c;
+        document.getElementById('pnd-client-search').value = '';
+        document.getElementById('pnd-client-results').style.display = 'none';
+        document.getElementById('pnd-client-results').innerHTML = '';
+        document.getElementById('pnd-client-picked').style.display = 'block';
+        document.getElementById('pnd-client-picked-name').textContent = c.name || '(sin nombre)';
+        var meta = (c.idNum || '—');
+        if (c.nif) meta += ' · ' + c.nif;
+        if (c.localidad) meta += ' · ' + c.localidad;
+        document.getElementById('pnd-client-picked-meta').textContent = meta;
+        // ocultar entrada manual si estaba abierta
+        _pndManualMode = false;
+        document.getElementById('pnd-client-manual-wrap').style.display = 'none';
+    }
+
+    function _pndResetModal() {
+        _pndPhotoFile = null;
+        _pndPhotoDataUrl = '';
+        _pndPickedClient = null;
+        _pndManualMode = false;
+        var ids = ['pnd-client-search','pnd-client-manual-name','pnd-client-manual-nif','pnd-weight','pnd-note'];
+        ids.forEach(function(id){ var el = document.getElementById(id); if (el) el.value=''; });
+        var bul = document.getElementById('pnd-bultos'); if (bul) bul.value = '1';
+        var preview = document.getElementById('pnd-photo-preview'); if (preview) { preview.style.display='none'; preview.src=''; }
+        var status = document.getElementById('pnd-photo-status'); if (status) { status.textContent='Sin foto'; status.style.color='#FF8A50'; }
+        var picked = document.getElementById('pnd-client-picked'); if (picked) picked.style.display='none';
+        var manualWrap = document.getElementById('pnd-client-manual-wrap'); if (manualWrap) manualWrap.style.display='none';
+        var results = document.getElementById('pnd-client-results'); if (results) { results.style.display='none'; results.innerHTML=''; }
+    }
+
+    window._pickupNoDocOpenModal = function() {
+        if (!currentDriverPhone) { showToast('Inicia sesión primero', 'error'); return; }
+        _pndResetModal();
+        document.getElementById('pickup-no-doc-modal').style.display = 'block';
+        // Cargar clientes de la ruta en background
+        _pndLoadRouteClients().then(function(list) {
+            console.log('[pnd] clientes ruta cargados:', list.length);
+        });
+    };
+
+    // Wire eventos del modal (se hace una vez al cargar la app)
+    var pndOpenBtn = document.getElementById('btn-open-pickup-no-doc');
+    if (pndOpenBtn) pndOpenBtn.addEventListener('click', window._pickupNoDocOpenModal);
+
+    var pndCloseBtn = document.getElementById('pnd-close');
+    if (pndCloseBtn) pndCloseBtn.addEventListener('click', function() {
+        document.getElementById('pickup-no-doc-modal').style.display = 'none';
+    });
+
+    var pndSearchInput = document.getElementById('pnd-client-search');
+    if (pndSearchInput) pndSearchInput.addEventListener('input', function() {
+        _pndRenderClientResults(this.value);
+    });
+
+    var pndClearBtn = document.getElementById('pnd-client-clear');
+    if (pndClearBtn) pndClearBtn.addEventListener('click', function() {
+        _pndPickedClient = null;
+        document.getElementById('pnd-client-picked').style.display = 'none';
+        document.getElementById('pnd-client-search').focus();
+    });
+
+    var pndManualBtn = document.getElementById('pnd-client-manual');
+    if (pndManualBtn) pndManualBtn.addEventListener('click', function() {
+        _pndManualMode = !_pndManualMode;
+        document.getElementById('pnd-client-manual-wrap').style.display = _pndManualMode ? 'block' : 'none';
+        if (_pndManualMode) {
+            _pndPickedClient = null;
+            document.getElementById('pnd-client-picked').style.display = 'none';
+            document.getElementById('pnd-client-manual-name').focus();
+        }
+    });
+
+    var pndTakePhotoBtn = document.getElementById('pnd-take-photo');
+    var pndPhotoInput = document.getElementById('pnd-photo-input');
+    if (pndTakePhotoBtn && pndPhotoInput) {
+        pndTakePhotoBtn.addEventListener('click', function() { pndPhotoInput.click(); });
+        pndPhotoInput.addEventListener('change', function(ev) {
+            var file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            document.getElementById('pnd-photo-status').textContent = 'Procesando…';
+            document.getElementById('pnd-photo-status').style.color = '#FFB300';
+            _pndCompressPhoto(file).then(function(dataUrl) {
+                _pndPhotoFile = file;
+                _pndPhotoDataUrl = dataUrl;
+                var preview = document.getElementById('pnd-photo-preview');
+                preview.src = dataUrl;
+                preview.style.display = 'block';
+                document.getElementById('pnd-photo-status').textContent = '✓ Foto OK';
+                document.getElementById('pnd-photo-status').style.color = '#4CAF50';
+            }).catch(function(err) {
+                document.getElementById('pnd-photo-status').textContent = 'Error foto';
+                document.getElementById('pnd-photo-status').style.color = '#FF3B30';
+                showToast('Error procesando foto: ' + err.message, 'error');
+            });
+        });
+    }
+
+    function _pndGetGPS() {
+        return new Promise(function(resolve) {
+            if (!navigator.geolocation) return resolve(null);
+            var timeout = setTimeout(function() { resolve(null); }, 4000);
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                clearTimeout(timeout);
+                resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+            }, function() { clearTimeout(timeout); resolve(null); }, { enableHighAccuracy: false, timeout: 4000, maximumAge: 60000 });
+        });
+    }
+
+    function _pndGenerateLabel() {
+        var d = new Date();
+        var yy = String(d.getFullYear()).slice(-2);
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+        return 'PR-' + yy + mm + dd + '-' + rnd;
+    }
+
+    var pndSaveBtn = document.getElementById('pnd-save');
+    if (pndSaveBtn) pndSaveBtn.addEventListener('click', async function() {
+        try {
+            // Validaciones
+            var bultos = parseInt(document.getElementById('pnd-bultos').value, 10);
+            if (!bultos || bultos < 1) { showToast('Indica número de bultos', 'warning'); return; }
+            if (!_pndPhotoDataUrl) { showToast('Foto obligatoria', 'warning'); return; }
+
+            var clientInfo = null;
+            if (_pndPickedClient) {
+                clientInfo = {
+                    docId: _pndPickedClient.docId,
+                    idNum: _pndPickedClient.idNum || '',
+                    name: _pndPickedClient.name || '',
+                    nif: _pndPickedClient.nif || '',
+                    cp: _pndPickedClient.cp || '',
+                    localidad: _pndPickedClient.localidad || '',
+                    compId: _pndPickedClient.compId || ''
+                };
+            } else if (_pndManualMode) {
+                var manualName = (document.getElementById('pnd-client-manual-name').value || '').trim();
+                var manualNif = (document.getElementById('pnd-client-manual-nif').value || '').trim();
+                if (!manualName) { showToast('Indica el nombre del cliente', 'warning'); return; }
+                clientInfo = { docId: '', idNum: '', name: manualName, nif: manualNif, cp: '', localidad: '', compId: '', manual: true };
+            } else {
+                showToast('Selecciona o introduce el cliente', 'warning'); return;
+            }
+
+            pndSaveBtn.disabled = true;
+            pndSaveBtn.textContent = '⏳ Subiendo…';
+
+            // 1) GPS (best effort, no bloqueante)
+            var gps = await _pndGetGPS();
+
+            // 2) Generar label + crear doc previo
+            var label = _pndGenerateLabel();
+            var weightStr = (document.getElementById('pnd-weight').value || '').trim();
+            var note = (document.getElementById('pnd-note').value || '').trim();
+            var nowIso = new Date().toISOString();
+
+            var deadline = new Date(Date.now() + 24*60*60*1000);
+
+            var ticketPayload = {
+                id: label,
+                originType: 'driver_pickup_no_doc',
+                pendingClientCompletion: true,
+                status: 'pending_client_completion',
+
+                // Cliente origen
+                uid: clientInfo.docId || null,
+                clientIdNum: clientInfo.idNum || '',
+                sender: clientInfo.name || '',
+                senderNif: clientInfo.nif || '',
+                senderCp: clientInfo.cp || '',
+                senderLocalidad: clientInfo.localidad || '',
+                compId: clientInfo.compId || '',
+                clientManualEntry: !!clientInfo.manual,
+
+                // Datos de recogida (pre-albarán)
+                pickupBy: currentDriverName || '',
+                pickupByPhone: currentDriverPhone || '',
+                pickupRoute: currentRouteLabel || '',
+                pickupBultos: bultos,
+                pickupWeight: weightStr ? parseFloat(weightStr) : null,
+                pickupNote: note,
+                pickupGPS: gps || null,
+                pickupAtIso: nowIso,
+                impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+
+                packagesList: [],
+                declaredPackagesList: [],
+
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdBy: 'driver_app_pickup_no_doc'
+            };
+
+            // 3) Crear el ticket — guardamos para obtener docId, luego subimos foto y actualizamos
+            var newDocRef = await db.collection('tickets').add(ticketPayload);
+            var newDocId = newDocRef.id;
+
+            // 4) Subir foto a Storage
+            var photoUrl = '';
+            try {
+                if (firebase.storage && _pndPhotoDataUrl) {
+                    var storage = firebase.storage();
+                    var ref = storage.ref('pickup_no_doc/' + newDocId + '_' + Date.now() + '.jpg');
+                    var snap = await ref.putString(_pndPhotoDataUrl, 'data_url');
+                    photoUrl = await snap.ref.getDownloadURL();
+                    await newDocRef.update({ pickupPhoto: photoUrl });
+                }
+            } catch(uerr) {
+                console.warn('[pnd] photo upload fail:', uerr);
+                // No bloqueamos: queda registro sin URL final (data_url no se guarda en firestore por tamaño)
+            }
+
+            // 5) Notificación al cliente (user_notifications)
+            try {
+                if (clientInfo.docId) {
+                    var notif = {
+                        uid: clientInfo.docId,
+                        type: 'pickup_no_albaran',
+                        title: '⚠️ Recogida sin albarán — completa en 24h',
+                        body: 'El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán. Plazo de 24h para completar el albarán o impugnar. Pasado ese plazo, prevalecerán los datos del repartidor.',
+                        ticketId: label,
+                        docId: newDocId,
+                        reportedBy: currentDriverName || '',
+                        bultos: bultos,
+                        impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        read: false
+                    };
+                    if (photoUrl) notif.photoURL = photoUrl;
+                    await db.collection('user_notifications').add(notif);
+                }
+            } catch(ne) { console.warn('[pnd] user notif fail:', ne); }
+
+            // 6) Entrada en /mailbox del admin
+            try {
+                var mailDoc = {
+                    type: 'driver_pickup_no_doc',
+                    category: 'pickup_sin_albaran',
+                    status: 'queued',
+                    direction: 'outgoing',
+                    ticketRef: label,
+                    ticketDocId: newDocId,
+                    clientId: clientInfo.docId || null,
+                    clientIdNum: clientInfo.idNum || null,
+                    senderName: clientInfo.name || '',
+                    senderNif: clientInfo.nif || '',
+                    senderManual: !!clientInfo.manual,
+                    bultos: bultos,
+                    weight: weightStr ? parseFloat(weightStr) : null,
+                    note: note,
+                    driverPhone: currentDriverPhone || '',
+                    driverName: currentDriverName || '',
+                    driverRoute: currentRouteLabel || '',
+                    gps: gps || null,
+                    impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                if (photoUrl) mailDoc.photo = photoUrl;
+                await db.collection('mailbox').add(mailDoc);
+            } catch(me) { console.warn('[pnd] mailbox fail:', me); }
+
+            // 7) Incrementar contador en el cliente (si existe)
+            try {
+                if (clientInfo.docId) {
+                    await db.collection('users').doc(clientInfo.docId).set({
+                        noAlbaranCount: firebase.firestore.FieldValue.increment(1),
+                        lastPickupNoDocAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+
+            showToast('✅ Pre-albarán creado: ' + label, 'success', 5000);
+            try { navigator.vibrate && navigator.vibrate([50, 30, 50, 30, 80]); } catch(_) {}
+            document.getElementById('pickup-no-doc-modal').style.display = 'none';
+            _pndResetModal();
+        } catch(err) {
+            console.error('[pnd] save fail:', err);
+            showToast('Error creando pre-albarán: ' + err.message, 'error', 6000);
+        } finally {
+            pndSaveBtn.disabled = false;
+            pndSaveBtn.textContent = '✅ CREAR PRE-ALBARÁN';
+        }
+    });
+
 } // END initApp
 })();

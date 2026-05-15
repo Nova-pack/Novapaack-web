@@ -1071,6 +1071,7 @@ window.initUserNotifications = function(uid) {
                 else if (data.type === 'incident') { typeIcon = '⚠️'; typeLabel = 'Incidencia'; accentColor = '#F44336'; }
                 else if (data.type === 'incident_resolved') { typeIcon = '✅'; typeLabel = 'Incidencia Resuelta'; accentColor = '#4CAF50'; }
                 else if (data.type === 'discrepancy') { typeIcon = '✏️'; typeLabel = 'Discrepancia'; accentColor = '#FF9800'; }
+                else if (data.type === 'pickup_no_albaran') { typeIcon = '🚚'; typeLabel = 'Recogida sin albarán'; accentColor = '#E53935'; }
 
                 const item = document.createElement('div');
                 item.style.cssText = 'padding:16px 20px; border-radius:10px; border-left:4px solid ' + (data.read ? 'var(--border-glass)' : accentColor) + '; background:rgba(255,255,255,' + (data.read ? '0.02' : '0.05') + '); transition:background 0.2s;';

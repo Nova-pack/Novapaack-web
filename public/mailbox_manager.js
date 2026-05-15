@@ -19,6 +19,7 @@ const MAILBOX_CATEGORIES = {
     reclamacion:      { emoji: '⚠️', label: 'Reclamación' },
     facturacion:      { emoji: '🏢', label: 'Facturación' },
     discrepancia:     { emoji: '✏️', label: 'Albaranes Discrepantes' },
+    pickup_sin_albaran: { emoji: '🚚', label: 'Recogida sin albarán' },
     otro:             { emoji: '📧', label: 'Otros' }
 };
 
