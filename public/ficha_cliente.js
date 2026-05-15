@@ -400,12 +400,16 @@
             });
             if (ops > 0) await batch.commit();
 
-            // Reconstruir directorio de rutas tras el bulk (no bloqueante)
+            // Reconstruir AMBOS directorios tras el bulk (no bloqueante)
             let dirInfo = '';
             try {
                 if (typeof window._routeDirectoryRebuildCore === 'function') {
                     const r = await window._routeDirectoryRebuildCore();
-                    dirInfo = '\n  📋 Directorio repartidores: ' + r.phones + ' rutas / ' + r.totalClients + ' clientes';
+                    dirInfo += '\n  📍 Directorio rutas: ' + r.phones + ' rutas / ' + r.totalClients + ' clientes';
+                }
+                if (typeof window._clientsDirectoryRebuildCore === 'function') {
+                    const r2 = await window._clientsDirectoryRebuildCore();
+                    dirInfo += '\n  🌐 Directorio global: ' + r2.count + ' clientes';
                 }
             } catch(dErr) { console.warn('[bulk] rebuild dir fail:', dErr); }
 
@@ -569,6 +573,88 @@
 
     // Exponer también para que el bulk de tel. de rutas lo dispare automáticamente
     window._routeDirectoryRebuildCore = _routeDirectoryRebuildCore;
+
+    // ====================================================
+    // DIRECTORIO GLOBAL DE CLIENTES — espejo /users → /config/clients_directory/list/all
+    // Para "Recogida sin albarán" con porte DEBIDO: el destinatario es un cliente
+    // NOVAPACK que el repartidor necesita buscar en TODA la base, no solo en su ruta.
+    // Mismo modelo: solo campos públicos, sin contraseñas/emails/IBANs.
+    // ====================================================
+
+    function _clientsDirRef() {
+        return db.collection('config').doc('clients_directory').collection('list').doc('all');
+    }
+
+    // Update transaccional para UN cliente en el directorio global.
+    window._clientsDirectoryUpdateForClient = async function(userDocId, userData) {
+        try {
+            var payload = _routeDirClientPayload(userDocId, userData);
+            var ref = _clientsDirRef();
+            await db.runTransaction(async function(tx) {
+                var snap = await tx.get(ref);
+                var arr = snap.exists ? (snap.data().clients || []).filter(function(c) {
+                    return c.docId !== userDocId && (!payload.idNum || c.idNum !== payload.idNum);
+                }) : [];
+                arr.push(payload);
+                arr.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                tx.set(ref, {
+                    clients: arr,
+                    count: arr.length,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            });
+        } catch(e) {
+            console.warn('[clientsDir] update single fail:', e);
+        }
+    };
+
+    async function _clientsDirectoryRebuildCore() {
+        var snap = await db.collection('users').get();
+        var arr = [];
+        snap.forEach(function(doc) {
+            var u = doc.data() || {};
+            if (u.role === 'admin') return;
+            arr.push(_routeDirClientPayload(doc.id, u));
+        });
+        arr.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+        await _clientsDirRef().set({
+            clients: arr,
+            count: arr.length,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        return { count: arr.length };
+    }
+    window._clientsDirectoryRebuildCore = _clientsDirectoryRebuildCore;
+
+    // Botón unificado: reconstruye AMBOS directorios (rutas + global de clientes).
+    window._directoriesRebuildAll = async function() {
+        if (!confirm(
+            'RECONSTRUIR DIRECTORIOS\n\n' +
+            'Va a escanear todos los clientes y regenerar DOS espejos:\n\n' +
+            '  1. /config/route_directories/list/* (clientes por ruta)\n' +
+            '     → Necesario para que el repartidor busque sus clientes (remitentes).\n\n' +
+            '  2. /config/clients_directory/list/all (todos los clientes)\n' +
+            '     → Necesario para "Recogida sin albarán" con porte DEBIDO\n' +
+            '       (donde el destinatario es cliente NOVAPACK).\n\n' +
+            'No expone datos sensibles (contraseñas, emails, IBAN, etc.).\n\n' +
+            '¿Continuar?'
+        )) return;
+        try {
+            if (typeof showLoading === 'function') showLoading();
+            var r1 = await _routeDirectoryRebuildCore();
+            var r2 = await _clientsDirectoryRebuildCore();
+            if (typeof hideLoading === 'function') hideLoading();
+            alert(
+                'DIRECTORIOS RECONSTRUIDOS ✅\n\n' +
+                '📍 Rutas: ' + r1.phones + ' (' + r1.totalClients + ' clientes con ruta)\n' +
+                '🌐 Global: ' + r2.count + ' clientes totales'
+            );
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            console.error('[dirs rebuild]', e);
+            alert('Error reconstruyendo: ' + e.message);
+        }
+    };
 
     // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
     async function _fichaAutoSaveTariffId(newTariffId) {
@@ -2369,6 +2455,11 @@
                     || Object.prototype.hasOwnProperty.call(updates, 'nif');
                 if (touchesDirFields && typeof window._routeDirectoryUpdateForClient === 'function') {
                     window._routeDirectoryUpdateForClient(oldRoutePhone, newRoutePhone, savedId, _fichaClientData)
+                        .catch(function(){});
+                }
+                // Directorio global: cualquier cambio en campos públicos lo refleja
+                if (touchesDirFields && typeof window._clientsDirectoryUpdateForClient === 'function') {
+                    window._clientsDirectoryUpdateForClient(savedId, _fichaClientData)
                         .catch(function(){});
                 }
             } catch(rde) { console.warn('[ficha save] dir sync fail:', rde); }

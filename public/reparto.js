@@ -3982,10 +3982,16 @@ function initApp() {
     // Estado local del modal
     var _pndPhotoFile = null;
     var _pndPhotoDataUrl = '';
-    var _pndPickedClient = null;     // { docId, idNum, name, nif, cp, localidad, defaultRoutePhone }
+    var _pndPickedClient = null;     // remitente { docId, idNum, name, nif, cp, localidad, defaultRoutePhone }
     var _pndManualMode = false;
     var _pndRouteClientsCache = null; // array
     var _pndRouteClientsLoading = false;
+    // Destinatario
+    var _pndPorte = '';               // 'PAGADO' | 'DEBIDO'
+    var _pndDestPicked = null;        // { docId, idNum, name, nif, cp, localidad, address, phone }
+    var _pndDestManualMode = false;
+    var _pndDestCacheHistory = null;  // array (per remitente) — porte PAGADO
+    var _pndDestCacheGlobal = null;   // array — porte DEBIDO
 
     function _pndCompressPhoto(file) {
         return new Promise(function(resolve, reject) {
@@ -4117,6 +4123,215 @@ function initApp() {
         // ocultar entrada manual si estaba abierta
         _pndManualMode = false;
         document.getElementById('pnd-client-manual-wrap').style.display = 'none';
+        // Invalidar cache historial — al cambiar remitente cambian destinatarios habituales
+        _pndDestCacheHistory = null;
+        // Si ya estaba elegido el porte PAGADO, refrescar la búsqueda
+        if (_pndPorte === 'PAGADO') _pndPreloadDestSource();
+    }
+
+    // ============ DESTINATARIO ============
+
+    // Carga destinatarios habituales del remitente seleccionado (porte PAGADO).
+    // Lee /tickets where senderUid == remitente.docId (last 50) y extrae únicos.
+    function _pndLoadHistoryDestinations() {
+        if (!_pndPickedClient || !_pndPickedClient.docId) return Promise.resolve([]);
+        if (_pndDestCacheHistory) return Promise.resolve(_pndDestCacheHistory);
+        return db.collection('tickets')
+            .where('senderUid', '==', _pndPickedClient.docId)
+            .orderBy('createdAt', 'desc')
+            .limit(50).get()
+            .then(function(snap) {
+                var seen = {};
+                var arr = [];
+                snap.forEach(function(s) {
+                    var t = s.data() || {};
+                    var name = t.receiver || t.clientName || '';
+                    if (!name) return;
+                    var cp = t.cp || t.receiverCp || '';
+                    var loc = t.localidad || t.city || '';
+                    var key = (name + '|' + cp + '|' + loc).toLowerCase();
+                    if (seen[key]) { seen[key].count++; return; }
+                    var rec = {
+                        source: 'history',
+                        name: name,
+                        cp: cp,
+                        localidad: loc,
+                        address: t.address || '',
+                        phone: t.phone || t.receiverPhone || '',
+                        nif: t.receiverNif || '',
+                        receiverUid: t.receiverUid || '',
+                        count: 1
+                    };
+                    seen[key] = rec;
+                    arr.push(rec);
+                });
+                arr.sort(function(a, b) { return (b.count || 0) - (a.count || 0); });
+                _pndDestCacheHistory = arr;
+                return arr;
+            })
+            .catch(function(err) {
+                console.warn('[pnd] history dest fail (probable falta de senderUid en tickets antiguos):', err);
+                // Fallback: por nombre sender literal
+                return db.collection('tickets')
+                    .where('sender', '==', _pndPickedClient.name)
+                    .orderBy('createdAt', 'desc').limit(50).get()
+                    .then(function(snap) {
+                        var seen = {}; var arr = [];
+                        snap.forEach(function(s) {
+                            var t = s.data() || {};
+                            var name = t.receiver || t.clientName || '';
+                            if (!name) return;
+                            var cp = t.cp || '';
+                            var loc = t.localidad || t.city || '';
+                            var key = (name + '|' + cp + '|' + loc).toLowerCase();
+                            if (seen[key]) { seen[key].count++; return; }
+                            var rec = { source:'history', name:name, cp:cp, localidad:loc, address:t.address||'', phone:t.phone||'', nif:'', receiverUid:'', count:1 };
+                            seen[key] = rec; arr.push(rec);
+                        });
+                        arr.sort(function(a,b){ return (b.count||0)-(a.count||0); });
+                        _pndDestCacheHistory = arr;
+                        return arr;
+                    })
+                    .catch(function(){ _pndDestCacheHistory = []; return []; });
+            });
+    }
+
+    // Carga directorio global de clientes (porte DEBIDO).
+    function _pndLoadGlobalClients() {
+        if (_pndDestCacheGlobal) return Promise.resolve(_pndDestCacheGlobal);
+        return db.collection('config').doc('clients_directory').collection('list').doc('all').get()
+            .then(function(snap) {
+                var arr = snap.exists ? (snap.data().clients || []) : [];
+                arr = arr.map(function(c) {
+                    return Object.assign({}, c, { source: 'global' });
+                });
+                _pndDestCacheGlobal = arr;
+                return arr;
+            })
+            .catch(function(err) {
+                console.warn('[pnd] global clients dir fail:', err);
+                _pndDestCacheGlobal = [];
+                return [];
+            });
+    }
+
+    function _pndPreloadDestSource() {
+        if (_pndPorte === 'PAGADO') {
+            _pndLoadHistoryDestinations().then(function(list) {
+                console.log('[pnd] destinatarios habituales:', list.length);
+                _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+            });
+        } else if (_pndPorte === 'DEBIDO') {
+            _pndLoadGlobalClients().then(function(list) {
+                console.log('[pnd] clientes globales:', list.length);
+                _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+            });
+        }
+    }
+
+    function _pndCurrentDestList() {
+        if (_pndPorte === 'PAGADO') return _pndDestCacheHistory || [];
+        if (_pndPorte === 'DEBIDO') return _pndDestCacheGlobal || [];
+        return [];
+    }
+
+    function _pndRenderDestResults(query) {
+        var wrap = document.getElementById('pnd-dest-results');
+        if (!wrap) return;
+        var list = _pndCurrentDestList();
+        var q = (query || '').trim().toLowerCase();
+
+        // Si no hay query: mostrar top 8 sugerencias (habituales)
+        var matches;
+        if (!q) {
+            matches = list.slice(0, 8);
+        } else {
+            matches = list.filter(function(c) {
+                var hay = ((c.name||'') + ' ' + (c.nif||'') + ' ' + (c.localidad||'') + ' ' + (c.cp||'')).toLowerCase();
+                return hay.indexOf(q) !== -1;
+            }).slice(0, 20);
+        }
+
+        if (!matches.length) {
+            wrap.style.display = !q ? 'none' : 'block';
+            wrap.innerHTML = q ? '<div style="padding:10px; font-size:0.76rem; color:#888;">Sin resultados. Usa "introducir manualmente".</div>' : '';
+            return;
+        }
+
+        wrap.style.display = 'block';
+        wrap.innerHTML = matches.map(function(c, idx) {
+            var nifLine = c.nif ? (' · ' + _escDest(c.nif)) : '';
+            var locLine = (c.cp || c.localidad) ? (' · ' + _escDest([c.cp, c.localidad].filter(Boolean).join(' '))) : '';
+            var freq = (c.source === 'history' && c.count > 1) ? ' <span style="color:#5DADE2; font-weight:700;">×' + c.count + '</span>' : '';
+            return '<div class="pnd-dest-item" data-idx="' + idx + '" style="padding:9px 11px; border-bottom:1px solid #2a2a2a; cursor:pointer; font-size:0.83rem;">' +
+                '<div style="font-weight:700; color:#fff;">' + _escDest(c.name) + freq + '</div>' +
+                '<div style="font-size:0.68rem; color:#888; margin-top:2px;">' + nifLine.replace(/^ · /, '') + locLine + '</div>' +
+            '</div>';
+        }).join('');
+        Array.prototype.forEach.call(wrap.querySelectorAll('.pnd-dest-item'), function(el) {
+            el.addEventListener('click', function() {
+                var i = parseInt(this.dataset.idx, 10);
+                var c = matches[i];
+                if (c) _pndPickDest(c);
+            });
+        });
+    }
+
+    function _escDest(s) {
+        return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function _pndPickDest(c) {
+        _pndDestPicked = c;
+        document.getElementById('pnd-dest-search').value = '';
+        document.getElementById('pnd-dest-results').style.display = 'none';
+        document.getElementById('pnd-dest-results').innerHTML = '';
+        document.getElementById('pnd-dest-picked').style.display = 'block';
+        document.getElementById('pnd-dest-picked-name').textContent = c.name || '(sin nombre)';
+        var meta = '';
+        if (c.nif) meta += c.nif;
+        var loc = [c.cp, c.localidad].filter(Boolean).join(' ');
+        if (loc) meta += (meta ? ' · ' : '') + loc;
+        if (c.address) meta += (meta ? ' · ' : '') + c.address;
+        document.getElementById('pnd-dest-picked-meta').textContent = meta || '—';
+        // ocultar manual si estaba abierto
+        _pndDestManualMode = false;
+        document.getElementById('pnd-dest-manual-wrap').style.display = 'none';
+    }
+
+    function _pndSetPorte(value) {
+        _pndPorte = value;
+        // toggle visual
+        document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+            var input = el.querySelector('input[name="pnd-porte"]');
+            el.classList.toggle('active', input && input.value === value);
+            if (input) input.checked = (input.value === value);
+        });
+        // mostrar sección destinatario
+        var wrap = document.getElementById('pnd-dest-wrap');
+        if (wrap) wrap.style.display = value ? 'block' : 'none';
+        // textos contextuales
+        var tag = document.getElementById('pnd-dest-mode-tag');
+        var hint = document.getElementById('pnd-dest-hint');
+        if (value === 'PAGADO') {
+            if (tag) tag.textContent = '(opcional · habituales del remitente)';
+            if (hint) hint.textContent = 'Si el remitente te dice a dónde va, anótalo. Sugerencias automáticas de envíos anteriores.';
+        } else if (value === 'DEBIDO') {
+            if (tag) tag.textContent = '(busca en clientes NOVAPACK · paga al recibir)';
+            if (hint) hint.textContent = 'El destinatario paga el porte → es cliente NOVAPACK. Búscalo por nombre o NIF.';
+        }
+        // Limpiar selección previa de destinatario al cambiar porte
+        _pndDestPicked = null;
+        var picked = document.getElementById('pnd-dest-picked'); if (picked) picked.style.display = 'none';
+        var ds = document.getElementById('pnd-dest-search'); if (ds) ds.value = '';
+        var dr = document.getElementById('pnd-dest-results'); if (dr) { dr.style.display = 'none'; dr.innerHTML = ''; }
+        var dmw = document.getElementById('pnd-dest-manual-wrap'); if (dmw) dmw.style.display = 'none';
+        ['pnd-dest-manual-name','pnd-dest-manual-cp','pnd-dest-manual-loc','pnd-dest-manual-addr','pnd-dest-manual-phone'].forEach(function(id){
+            var el = document.getElementById(id); if (el) el.value = '';
+        });
+        _pndDestManualMode = false;
+        // Cargar fuente correspondiente
+        _pndPreloadDestSource();
     }
 
     function _pndResetModal() {
@@ -4124,7 +4339,13 @@ function initApp() {
         _pndPhotoDataUrl = '';
         _pndPickedClient = null;
         _pndManualMode = false;
-        var ids = ['pnd-client-search','pnd-client-manual-name','pnd-client-manual-nif','pnd-weight','pnd-note'];
+        _pndPorte = '';
+        _pndDestPicked = null;
+        _pndDestManualMode = false;
+        _pndDestCacheHistory = null;
+        var ids = ['pnd-client-search','pnd-client-manual-name','pnd-client-manual-nif','pnd-weight','pnd-note',
+                   'pnd-dest-search','pnd-dest-manual-name','pnd-dest-manual-cp','pnd-dest-manual-loc',
+                   'pnd-dest-manual-addr','pnd-dest-manual-phone'];
         ids.forEach(function(id){ var el = document.getElementById(id); if (el) el.value=''; });
         var bul = document.getElementById('pnd-bultos'); if (bul) bul.value = '1';
         var preview = document.getElementById('pnd-photo-preview'); if (preview) { preview.style.display='none'; preview.src=''; }
@@ -4132,6 +4353,14 @@ function initApp() {
         var picked = document.getElementById('pnd-client-picked'); if (picked) picked.style.display='none';
         var manualWrap = document.getElementById('pnd-client-manual-wrap'); if (manualWrap) manualWrap.style.display='none';
         var results = document.getElementById('pnd-client-results'); if (results) { results.style.display='none'; results.innerHTML=''; }
+        var destWrap = document.getElementById('pnd-dest-wrap'); if (destWrap) destWrap.style.display='none';
+        var destPick = document.getElementById('pnd-dest-picked'); if (destPick) destPick.style.display='none';
+        var destManual = document.getElementById('pnd-dest-manual-wrap'); if (destManual) destManual.style.display='none';
+        var destRes = document.getElementById('pnd-dest-results'); if (destRes) { destRes.style.display='none'; destRes.innerHTML=''; }
+        document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+            el.classList.remove('active');
+            var inp = el.querySelector('input[name="pnd-porte"]'); if (inp) inp.checked = false;
+        });
     }
 
     window._pickupNoDocOpenModal = function() {
@@ -4173,6 +4402,38 @@ function initApp() {
             _pndPickedClient = null;
             document.getElementById('pnd-client-picked').style.display = 'none';
             document.getElementById('pnd-client-manual-name').focus();
+        }
+    });
+
+    // ===== DESTINATARIO + PORTE =====
+    document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+        el.addEventListener('click', function() {
+            var input = el.querySelector('input[name="pnd-porte"]');
+            if (input) _pndSetPorte(input.value);
+        });
+    });
+
+    var pndDestSearch = document.getElementById('pnd-dest-search');
+    if (pndDestSearch) {
+        pndDestSearch.addEventListener('input', function() { _pndRenderDestResults(this.value); });
+        pndDestSearch.addEventListener('focus', function() { _pndRenderDestResults(this.value); });
+    }
+
+    var pndDestClear = document.getElementById('pnd-dest-clear');
+    if (pndDestClear) pndDestClear.addEventListener('click', function() {
+        _pndDestPicked = null;
+        document.getElementById('pnd-dest-picked').style.display = 'none';
+        var s = document.getElementById('pnd-dest-search'); if (s) s.focus();
+    });
+
+    var pndDestManualBtn = document.getElementById('pnd-dest-manual');
+    if (pndDestManualBtn) pndDestManualBtn.addEventListener('click', function() {
+        _pndDestManualMode = !_pndDestManualMode;
+        document.getElementById('pnd-dest-manual-wrap').style.display = _pndDestManualMode ? 'block' : 'none';
+        if (_pndDestManualMode) {
+            _pndDestPicked = null;
+            document.getElementById('pnd-dest-picked').style.display = 'none';
+            document.getElementById('pnd-dest-manual-name').focus();
         }
     });
 
@@ -4225,6 +4486,7 @@ function initApp() {
     if (pndSaveBtn) pndSaveBtn.addEventListener('click', async function() {
         try {
             // Validaciones
+            if (!_pndPorte) { showToast('Selecciona PAGADO o DEBIDO', 'warning'); return; }
             var bultos = parseInt(document.getElementById('pnd-bultos').value, 10);
             if (!bultos || bultos < 1) { showToast('Indica número de bultos', 'warning'); return; }
             if (!_pndPhotoDataUrl) { showToast('Foto obligatoria', 'warning'); return; }
@@ -4243,10 +4505,45 @@ function initApp() {
             } else if (_pndManualMode) {
                 var manualName = (document.getElementById('pnd-client-manual-name').value || '').trim();
                 var manualNif = (document.getElementById('pnd-client-manual-nif').value || '').trim();
-                if (!manualName) { showToast('Indica el nombre del cliente', 'warning'); return; }
+                if (!manualName) { showToast('Indica el nombre del remitente', 'warning'); return; }
                 clientInfo = { docId: '', idNum: '', name: manualName, nif: manualNif, cp: '', localidad: '', compId: '', manual: true };
             } else {
-                showToast('Selecciona o introduce el cliente', 'warning'); return;
+                showToast('Selecciona o introduce el remitente', 'warning'); return;
+            }
+
+            // Destinatario (opcional excepto si DEBIDO → muy recomendado pero no forzamos)
+            var destInfo = null;
+            if (_pndDestPicked) {
+                destInfo = {
+                    docId: _pndDestPicked.docId || '',
+                    idNum: _pndDestPicked.idNum || '',
+                    name: _pndDestPicked.name || '',
+                    nif: _pndDestPicked.nif || '',
+                    cp: _pndDestPicked.cp || '',
+                    localidad: _pndDestPicked.localidad || '',
+                    address: _pndDestPicked.address || '',
+                    phone: _pndDestPicked.phone || '',
+                    source: _pndDestPicked.source || ''
+                };
+            } else if (_pndDestManualMode) {
+                var dn = (document.getElementById('pnd-dest-manual-name').value || '').trim();
+                if (dn) {
+                    destInfo = {
+                        docId: '',
+                        idNum: '',
+                        name: dn,
+                        nif: '',
+                        cp: (document.getElementById('pnd-dest-manual-cp').value || '').trim(),
+                        localidad: (document.getElementById('pnd-dest-manual-loc').value || '').trim(),
+                        address: (document.getElementById('pnd-dest-manual-addr').value || '').trim(),
+                        phone: (document.getElementById('pnd-dest-manual-phone').value || '').trim(),
+                        source: 'manual'
+                    };
+                }
+            }
+            // Aviso (no bloqueante) si DEBIDO sin destinatario: el receptor paga, sin él la facturación no puede emitirse
+            if (_pndPorte === 'DEBIDO' && !destInfo) {
+                if (!confirm('PORTE DEBIDO sin destinatario.\n\nSin destinatario el sistema no puede facturar el porte (a quién cobrarle).\n\n¿Crear el pre-albarán de todas formas? (el cliente lo completará luego)')) return;
             }
 
             pndSaveBtn.disabled = true;
@@ -4269,8 +4566,9 @@ function initApp() {
                 pendingClientCompletion: true,
                 status: 'pending_client_completion',
 
-                // Cliente origen
+                // Remitente (origen — quien envía)
                 uid: clientInfo.docId || null,
+                senderUid: clientInfo.docId || null,
                 clientIdNum: clientInfo.idNum || '',
                 sender: clientInfo.name || '',
                 senderNif: clientInfo.nif || '',
@@ -4278,6 +4576,21 @@ function initApp() {
                 senderLocalidad: clientInfo.localidad || '',
                 compId: clientInfo.compId || '',
                 clientManualEntry: !!clientInfo.manual,
+
+                // Porte (obligatorio)
+                paymentType: _pndPorte,          // 'PAGADO' | 'DEBIDO'
+                portePagadoBy: _pndPorte === 'DEBIDO' ? 'receiver' : 'sender',
+
+                // Destinatario (puede estar incompleto si el cliente lo completa después)
+                receiver: destInfo ? destInfo.name : '',
+                receiverNif: destInfo ? destInfo.nif : '',
+                receiverUid: destInfo ? destInfo.docId : '',
+                receiverIdNum: destInfo ? destInfo.idNum : '',
+                cp: destInfo ? destInfo.cp : '',
+                localidad: destInfo ? destInfo.localidad : '',
+                address: destInfo ? destInfo.address : '',
+                phone: destInfo ? destInfo.phone : '',
+                receiverSource: destInfo ? destInfo.source : '',
 
                 // Datos de recogida (pre-albarán)
                 pickupBy: currentDriverName || '',
@@ -4319,15 +4632,21 @@ function initApp() {
             // 5) Notificación al cliente (user_notifications)
             try {
                 if (clientInfo.docId) {
+                    var bodyParts = ['El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán.'];
+                    bodyParts.push('Porte: ' + _pndPorte + '.');
+                    if (destInfo) bodyParts.push('Destinatario apuntado: ' + destInfo.name + (destInfo.localidad ? ' (' + destInfo.localidad + ')' : '') + '.');
+                    else bodyParts.push('Sin destinatario — complétalo desde tu app.');
+                    bodyParts.push('Plazo de 24h para completar/impugnar.');
                     var notif = {
                         uid: clientInfo.docId,
                         type: 'pickup_no_albaran',
                         title: '⚠️ Recogida sin albarán — completa en 24h',
-                        body: 'El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán. Plazo de 24h para completar el albarán o impugnar. Pasado ese plazo, prevalecerán los datos del repartidor.',
+                        body: bodyParts.join(' '),
                         ticketId: label,
                         docId: newDocId,
                         reportedBy: currentDriverName || '',
                         bultos: bultos,
+                        paymentType: _pndPorte,
                         impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                         read: false
@@ -4351,6 +4670,13 @@ function initApp() {
                     senderName: clientInfo.name || '',
                     senderNif: clientInfo.nif || '',
                     senderManual: !!clientInfo.manual,
+                    paymentType: _pndPorte,
+                    receiver: destInfo ? destInfo.name : '',
+                    receiverNif: destInfo ? destInfo.nif : '',
+                    receiverUid: destInfo ? destInfo.docId : '',
+                    receiverCp: destInfo ? destInfo.cp : '',
+                    receiverLocalidad: destInfo ? destInfo.localidad : '',
+                    receiverSource: destInfo ? destInfo.source : '',
                     bultos: bultos,
                     weight: weightStr ? parseFloat(weightStr) : null,
                     note: note,

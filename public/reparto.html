@@ -218,7 +218,7 @@
     </style>
 
     <!-- App Logic -->
-    <script src="reparto.js?v=20260515_copiloto_v2" defer></script>
+    <script src="reparto.js?v=20260515_porte_dest" defer></script>
     <script src="copiloto.js?v=20260515_copiloto_v2" defer></script>
     <script src="ocr.js" defer></script>
 </head>
@@ -754,6 +754,11 @@
     </div>
 </div>
 
+<style>
+    .pnd-porte-opt.active { background: rgba(229,57,53,0.18) !important; border-color: #E53935 !important; color: #fff !important; }
+    .pnd-porte-opt.active div { color: #ffcdc7 !important; }
+</style>
+
 <!-- ===== MODAL: RECOGIDA SIN ALBARÁN (PRE-ALBARÁN) ===== -->
 <div id="pickup-no-doc-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.92); z-index:100001; padding:14px; overflow-y:auto;">
     <div style="max-width:560px; margin:0 auto; background:#1a1a1a; border:2px solid #E53935; border-radius:14px; padding:16px; color:#eee;">
@@ -765,9 +770,10 @@
             ℹ️ Genera un <strong>pre-albarán</strong> con tu conteo + foto. El cliente recibirá un aviso para completarlo en 24h. Si no lo hace, prevalecen los datos que aquí registres.
         </div>
 
-        <!-- Paso 1: Cliente origen -->
+        <!-- Paso 1: REMITENTE (origen — quien envía) -->
         <div style="margin-bottom:14px;">
-            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">1️⃣ CLIENTE QUE ENTREGA</label>
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">1️⃣ REMITENTE <span style="color:#666; font-weight:400;">(de dónde recoges)</span></label>
+            <p style="font-size:0.7rem; color:#777; margin:0 0 6px; line-height:1.35;">El cliente que reconoces por su precinto / etiqueta interna.</p>
             <input type="text" id="pnd-client-search" placeholder="Busca por nombre o NIF…" autocomplete="off" style="width:100%; padding:11px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
             <div id="pnd-client-results" style="max-height:180px; overflow-y:auto; margin-top:4px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; display:none;"></div>
             <div id="pnd-client-picked" style="display:none; margin-top:8px; padding:10px; background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.4); border-radius:8px; font-size:0.85rem;">
@@ -779,28 +785,76 @@
                     <button id="pnd-client-clear" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Cambiar</button>
                 </div>
             </div>
-            <button id="pnd-client-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Cliente no encontrado · introducir manualmente</button>
+            <button id="pnd-client-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Remitente no encontrado · introducir manualmente</button>
             <div id="pnd-client-manual-wrap" style="display:none; margin-top:8px; gap:6px;">
-                <input type="text" id="pnd-client-manual-name" placeholder="Nombre comercial del cliente" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:6px;">
+                <input type="text" id="pnd-client-manual-name" placeholder="Nombre comercial del remitente" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:6px;">
                 <input type="text" id="pnd-client-manual-nif" placeholder="NIF / CIF (opcional)" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
             </div>
         </div>
 
-        <!-- Paso 2: Conteo + foto -->
+        <!-- Paso 2: PORTE (toggle obligatorio) + DESTINATARIO -->
         <div style="margin-bottom:14px;">
-            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">2️⃣ Nº DE BULTOS RECOGIDOS</label>
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">2️⃣ PORTE <span style="color:#E53935; font-weight:700;">(obligatorio)</span></label>
+            <p style="font-size:0.7rem; color:#777; margin:0 0 6px; line-height:1.35;">Quién paga el envío. Cambia dónde buscar al destinatario.</p>
+            <div style="display:flex; gap:6px;">
+                <label class="pnd-porte-opt" style="flex:1; padding:11px; background:rgba(255,255,255,0.04); border:2px solid #333; border-radius:8px; cursor:pointer; text-align:center; font-size:0.85rem; font-weight:700;">
+                    <input type="radio" name="pnd-porte" value="PAGADO" style="display:none;">
+                    <span>📤 PAGADO</span>
+                    <div style="font-size:0.62rem; color:#888; font-weight:400; margin-top:2px;">paga el remitente</div>
+                </label>
+                <label class="pnd-porte-opt" style="flex:1; padding:11px; background:rgba(255,255,255,0.04); border:2px solid #333; border-radius:8px; cursor:pointer; text-align:center; font-size:0.85rem; font-weight:700;">
+                    <input type="radio" name="pnd-porte" value="DEBIDO" style="display:none;">
+                    <span>📥 DEBIDO</span>
+                    <div style="font-size:0.62rem; color:#888; font-weight:400; margin-top:2px;">paga el destinatario</div>
+                </label>
+            </div>
+        </div>
+
+        <!-- Destinatario (solo visible cuando se elige porte) -->
+        <div id="pnd-dest-wrap" style="display:none; margin-bottom:14px; padding:12px; background:rgba(33,150,243,0.06); border:1px solid rgba(33,150,243,0.25); border-radius:8px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">📍 DESTINATARIO <span id="pnd-dest-mode-tag" style="color:#888; font-weight:400;"></span></label>
+            <p id="pnd-dest-hint" style="font-size:0.7rem; color:#777; margin:0 0 8px; line-height:1.35;"></p>
+
+            <input type="text" id="pnd-dest-search" placeholder="Busca por nombre o NIF…" autocomplete="off" style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:7px; font-size:0.85rem; box-sizing:border-box;">
+            <div id="pnd-dest-results" style="max-height:160px; overflow-y:auto; margin-top:4px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:7px; display:none;"></div>
+
+            <div id="pnd-dest-picked" style="display:none; margin-top:8px; padding:9px; background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.4); border-radius:7px; font-size:0.82rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-weight:800; color:#4CAF50;" id="pnd-dest-picked-name">—</div>
+                        <div style="font-size:0.68rem; color:#aaa; margin-top:2px;" id="pnd-dest-picked-meta">—</div>
+                    </div>
+                    <button id="pnd-dest-clear" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.72rem; cursor:pointer;">Cambiar</button>
+                </div>
+            </div>
+
+            <button id="pnd-dest-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.73rem; cursor:pointer;">+ Introducir destinatario manualmente</button>
+            <div id="pnd-dest-manual-wrap" style="display:none; margin-top:8px;">
+                <input type="text" id="pnd-dest-manual-name" placeholder="Nombre del destinatario" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box; margin-bottom:6px;">
+                <div style="display:flex; gap:6px; margin-bottom:6px;">
+                    <input type="text" id="pnd-dest-manual-cp" placeholder="CP" maxlength="5" inputmode="numeric" style="flex:0 0 80px; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+                    <input type="text" id="pnd-dest-manual-loc" placeholder="Localidad" style="flex:1; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+                </div>
+                <input type="text" id="pnd-dest-manual-addr" placeholder="Dirección (calle, nº)" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box; margin-bottom:6px;">
+                <input type="tel" id="pnd-dest-manual-phone" placeholder="Tel. receptor (opcional)" inputmode="tel" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+            </div>
+        </div>
+
+        <!-- Paso 3: Conteo + foto -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">3️⃣ Nº DE BULTOS RECOGIDOS</label>
             <input type="number" id="pnd-bultos" inputmode="numeric" min="1" max="999" value="1" style="width:100%; padding:18px; background:#0a0a0a; border:2px solid #E53935; color:#fff; border-radius:10px; font-size:1.6rem; font-weight:900; text-align:center; box-sizing:border-box;">
         </div>
 
         <div style="margin-bottom:14px;">
-            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">📷 FOTO DEL LOTE (obligatoria)</label>
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">4️⃣ FOTO DEL LOTE (obligatoria)</label>
             <input type="file" id="pnd-photo-input" accept="image/*" capture="environment" style="display:none;">
             <div style="display:flex; gap:8px; align-items:center;">
                 <button id="pnd-take-photo" style="flex:1; background:rgba(255,255,255,0.08); border:1px solid #555; color:#fff; padding:14px; border-radius:8px; cursor:pointer; font-weight:700;">📷 Tomar foto del lote</button>
                 <span id="pnd-photo-status" style="font-size:0.75rem; color:#FF8A50; min-width:80px;">Sin foto</span>
             </div>
             <img id="pnd-photo-preview" style="display:none; width:100%; max-height:180px; object-fit:contain; border-radius:8px; margin-top:8px; border:1px solid #333;">
-            <p style="font-size:0.68rem; color:#888; margin:6px 0 0; line-height:1.4;">Captura el lote agrupado para tener evidencia visual del volumen.</p>
+            <p style="font-size:0.68rem; color:#888; margin:6px 0 0; line-height:1.4;">Asegúrate de que el precinto / etiqueta del remitente sea visible — sirve como prueba del origen.</p>
         </div>
 
         <details style="margin-bottom:14px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; padding:8px 12px;">
