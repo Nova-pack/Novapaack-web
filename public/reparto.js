@@ -3666,5 +3666,288 @@ function initApp() {
         }
     }, 2000);
 
+    // ════════════════════════════════════════════════════════════════
+    //  DISCREPANCIA — corrección de items en recogida con foto obligatoria
+    // ════════════════════════════════════════════════════════════════
+    var _discPhotoDataUrl = null;
+    var _discSenderItems = null; // items de la tarifa del cliente remitente
+
+    // Compresión de foto antes de subir (4G rural friendly)
+    async function _discCompressPhoto(file) {
+        return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function() {
+                var img = new Image();
+                img.onload = function() {
+                    var maxDim = 1280;
+                    var w = img.width, h = img.height;
+                    if (w > maxDim || h > maxDim) {
+                        var scale = Math.min(maxDim / w, maxDim / h);
+                        w = Math.round(w * scale);
+                        h = Math.round(h * scale);
+                    }
+                    var canvas = document.createElement('canvas');
+                    canvas.width = w; canvas.height = h;
+                    var ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    var dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+                    resolve(dataUrl);
+                };
+                img.onerror = reject;
+                img.src = reader.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // Carga los items de la tarifa del remitente (cliente que envía)
+    async function _discLoadSenderTariffItems(ticket) {
+        try {
+            var senderUid = ticket.uid || ticket.senderUid || null;
+            if (!senderUid) return [];
+            var userDoc = await db.collection('users').doc(senderUid).get();
+            if (!userDoc.exists) {
+                // Buscar por clientIdNum
+                if (ticket.clientIdNum) {
+                    var q = await db.collection('users').where('idNum', '==', String(ticket.clientIdNum)).limit(1).get();
+                    if (!q.empty) userDoc = q.docs[0];
+                }
+            }
+            if (!userDoc.exists) return [];
+            var u = userDoc.data();
+            if (!u.tariffId) return [];
+            var tid = String(u.tariffId).trim();
+            var candidates = [tid, 'GLOBAL_' + tid, 'GLOBAL_' + tid + '_v2'];
+            for (var i = 0; i < candidates.length; i++) {
+                try {
+                    var td = await db.collection('tariffs').doc(candidates[i]).get();
+                    if (td.exists) {
+                        var data = td.data() || {};
+                        if (Array.isArray(data.items)) {
+                            return data.items.filter(function(it) { return it && it.mode !== 'flat_monthly'; })
+                                              .map(function(it) { return { id: it.id, name: it.name || it.id }; });
+                        }
+                        if (data.items && typeof data.items === 'object') {
+                            return Object.keys(data.items).map(function(k) { return { id: k, name: k }; });
+                        }
+                    }
+                } catch(e) {}
+            }
+        } catch(e) { console.warn('[disc] tariff load:', e.message); }
+        return [];
+    }
+
+    function _discRenderItemRow(pkg, idx, total) {
+        var optsHtml = '<option value="">— Selecciona artículo —</option>';
+        if (_discSenderItems && _discSenderItems.length) {
+            _discSenderItems.forEach(function(it) {
+                var sel = (pkg.size === it.name || pkg.size === it.id) ? ' selected' : '';
+                optsHtml += '<option value="' + escapeHtml(it.name) + '"' + sel + '>' + escapeHtml(it.name) + '</option>';
+            });
+        }
+        // Por si el item original no está en la tarifa, lo añadimos como custom
+        if (pkg.size && _discSenderItems && !_discSenderItems.find(function(x) { return x.name === pkg.size || x.id === pkg.size; })) {
+            optsHtml += '<option value="' + escapeHtml(pkg.size) + '" selected>' + escapeHtml(pkg.size) + ' (custom)</option>';
+        }
+
+        return '<div class="disc-item-row" data-idx="' + idx + '" style="background:rgba(255,255,255,0.04); border:1px solid #2d2d30; border-radius:8px; padding:10px; margin-bottom:8px; display:grid; grid-template-columns:70px 1fr 36px; gap:6px; align-items:center;">'
+            + '<input type="number" inputmode="numeric" min="1" value="' + (pkg.qty || 1) + '" data-disc-qty style="padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; text-align:center; font-weight:700; font-size:0.95rem;">'
+            + '<select data-disc-size style="padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem;">' + optsHtml + '</select>'
+            + (total > 1 ? '<button type="button" data-disc-del style="background:transparent; border:1px solid #f44; color:#f44; padding:8px; border-radius:6px; cursor:pointer; font-weight:700;">×</button>' : '<span></span>')
+            + '</div>';
+    }
+
+    function _discRenderItems(items) {
+        var wrap = document.getElementById('disc-items-edit');
+        if (!wrap) return;
+        wrap.innerHTML = items.map(function(p, i) { return _discRenderItemRow(p, i, items.length); }).join('');
+        // Wire delete
+        wrap.querySelectorAll('[data-disc-del]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var row = btn.closest('.disc-item-row');
+                if (row) row.remove();
+                // re-render para reactualizar el botón × (si queda 1, ocultarlo)
+                _discRenderItems(_discReadItems());
+            });
+        });
+    }
+
+    function _discReadItems() {
+        var rows = document.querySelectorAll('#disc-items-edit .disc-item-row');
+        var out = [];
+        rows.forEach(function(r) {
+            var qty = parseInt(r.querySelector('[data-disc-qty]').value, 10) || 0;
+            var size = r.querySelector('[data-disc-size]').value;
+            if (qty > 0 && size) out.push({ qty: qty, size: size, weight: 0 });
+        });
+        return out;
+    }
+
+    window._discOpenModal = async function() {
+        if (!currentScanDoc) { showToast('No hay albarán cargado.', 'error'); return; }
+        var d = currentScanDoc;
+        document.getElementById('disc-ticket-id').textContent = d.id || d._id || '?';
+
+        // Mostrar declarado
+        var declared = (d.packagesList && d.packagesList.length) ? d.packagesList : [{ qty: getPackageCount(d), size: d.size || 'Bulto', weight: d.weight || 0 }];
+        document.getElementById('disc-declared').innerHTML = declared.map(function(p) {
+            return (p.qty || 1) + ' × ' + escapeHtml(p.size || 'Bulto') + (p.weight ? ' (' + p.weight + 'kg)' : '');
+        }).join('<br>');
+
+        // Cargar items de la tarifa del remitente
+        showLoading();
+        _discSenderItems = await _discLoadSenderTariffItems(d);
+        hideLoading();
+
+        // Items iniciales = copia de los declarados (el repartidor parte de eso y corrige)
+        var initial = declared.map(function(p) { return { qty: p.qty || 1, size: p.size || 'Bulto', weight: p.weight || 0 }; });
+        _discRenderItems(initial);
+        _discPhotoDataUrl = null;
+        document.getElementById('disc-photo-status').textContent = 'Sin foto';
+        document.getElementById('disc-photo-preview').style.display = 'none';
+        document.getElementById('disc-photo-preview').src = '';
+        document.getElementById('disc-reason').value = '';
+
+        document.getElementById('discrepancy-modal').style.display = 'block';
+    };
+
+    // Wire global (porque el botón se renderiza dinámicamente)
+    document.addEventListener('click', function(e) {
+        if (e.target && e.target.closest && e.target.closest('#btn-open-discrepancy')) {
+            window._discOpenModal();
+        }
+    });
+
+    // Wire modal interno (al estar siempre en el DOM podemos engancharlo una vez)
+    var discCloseBtn = document.getElementById('disc-close');
+    if (discCloseBtn) discCloseBtn.addEventListener('click', function() {
+        document.getElementById('discrepancy-modal').style.display = 'none';
+    });
+
+    var discAddBtn = document.getElementById('disc-add-item');
+    if (discAddBtn) discAddBtn.addEventListener('click', function() {
+        var current = _discReadItems();
+        current.push({ qty: 1, size: '', weight: 0 });
+        _discRenderItems(current);
+    });
+
+    var discTakeBtn = document.getElementById('disc-take-photo');
+    var discPhotoInput = document.getElementById('disc-photo-input');
+    if (discTakeBtn && discPhotoInput) {
+        discTakeBtn.addEventListener('click', function() { discPhotoInput.click(); });
+        discPhotoInput.addEventListener('change', async function(e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file) return;
+            try {
+                showLoading();
+                _discPhotoDataUrl = await _discCompressPhoto(file);
+                document.getElementById('disc-photo-preview').src = _discPhotoDataUrl;
+                document.getElementById('disc-photo-preview').style.display = 'block';
+                document.getElementById('disc-photo-status').textContent = '✓ Foto lista';
+                document.getElementById('disc-photo-status').style.color = '#4CAF50';
+            } catch(err) {
+                showToast('Error procesando foto: ' + err.message, 'error');
+            } finally { hideLoading(); }
+        });
+    }
+
+    var discSaveBtn = document.getElementById('disc-save');
+    if (discSaveBtn) discSaveBtn.addEventListener('click', async function() {
+        if (!currentScanDoc) return;
+        if (!_discPhotoDataUrl) {
+            showToast('La foto es OBLIGATORIA para registrar la discrepancia.', 'error', 5000);
+            return;
+        }
+        var newItems = _discReadItems();
+        if (!newItems.length) {
+            showToast('Añade al menos un artículo recogido.', 'error');
+            return;
+        }
+        var reason = document.getElementById('disc-reason').value || '';
+        discSaveBtn.disabled = true;
+        discSaveBtn.textContent = 'Guardando…';
+        try {
+            var d = currentScanDoc;
+            var docId = d._id;
+            var ref = d._ref || db.collection('tickets').doc(docId);
+
+            // Subir foto a Storage para no inflar el doc Firestore
+            var photoUrl = null;
+            try {
+                var storageRef = firebase.storage().ref('discrepancies/' + docId + '_' + Date.now() + '.jpg');
+                var snap = await storageRef.putString(_discPhotoDataUrl, 'data_url');
+                photoUrl = await snap.ref.getDownloadURL();
+            } catch(uploadErr) {
+                console.warn('[disc] storage upload falló, guardando dataUrl en el doc:', uploadErr.message);
+                // Fallback: guarda como dataUrl en el doc (más pesado pero funciona offline-friendly)
+                photoUrl = _discPhotoDataUrl;
+            }
+
+            // Audit trail completo
+            var update = {
+                declaredPackagesList: d.packagesList || null,  // congelar lo declarado original
+                packagesList: newItems,                          // lo que se factura: lo recogido real
+                discrepancyDetected: true,
+                discrepancyReason: reason,
+                discrepancyPhoto: photoUrl,
+                discrepancyAt: firebase.firestore.FieldValue.serverTimestamp(),
+                discrepancyByPhone: currentDriverPhone,
+                discrepancyByName: currentDriverName,
+                discrepancyRoute: currentRouteLabel || ''
+            };
+            await ref.update(update);
+
+            // Incrementar discrepancyCount del cliente remitente
+            try {
+                var senderUid = d.uid || d.senderUid;
+                if (senderUid) {
+                    await db.collection('users').doc(senderUid).set({
+                        discrepancyCount: firebase.firestore.FieldValue.increment(1),
+                        lastDiscrepancyAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+
+            // Notificación al cliente vía mailbox (lo verá admin en buzón)
+            try {
+                await db.collection('mailbox').add({
+                    type: 'outgoing_discrepancy',
+                    status: 'queued',
+                    direction: 'outgoing',
+                    ticketRef: d.id || docId,
+                    ticketDocId: docId,
+                    clientId: d.uid || null,
+                    clientIdNum: d.clientIdNum || null,
+                    senderName: d.sender || '',
+                    reason: reason,
+                    declaredItems: d.packagesList || null,
+                    verifiedItems: newItems,
+                    photo: photoUrl,
+                    driverPhone: currentDriverPhone,
+                    driverName: currentDriverName,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    note: 'Discrepancia detectada en recogida. La factura se emitirá según los items realmente recogidos.'
+                });
+            } catch(_) {}
+
+            showToast('✅ Discrepancia registrada. Cliente notificado.', 'success', 4000);
+            try { navigator.vibrate && navigator.vibrate([50, 30, 50]); } catch(_) {}
+            document.getElementById('discrepancy-modal').style.display = 'none';
+
+            // Refrescar la card del scan-result con los nuevos datos
+            currentScanDoc.packagesList = newItems;
+            currentScanDoc.declaredPackagesList = update.declaredPackagesList;
+            currentScanDoc.discrepancyDetected = true;
+            await loadTicketForConfirmation(currentScanDoc);
+        } catch(err) {
+            console.error('[disc] save fail:', err);
+            showToast('Error guardando: ' + err.message, 'error', 6000);
+        } finally {
+            discSaveBtn.disabled = false;
+            discSaveBtn.textContent = '✅ GUARDAR DISCREPANCIA';
+        }
+    });
+
 } // END initApp
 })();

@@ -218,7 +218,7 @@
     </style>
 
     <!-- App Logic -->
-    <script src="reparto.js?v=20260514_carddate" defer></script>
+    <script src="reparto.js?v=20260514_discrepancy" defer></script>
     <script src="copiloto.js" defer></script>
     <script src="ocr.js" defer></script>
 </head>
@@ -511,6 +511,16 @@
                 </div>
                 <div id="scan-ticket-details" style="font-size:0.85rem; line-height:1.6; margin-bottom:12px;"></div>
 
+                <!-- Discrepancia / Corrección de items en recogida -->
+                <button class="btn" id="btn-open-discrepancy" style="width:100%; margin-bottom:10px; background:#FF9800; color:#000; border:0; padding:14px; border-radius:10px; font-weight:900; font-size:0.95rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
+                    <span class="material-symbols-outlined">edit_note</span>
+                    ✏️ DISCREPANCIA — corregir items recogidos
+                </button>
+                <p style="font-size:0.7rem; color:var(--text-dim); margin:0 0 14px; text-align:center; line-height:1.4;">
+                    Pulsa solo si lo recogido NO coincide con lo declarado por el cliente.
+                    Requiere foto. Se factura por lo recogido y se notifica al cliente.
+                </p>
+
                 <!-- Confirm Panel -->
                 <div class="confirm-panel" id="confirm-panel">
                     <h3><span class="material-symbols-outlined">task_alt</span> CONFIRMACIÓN DE ENTREGA</h3>
@@ -686,6 +696,51 @@
 
 <!-- ===== TOAST CONTAINER (outside main-app, always visible) ===== -->
 <div id="toast-container"></div>
+
+<!-- ===== MODAL: DISCREPANCIA / CORRECCIÓN DE ITEMS EN RECOGIDA ===== -->
+<div id="discrepancy-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100000; padding:14px; overflow-y:auto;">
+    <div style="max-width:560px; margin:0 auto; background:#1a1a1a; border:2px solid #FF9800; border-radius:14px; padding:16px; color:#eee;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0; color:#FF9800; font-size:1rem; font-weight:900;">✏️ DISCREPANCIA EN RECOGIDA</h3>
+            <button id="disc-close" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(255,152,0,0.08); border:1px solid rgba(255,152,0,0.3); border-radius:8px; padding:10px; margin-bottom:12px; font-size:0.78rem; line-height:1.45;">
+            ℹ️ <strong>Albarán: <span id="disc-ticket-id">—</span></strong><br>
+            Ajusta abajo lo realmente recogido. Foto obligatoria. Se notifica al cliente y la factura saldrá según ESTOS valores.
+        </div>
+
+        <div style="margin-bottom:6px; font-size:0.78rem; color:#FFB300; font-weight:700;">DECLARADO POR EL CLIENTE:</div>
+        <div id="disc-declared" style="background:rgba(255,255,255,0.04); border:1px solid #333; border-radius:8px; padding:8px 10px; margin-bottom:14px; font-size:0.8rem; color:#aaa; line-height:1.5;"></div>
+
+        <div style="margin-bottom:6px; font-size:0.8rem; color:#4CAF50; font-weight:700;">RECOGIDO REALMENTE:</div>
+        <div id="disc-items-edit" style="margin-bottom:10px;"></div>
+        <button id="disc-add-item" style="width:100%; background:rgba(76,175,80,0.15); border:1px dashed #4CAF50; color:#4CAF50; padding:10px; border-radius:8px; cursor:pointer; font-weight:700; font-size:0.82rem; margin-bottom:14px;">+ Añadir otro artículo recogido</button>
+
+        <div style="margin-bottom:12px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">📷 Foto del bulto (obligatoria)</label>
+            <input type="file" id="disc-photo-input" accept="image/*" capture="environment" style="display:none;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button id="disc-take-photo" style="flex:1; background:rgba(255,255,255,0.08); border:1px solid #555; color:#fff; padding:14px; border-radius:8px; cursor:pointer; font-weight:700;">📷 Tomar foto</button>
+                <span id="disc-photo-status" style="font-size:0.75rem; color:#FF8A50; min-width:80px;">Sin foto</span>
+            </div>
+            <img id="disc-photo-preview" style="display:none; width:100%; max-height:160px; object-fit:contain; border-radius:8px; margin-top:8px; border:1px solid #333;">
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">Motivo (opcional)</label>
+            <select id="disc-reason" style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:8px; font-size:0.85rem;">
+                <option value="">— Selecciona si quieres —</option>
+                <option value="cantidad_mayor">Cantidad mayor a la declarada</option>
+                <option value="tamano_mayor">Tamaño mayor al declarado</option>
+                <option value="tipo_distinto">Tipo de artículo distinto</option>
+                <option value="peso_mayor">Peso mayor al declarado</option>
+                <option value="otro">Otro</option>
+            </select>
+        </div>
+
+        <button id="disc-save" style="width:100%; background:#FF9800; border:0; color:#000; padding:16px; border-radius:10px; font-weight:900; font-size:1rem; cursor:pointer;">✅ GUARDAR DISCREPANCIA</button>
+    </div>
+</div>
 
 </body>
 </html>
