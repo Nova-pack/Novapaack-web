@@ -1659,6 +1659,21 @@ function initApp() {
             return;
         }
 
+        // Formato corto DD/MM para la card (fecha de creación del albarán)
+        function _fmtCardDate(ts) {
+            if (!ts) return '';
+            try {
+                var dt = (ts && typeof ts.toDate === 'function') ? ts.toDate() : new Date(ts);
+                if (isNaN(dt.getTime())) return '';
+                var dd = ('0' + dt.getDate()).slice(-2);
+                var mm = ('0' + (dt.getMonth() + 1)).slice(-2);
+                // Año corto solo si es distinto al actual
+                var yy = dt.getFullYear();
+                var curY = new Date().getFullYear();
+                return dd + '/' + mm + (yy !== curY ? '/' + String(yy).slice(-2) : '');
+            } catch(_) { return ''; }
+        }
+
         container.innerHTML = filtered.map(function(d, idx) {
             var isDelivered = d.status === 'Entregado' || d.delivered;
             var statusClass = isDelivered ? 'delivered' : 'pending';
@@ -1666,11 +1681,13 @@ function initApp() {
             var addr = [d.address, d.localidad, d.cp, d.province].filter(Boolean).join(', ');
             var pkgCount = getPackageCount(d);
             var orderNum = isDelivered ? '' : '<span class="route-order">' + (idx + 1) + '</span>';
+            var dateStr = _fmtCardDate(d.createdAt || d.date);
+            var dateChip = dateStr ? '<span class="dc-date" style="font-size:0.7rem; color:#888; margin-left:6px; white-space:nowrap;"><span class="material-symbols-outlined" style="font-size:0.85rem; vertical-align:middle;">event</span> ' + dateStr + '</span>' : '';
 
             return '<div class="delivery-card ' + statusClass + '" data-id="' + escapeHtml(d._id) + '" data-idx="' + idx + '" draggable="true">' +
                 '<span class="drag-handle"><span class="material-symbols-outlined" style="font-size:0.9rem;">drag_indicator</span></span>' +
                 '<div class="dc-header">' +
-                    '<span class="dc-id">' + orderNum + escapeHtml(d.id || d._id.substring(0,12)) + '</span>' +
+                    '<span class="dc-id">' + orderNum + escapeHtml(d.id || d._id.substring(0,12)) + dateChip + '</span>' +
                     '<span class="dc-status ' + statusClass + '">' + statusText + '</span>' +
                 '</div>' +
                 '<div class="dc-name">' + escapeHtml(d.receiver || d.clientName || 'Sin nombre') + '</div>' +
