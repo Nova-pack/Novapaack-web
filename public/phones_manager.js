@@ -23,7 +23,13 @@
                             </h2>
                             <p style="color:#666; margin:5px 0 0; font-size:0.85rem;">Gestión de teléfonos y chóferes asignados a cada ruta de reparto.</p>
                         </div>
-                        <div style="display:flex; gap:8px;" id="phones-toolbar">
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;" id="phones-toolbar">
+                            <button onclick="if(typeof window._bulkAssignRoutePhones==='function') window._bulkAssignRoutePhones(); else alert('Recarga la página.');" title="Recorre TODOS los clientes (padres y sucursales) y les asigna el teléfono de ruta según su CP" style="background:#4CAF50; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">auto_fix_high</span> Auto-asignar tel. ruta a todos
+                            </button>
+                            <button onclick="if(typeof window._routeDirectoryRebuildAll==='function') window._routeDirectoryRebuildAll(); else alert('Recarga la página.');" title="Reconstruye el directorio de clientes por ruta (espejo en /config/route_directories). Necesario para que el repartidor pueda buscar sus clientes en la app móvil." style="background:#2196F3; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">contacts</span> Reconstruir directorio repartidores
+                            </button>
                             <button onclick="openPhoneModal()" style="background:#FF9800; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
                                 <span class="material-symbols-outlined" style="font-size:16px;">add</span> Nueva Ruta
                             </button>
