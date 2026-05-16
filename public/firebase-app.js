@@ -130,19 +130,27 @@ const DEFAULT_SIZES = "Pequeño, Mediano, Grande, Sobre, Palet, BATERIA 45AH, BA
 // Genera el QR usando qrcode.min.js cargado localmente. Si por alguna razón
 // la lib no está disponible o falla, cae al endpoint externo de qrserver.com.
 // Usar SIEMPRE este helper en vez de URLs directas hardcoded de qrserver.
+//
+// PARÁMETROS de qrcode.createDataURL(cellSize, margin):
+//   - cellSize = pixels por módulo. 6 → render alta resolución (impresión nítida)
+//   - margin   = módulos de "quiet zone" alrededor del QR. 4 es el mínimo del
+//                estándar ISO 18004 — sin esto los escáneres móviles fallan
+//                aunque el QR esté técnicamente bien.
 window.npGenerateQrUrl = function(data, fallbackSize) {
     fallbackSize = fallbackSize || 400;
     try {
         if (typeof qrcode !== 'undefined') {
+            // 'M' error correction (~15%) — equilibrio entre tamaño y tolerancia
+            // a manchas/dobleces. Suficiente para impresión normal.
             var qr = qrcode(0, 'M');
             qr.addData(data);
             qr.make();
-            return qr.createDataURL(4, 0);
+            return qr.createDataURL(6, 4);  // cell 6px + quiet zone 4 módulos
         }
     } catch (e) {
         console.warn('[QR] local fail, fallback API:', e.message);
     }
-    return 'https://api.qrserver.com/v1/create-qr-code/?size=' + fallbackSize + 'x' + fallbackSize + '&data=' + encodeURIComponent(data);
+    return 'https://api.qrserver.com/v1/create-qr-code/?size=' + fallbackSize + 'x' + fallbackSize + '&data=' + encodeURIComponent(data) + '&qzone=4';
 };
 
 // --- PRINT HELPERS ---
@@ -4042,10 +4050,10 @@ function generateTicketHTML(t, footerLabel) {
                 ${(t.timeSlot || hasCod) ? `<div style="margin-top:2px; font-size:7.5pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 5px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
             </div>
 
-            <!-- Derecha: Fecha + QR (más pequeño) -->
-            <div style="flex:0 0 88px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+            <!-- Derecha: Fecha + QR (~30mm físicos para escaneo móvil fiable) -->
+            <div style="flex:0 0 115px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
                 <div style="font-size:7pt; font-weight:700; margin-bottom:2px; color:#000;">${validDateStr}</div>
-                <div style="width:85px; height:85px; border:1px solid #ccc; padding:2px; background:#fff; display:flex; align-items:center; justify-content:center;">
+                <div style="width:113px; height:113px; background:#fff; display:flex; align-items:center; justify-content:center;">
                     <img src="${qrUrl}" alt="QR" style="display:block; width:100%; height:100%; image-rendering:pixelated;">
                 </div>
             </div>

@@ -138,17 +138,17 @@ function generateTicketHTML(t, footerLabel) {
         `|PAY:${paymentType}` +
         `|PAYBY:${portePagadoBy}` +
         `|COMP:${t.compId || ''}`;
-    // QR local (sin dependencia externa) con fallback al API
+    // QR local con quiet zone (4 modules) para escaneo móvil fiable
     let qrUrl = '';
     try {
         if (typeof qrcode !== 'undefined') {
             const qr = qrcode(0, 'M');
             qr.addData(qrData);
             qr.make();
-            qrUrl = qr.createDataURL(4, 0);
+            qrUrl = qr.createDataURL(6, 4);  // cell 6px + quiet zone 4 módulos
         }
     } catch (e) { console.warn('QR local fail:', e); }
-    if (!qrUrl) qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
+    if (!qrUrl) qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}&qzone=4`;
 
     const bandsHtml = grouped.map((p) => {
         const w = (p.weight > 0)
@@ -191,9 +191,9 @@ function generateTicketHTML(t, footerLabel) {
                 ${(t.timeSlot || hasCod) ? `<div style="margin-top:2px; font-size:7.5pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 5px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
             </div>
 
-            <div style="flex:0 0 88px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+            <div style="flex:0 0 115px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
                 <div style="font-size:7pt; font-weight:700; margin-bottom:2px; color:#000;">${validDateStr}</div>
-                <div style="width:85px; height:85px; border:1px solid #ccc; padding:2px; background:#fff; display:flex; align-items:center; justify-content:center;">
+                <div style="width:113px; height:113px; background:#fff; display:flex; align-items:center; justify-content:center;">
                     <img src="${qrUrl}" alt="QR" style="display:block; width:100%; height:100%; image-rendering:pixelated;">
                 </div>
             </div>
