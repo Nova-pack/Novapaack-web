@@ -3876,7 +3876,8 @@ function generateTicketHTML(t, footerLabel) {
     const totalBultos = grouped.reduce((s, p) => s + p.qty, 0);
     const totalPeso   = grouped.reduce((s, p) => s + (p.weight * p.qty), 0);
     const anyWeight   = grouped.some(p => p.weight > 0);
-    const manyLines   = grouped.length > 6;
+    // Umbral a 4 (no 6) para que no se desborde la media-página A4
+    const manyLines   = grouped.length > 4;
 
     // Reembolso
     const hasCod = t.cod && t.cod.toString().trim() !== '' && t.cod.toString() !== '0';
@@ -3907,21 +3908,21 @@ function generateTicketHTML(t, footerLabel) {
         `|COMP:${t.compId || ''}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
 
-    // Bandas (cada artículo agrupado)
+    // Bandas (cada artículo agrupado) — compactas para caber en media página A4
     const bandsHtml = grouped.map((p) => {
         const w = (p.weight > 0)
-            ? `<div style="padding:3px 9px; font-size:7.5pt; color:#555; background:#f5f5f5; display:flex; align-items:center; border-left:1px dashed #999; font-weight:600;">${(p.weight * p.qty).toFixed(0)} kg</div>`
+            ? `<div style="padding:2px 7px; font-size:7pt; color:#555; background:#f5f5f5; display:flex; align-items:center; border-left:1px dashed #999; font-weight:600;">${(p.weight * p.qty).toFixed(0)} kg</div>`
             : '';
-        return `<div style="display:flex; align-items:stretch; border:1.5px solid #000;">` +
-            `<div style="background:#000; color:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:12pt; padding:3px 11px; min-width:36px; text-align:center; display:flex; align-items:center; justify-content:center; line-height:1;">${p.qty}</div>` +
-            `<div style="flex:1; padding:3px 9px; font-weight:800; font-size:9.5pt; display:flex; align-items:center; text-transform:uppercase;">${escapeHtml(p.size)}</div>` +
+        return `<div style="display:flex; align-items:stretch; border:1px solid #000;">` +
+            `<div style="background:#000; color:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:10pt; padding:1px 8px; min-width:28px; text-align:center; display:flex; align-items:center; justify-content:center; line-height:1;">${p.qty}</div>` +
+            `<div style="flex:1; padding:1px 8px; font-weight:800; font-size:8.5pt; display:flex; align-items:center; text-transform:uppercase;">${escapeHtml(p.size)}</div>` +
             w +
         `</div>`;
     }).join('');
 
     const bandsContainerStyle = manyLines
-        ? 'display:grid; grid-template-columns:1fr 1fr; gap:3px;'
-        : 'display:grid; gap:3px;';
+        ? 'display:grid; grid-template-columns:1fr 1fr; gap:2px;'
+        : 'display:grid; gap:2px;';
 
     // Sello pre-albarán (B&N, discreto)
     const preStamp = isPrealbaran
@@ -3929,82 +3930,83 @@ function generateTicketHTML(t, footerLabel) {
         : '';
 
     return `
-    <div style="font-family:'Inter',Arial,sans-serif; padding:4mm 5mm; border:2px solid #000; min-height:120mm; max-height:140mm; position:relative; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; background:white; color:#000;">
+    <div style="font-family:'Inter',Arial,sans-serif; padding:3mm 5mm; border:1.5px solid #000; height:132mm; max-height:132mm; position:relative; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; background:white; color:#000;">
         <!-- Marca de agua provincia (intacta) -->
         ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:6rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width:100%; text-align:center; font-family:'Arial Black',sans-serif; opacity:0.05; text-transform:uppercase;">${escapeHtml(t.province)}</div>` : ''}
 
-        <!-- ── CABECERA ── -->
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #000; padding-bottom:5px; margin-bottom:8px; position:relative; z-index:2;">
+        <!-- ── CABECERA (compacta para caber en 132mm) ── -->
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:3px; margin-bottom:4px; position:relative; z-index:2;">
             <!-- Logo + empresa facturadora -->
-            <div style="flex:0 0 28%; max-width:28%;">
-                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:18pt; color:#FF6600; line-height:1; letter-spacing:-0.5px;">NOVAPACK<span style="color:#000;">►</span></div>
-                <div style="margin-top:5px; font-size:7.5pt; line-height:1.35; color:#333;">
+            <div style="flex:0 0 26%; max-width:26%;">
+                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:15pt; color:#FF6600; line-height:1; letter-spacing:-0.5px;">NOVAPACK<span style="color:#000;">►</span></div>
+                <div style="margin-top:3px; font-size:7pt; line-height:1.3; color:#333;">
                     ${escapeHtml(billingEmail)}<br>
                     ${billingNif ? `<span style="font-weight:700; color:#000;">NIF: ${escapeHtml(billingNif)}</span><br>` : ''}
-                    <span style="color:#777; font-size:7pt;">${escapeHtml(billingName)}</span>
+                    <span style="color:#777; font-size:6.5pt;">${escapeHtml(billingName)}</span>
                 </div>
                 ${preStamp}
             </div>
 
-            <!-- Centro: bloque protagonista (Portes + Provincia + Turno + Reemb) -->
-            <div style="flex:1; padding:0 8px; text-align:center;">
-                <div style="font-size:9pt; font-weight:700; color:#000; letter-spacing:1.5px; margin-bottom:3px;">PORTES</div>
-                <div style="font-family:'Outfit',sans-serif; font-size:18pt; font-weight:900; line-height:1; color:#000; padding:2px 0; border-top:1.5px solid #000; border-bottom:1.5px solid #000; background:#f0f0f0; letter-spacing:1px;">${porteLabel}</div>
-                <div style="margin-top:6px; padding:4px 6px; border:3px solid #000; font-family:'Outfit',sans-serif; font-weight:900; font-size:22pt; line-height:1; letter-spacing:-0.5px;">${escapeHtml(t.id || '')}</div>
-                ${t.province ? `<div style="margin-top:5px; font-family:'Outfit',sans-serif; font-weight:900; font-size:11pt; text-transform:uppercase; letter-spacing:2px;">→ ${escapeHtml(t.province)} ←</div>` : ''}
-                ${(t.timeSlot || hasCod) ? `<div style="margin-top:4px; font-size:8pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 6px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
+            <!-- Centro: bloque protagonista compacto -->
+            <div style="flex:1; padding:0 6px; text-align:center;">
+                <div style="font-family:'Outfit',sans-serif; font-size:13pt; font-weight:900; line-height:1; color:#000; padding:2px 0; border-top:1px solid #000; border-bottom:1px solid #000; background:#f0f0f0; letter-spacing:1px;">PORTES ${porteLabel}</div>
+                <div style="margin-top:3px; padding:2px 6px; border:2.5px solid #000; font-family:'Outfit',sans-serif; font-weight:900; font-size:18pt; line-height:1.1; letter-spacing:-0.5px;">${escapeHtml(t.id || '')}</div>
+                ${t.province ? `<div style="margin-top:2px; font-family:'Outfit',sans-serif; font-weight:900; font-size:10pt; text-transform:uppercase; letter-spacing:1.5px;">→ ${escapeHtml(t.province)} ←</div>` : ''}
+                ${(t.timeSlot || hasCod) ? `<div style="margin-top:2px; font-size:7.5pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 5px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
             </div>
 
-            <!-- Derecha: Fecha + QR -->
-            <div style="flex:0 0 110px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
-                <div style="font-size:8pt; font-weight:700; margin-bottom:4px; color:#000;">${validDateStr}</div>
-                <div style="width:105px; height:105px; border:1px solid #ccc; padding:3px; background:#fff; display:flex; align-items:center; justify-content:center;">
+            <!-- Derecha: Fecha + QR (más pequeño) -->
+            <div style="flex:0 0 88px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+                <div style="font-size:7pt; font-weight:700; margin-bottom:2px; color:#000;">${validDateStr}</div>
+                <div style="width:85px; height:85px; border:1px solid #ccc; padding:2px; background:#fff; display:flex; align-items:center; justify-content:center;">
                     <img src="${qrUrl}" alt="QR" style="display:block; width:100%; height:100%; image-rendering:pixelated;">
                 </div>
             </div>
         </div>
 
-        <!-- ── REMITENTE / DESTINATARIO ── -->
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px; position:relative; z-index:2;">
-            <div style="border:1px solid #999; padding:5px 7px; font-size:9pt; line-height:1.35;">
-                <h4 style="margin:0 0 3px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#555;">Remitente</h4>
-                <div style="font-weight:700; font-size:10pt; margin-bottom:2px;">${escapeHtml(t.sender || '')}</div>
-                ${escapeHtml(t.senderAddress || '')}<br>
-                ${t.senderPhone ? `<span style="color:#555; font-size:8.5pt;">Tel: ${escapeHtml(t.senderPhone)}</span>` : ''}
+        <!-- ── REMITENTE / DESTINATARIO (compacto) ── -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:4px; position:relative; z-index:2;">
+            <div style="border:1px solid #999; padding:3px 6px; font-size:8.5pt; line-height:1.25;">
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#555;">Remitente</h4>
+                <div style="font-weight:700; font-size:9.5pt;">${escapeHtml(t.sender || '')}</div>
+                ${escapeHtml(t.senderAddress || '')}
+                ${t.senderPhone ? `<span style="color:#555; font-size:7.5pt;"> · Tel: ${escapeHtml(t.senderPhone)}</span>` : ''}
             </div>
-            <div style="border:1.5px solid #000; padding:5px 7px; font-size:9pt; line-height:1.35;">
-                <h4 style="margin:0 0 3px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Destinatario</h4>
-                <div style="font-weight:900; font-size:11pt; margin-bottom:2px;">${escapeHtml(t.receiver || '')}</div>
-                ${escapeHtml([t.address, t.cp, t.localidad].filter(Boolean).join(' · '))}<br>
-                ${t.phone ? `<span style="color:#555; font-size:8.5pt;">Tel: ${escapeHtml(t.phone)}</span>` : ''}
+            <div style="border:1.5px solid #000; padding:3px 6px; font-size:8.5pt; line-height:1.25;">
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Destinatario</h4>
+                <div style="font-weight:900; font-size:10pt;">${escapeHtml(t.receiver || '')}</div>
+                ${escapeHtml([t.address, t.cp, t.localidad].filter(Boolean).join(' · '))}
+                ${t.phone ? `<span style="color:#555; font-size:7.5pt;"> · Tel: ${escapeHtml(t.phone)}</span>` : ''}
             </div>
         </div>
 
-        <!-- ── ARTÍCULOS (Hero total + bandas) ── -->
-        <div style="margin-bottom:8px; position:relative; z-index:2;">
-            <div style="border:4px solid #000; text-align:center; padding:6px 10px 8px; margin-bottom:6px;">
-                <div style="font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:3px; color:#555;">Total</div>
-                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:44pt; line-height:1; letter-spacing:-2px;">${totalBultos}</div>
-                <div style="font-size:11pt; font-weight:800; text-transform:uppercase; letter-spacing:3px;">Bultos</div>
-                ${anyWeight ? `<div style="margin-top:4px; padding-top:4px; border-top:1px dashed #999; font-size:9pt; font-weight:700; color:#333; letter-spacing:1px;">+ ${totalPeso.toFixed(0)} KG TOTAL</div>` : ''}
+        <!-- ── ARTÍCULOS (Hero compacto + bandas) ── -->
+        <div style="margin-bottom:4px; position:relative; z-index:2;">
+            <div style="border:3px solid #000; text-align:center; padding:3px 8px 5px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:center; align-items:baseline; gap:8px;">
+                    <span style="font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:2px; color:#555;">TOTAL</span>
+                    <span style="font-family:'Outfit',sans-serif; font-weight:900; font-size:32pt; line-height:1; letter-spacing:-1.5px;">${totalBultos}</span>
+                    <span style="font-size:10pt; font-weight:800; text-transform:uppercase; letter-spacing:2px;">Bultos</span>
+                    ${anyWeight ? `<span style="font-size:8pt; font-weight:700; color:#555; letter-spacing:1px; border-left:1px dashed #999; padding-left:8px;">${totalPeso.toFixed(0)} KG</span>` : ''}
+                </div>
             </div>
             <div style="${bandsContainerStyle}">${bandsHtml}</div>
         </div>
 
-        <!-- ── OBSERVACIONES ── -->
-        ${t.notes ? `<div style="border:1px solid #ccc; padding:4px 8px; font-size:8.5pt; margin-bottom:8px; position:relative; z-index:2; line-height:1.4;">
-            <strong style="font-size:7.5pt; text-transform:uppercase; letter-spacing:1px; color:#555;">Observaciones:</strong> ${escapeHtml(t.notes)}
+        <!-- ── OBSERVACIONES (max 2 líneas, recorta limpio) ── -->
+        ${t.notes ? `<div style="border:1px solid #ccc; padding:3px 7px; font-size:8pt; margin-bottom:4px; position:relative; z-index:2; line-height:1.3; max-height:9mm; overflow:hidden;">
+            <strong style="font-size:6.5pt; text-transform:uppercase; letter-spacing:1px; color:#555;">Obs:</strong> ${escapeHtml(t.notes)}
         </div>` : ''}
 
-        <!-- ── FIRMA SIMPLIFICADA ── -->
-        <div style="margin-top:auto; display:grid; grid-template-columns:1fr 1.4fr; gap:10px; border-top:1.5px solid #000; padding-top:6px; position:relative; z-index:2;">
+        <!-- ── FIRMA SIMPLIFICADA (cajas más bajas) ── -->
+        <div style="margin-top:auto; display:grid; grid-template-columns:1fr 1.4fr; gap:8px; border-top:1.5px solid #000; padding-top:3px; position:relative; z-index:2;">
             <div>
-                <h4 style="margin:0 0 2px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">DNI / Sello</h4>
-                <div style="border-bottom:1px solid #000; height:18mm;"></div>
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">DNI / Sello</h4>
+                <div style="border-bottom:1px solid #000; height:13mm;"></div>
             </div>
             <div>
-                <h4 style="margin:0 0 2px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Firma</h4>
-                <div style="border:1px solid #000; height:22mm;"></div>
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Firma</h4>
+                <div style="border:1px solid #000; height:15mm;"></div>
             </div>
         </div>
 
