@@ -3642,17 +3642,60 @@ if (clientPickerInput) {
                 
                 div.innerHTML = `<strong>${escapeHtml(m.name)}</strong> ${badge}${nifBadge}<br><span style="font-size:0.8rem; color:#888;">${escapeHtml(m.address || '')}${m.localidad ? ' - ' + escapeHtml(m.localidad) : ''}${m.cp ? ' (' + escapeHtml(m.cp) + ')' : ''}</span>`;
                 div.onclick = () => {
-                    document.getElementById('ticket-receiver').value = m.name;
-                    document.getElementById('ticket-address').value = m.street || m.address;
+                    // DEBUG: log completo del objeto seleccionado
+                    console.log('[client-picker] selected match:', JSON.parse(JSON.stringify(m)));
+
+                    document.getElementById('ticket-receiver').value = m.name || '';
+                    document.getElementById('ticket-address').value = m.street || m.address || '';
                     document.getElementById('ticket-number').value = m.number || '';
                     document.getElementById('ticket-localidad').value = m.localidad || '';
                     document.getElementById('ticket-cp').value = m.cp || '';
                     document.getElementById('ticket-phone').value = m.phone || '';
                     document.getElementById('ticket-province').value = m.province || '';
+
+                    // NIF — búsqueda defensiva en varios nombres de campo posibles
                     var nifInput = document.getElementById('ticket-receiver-nif');
-                    if (nifInput && m.nif) { nifInput.value = m.nif; var nifBox = document.getElementById('box-receiver-nif'); if (nifBox) nifBox.style.display = 'block'; }
+                    var nifBox = document.getElementById('box-receiver-nif');
+                    var nifVal = (m.nif || m.cif || m.NIF || m.CIF || m.receiverNif || m.senderNif || '').toString().trim();
+
+                    if (nifInput) {
+                        // SIEMPRE mostramos el box al seleccionar un cliente — aunque sea Pagados,
+                        // si el cliente tiene NIF útil para reusar después.
+                        if (nifBox) nifBox.style.display = 'block';
+                        if (nifVal) {
+                            nifInput.value = nifVal.toUpperCase();
+                            console.log('[client-picker] NIF rellenado:', nifVal);
+                        } else {
+                            // Aviso explícito al user: no había NIF en la fuente
+                            console.log('[client-picker] sin NIF en el cliente seleccionado:', m.name);
+                        }
+                    }
+
                     clientPickerInput.value = '';
                     clientPickerResults.classList.add('hidden');
+
+                    // Mini-aviso visual de feedback (no depende de toast global)
+                    try {
+                        var feedbackId = '_client-picker-feedback';
+                        var fb = document.getElementById(feedbackId);
+                        if (!fb) {
+                            fb = document.createElement('div');
+                            fb.id = feedbackId;
+                            fb.style.cssText = 'position:fixed; top:80px; left:50%; transform:translateX(-50%); padding:10px 18px; border-radius:8px; font-weight:700; font-size:0.85rem; z-index:99999; box-shadow:0 4px 12px rgba(0,0,0,0.4); transition:opacity 0.3s;';
+                            document.body.appendChild(fb);
+                        }
+                        if (nifVal) {
+                            fb.style.background = '#4CAF50';
+                            fb.style.color = '#fff';
+                            fb.textContent = '✓ Cliente seleccionado · NIF: ' + nifVal;
+                        } else {
+                            fb.style.background = '#FF9800';
+                            fb.style.color = '#000';
+                            fb.textContent = '⚠ Cliente seleccionado sin NIF en su ficha. Rellénalo a mano.';
+                        }
+                        fb.style.opacity = '1';
+                        setTimeout(function(){ fb.style.opacity = '0'; }, 3500);
+                    } catch(_) {}
                 };
                 clientPickerResults.appendChild(div);
             });
