@@ -4032,8 +4032,12 @@ function generateTicketHTML(t, footerLabel) {
         <!-- ── CABECERA (compacta para caber en 132mm) ── -->
         <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:3px; margin-bottom:4px; position:relative; z-index:2;">
             <!-- Logo + empresa facturadora -->
-            <div style="flex:0 0 26%; max-width:26%;">
-                <div style="font-family:'Xenotron','Outfit',sans-serif; font-weight:900; font-size:18pt; color:#FF6600; line-height:1; letter-spacing:2px;">NOVAPACK<span style="color:#FF3B30; font-family:sans-serif; font-weight:900;">►</span></div>
+            <!-- Xenotron es una fuente MUY ancha por diseño; ajustamos tamaño
+                 y quitamos letter-spacing extra, además de overflow:hidden +
+                 nowrap como red de seguridad para que jamás invada el bloque
+                 central, da igual cómo renderice la impresora. -->
+            <div style="flex:0 0 32%; max-width:32%; min-width:0; overflow:hidden;">
+                <div style="font-family:'Xenotron','Outfit',sans-serif; font-weight:900; font-size:13pt; color:#FF6600; line-height:1; letter-spacing:0; white-space:nowrap; overflow:hidden;">NOVAPACK<span style="color:#FF3B30; font-family:sans-serif; font-weight:900; margin-left:1px;">►</span></div>
                 <div style="margin-top:3px; font-size:7pt; line-height:1.3; color:#333;">
                     ${escapeHtml(billingEmail)}<br>
                     ${billingNif ? `<span style="font-weight:700; color:#000;">NIF: ${escapeHtml(billingNif)}</span><br>` : ''}
