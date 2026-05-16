@@ -127,6 +127,12 @@ setTimeout(() => { if (typeof hideLoading === 'function') hideLoading(); }, 8000
 const DEFAULT_SIZES = "Pequeño, Mediano, Grande, Sobre, Palet, BATERIA 45AH, BATERIA 75AH, BATERIA 100AH, BATERIA CAMION, TAMBOR CAMION, CALIPER DE CAMION, CAJAS DE ACEITE O AGUA, GARRAFAS ADBLUE";
 
 // --- PRINT HELPERS ---
+// Fuerza el formato a la impresora del cliente (cada navegador/driver pinta como
+// le da la gana — neutralizamos sus defaults). Esta versión es AGRESIVA:
+//   • @page con margen 0 + tamaño exacto
+//   • Esconde todo el resto de la página al imprimir
+//   • Color-exact (background, bordes, gradientes)
+//   • Bloquea escalado del navegador
 function setPrintPageSize(size) {
     let s = document.getElementById('print-page-size');
     if (!s) {
@@ -134,9 +140,69 @@ function setPrintPageSize(size) {
         s.id = 'print-page-size';
         document.head.appendChild(s);
     }
-    // "auto" forces the browser to adopt the user's printer hardware settings
     const parsedSize = size === "101.6mm 152.4mm" ? "auto" : size;
-    s.innerHTML = `@media print { @page { size: ${parsedSize}; margin: 0; } }`;
+    // Dimensiones físicas según size (para forzar el body)
+    let bodyW = '210mm', bodyH = 'auto';
+    if (parsedSize === 'A4 portrait' || parsedSize === 'A4') { bodyW = '210mm'; bodyH = 'auto'; }
+    else if (parsedSize === 'A4 landscape') { bodyW = '297mm'; bodyH = 'auto'; }
+    else if (parsedSize === 'A5 portrait' || parsedSize === 'A5') { bodyW = '148mm'; bodyH = 'auto'; }
+
+    s.innerHTML = `
+        @media print {
+            @page {
+                size: ${parsedSize} !important;
+                margin: 0 !important;
+                marks: none !important;
+            }
+            html, body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: white !important;
+                width: ${bodyW} !important;
+                height: ${bodyH} !important;
+                min-height: 0 !important;
+                max-width: ${bodyW} !important;
+                /* Forzar render exacto de colores/fondos/bordes — neutraliza
+                   el "ahorro de tinta" que algunos drivers aplican */
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+                overflow: hidden !important;
+            }
+            /* Esconder TODO menos print-area — neutraliza sidebars, headers,
+               nav, modals abiertos, etc. de la página padre */
+            body > *:not(#print-area) { display: none !important; }
+            body > #print-area {
+                display: block !important;
+                visibility: visible !important;
+                position: static !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: ${bodyW} !important;
+                background: white !important;
+            }
+            #print-area, #print-area * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
+            /* Bloquear el reajuste de tamaño que algunos browsers aplican */
+            #print-area > * {
+                box-sizing: border-box !important;
+                page-break-after: always !important;
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+            #print-area > *:last-child {
+                page-break-after: auto !important;
+            }
+            /* Asegurar que las imágenes (QR) salen en máxima calidad */
+            #print-area img {
+                image-rendering: pixelated !important;
+                max-width: 100% !important;
+            }
+        }
+    `;
 }
 
 // Global reference to current afterprint handler so we can remove stale listeners
@@ -4021,7 +4087,24 @@ function generateTicketHTML(t, footerLabel) {
 async function printTicket(t) {
     cleanPrintArea();
     const area = document.getElementById('print-area');
-    setPrintPageSize('A4');
+    setPrintPageSize('A4 portrait');
+
+    // Aviso de configuración de impresión (solo 1ª vez por sesión)
+    try {
+        if (!sessionStorage.getItem('printTipShown')) {
+            sessionStorage.setItem('printTipShown', '1');
+            alert(
+                'AVISO ÚNICO — configuración de impresión\n\n' +
+                'Para que el albarán salga EXACTO en cualquier impresora:\n\n' +
+                '  1. Márgenes: NINGUNO (no Por defecto)\n' +
+                '  2. Encabezados y pies de página: DESACTIVADOS\n' +
+                '  3. Escala: 100% (no Ajustar)\n\n' +
+                'Estos 3 ajustes están en el diálogo "Imprimir" del navegador,\n' +
+                'normalmente en "Más ajustes" / "Más opciones".\n\n' +
+                'Configúralo una vez y el navegador lo recordará.'
+            );
+        }
+    } catch(_) {}
 
     const includeManifest = confirm("¿Deseas imprimir también el Manifiesto para este albarán?");
 
