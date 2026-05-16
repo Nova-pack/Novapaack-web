@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Preview — Albarán A4 (idéntico al de producción)</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Outfit:wght@700;800;900&display=swap" rel="stylesheet">
+<script src="libs/qrcode.min.js"></script>
 <style>
     body { margin: 0; padding: 20px; background: #444; font-family: 'Inter', Arial, sans-serif; }
     .controls {
@@ -129,7 +130,17 @@ function generateTicketHTML(t, footerLabel) {
         `|PAY:${paymentType}` +
         `|PAYBY:${portePagadoBy}` +
         `|COMP:${t.compId || ''}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
+    // QR local (sin dependencia externa) con fallback al API
+    let qrUrl = '';
+    try {
+        if (typeof qrcode !== 'undefined') {
+            const qr = qrcode(0, 'M');
+            qr.addData(qrData);
+            qr.make();
+            qrUrl = qr.createDataURL(4, 0);
+        }
+    } catch (e) { console.warn('QR local fail:', e); }
+    if (!qrUrl) qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
 
     const bandsHtml = grouped.map((p) => {
         const w = (p.weight > 0)

@@ -13014,7 +13014,10 @@ window.runPublicTicketsBackfill = async function() {
                     const qty = p.qty || 1;
                     rowsHtml += `<tr><td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${qty}</td><td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${w}</td><td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${p.size || 'Bulto'}</td>${hasCod ? `<td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${t.cod} €</td>` : ''}</tr>`;
                 });
-                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${t.packages || 1}|PESO:${t.weight || 0}|OBS:${t.notes || ''}|CLI:${t.clientIdNum || ''}|NIF:${t.receiverNif || ''}`)}`;
+                const qrData = `ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${t.packages || 1}|PESO:${t.weight || 0}|OBS:${t.notes || ''}|CLI:${t.clientIdNum || ''}|NIF:${t.receiverNif || ''}`;
+                const qrUrl = (typeof window.npGenerateQrUrl === 'function')
+                    ? window.npGenerateQrUrl(qrData, 400)
+                    : `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
                 return `
                 <div style="font-family: Arial, sans-serif; padding: 4px; border: 2px solid #000; min-height: 110mm; height: 110mm; position: relative; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; background: white;">
                     ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:4.5rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width: 100%; text-align: center; font-family: 'Arial Black', sans-serif; opacity: 0.04; text-transform: uppercase;">${t.province}</div>` : ''}

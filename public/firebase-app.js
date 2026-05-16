@@ -126,6 +126,25 @@ setTimeout(() => { if (typeof hideLoading === 'function') hideLoading(); }, 8000
 
 const DEFAULT_SIZES = "Pequeño, Mediano, Grande, Sobre, Palet, BATERIA 45AH, BATERIA 75AH, BATERIA 100AH, BATERIA CAMION, TAMBOR CAMION, CALIPER DE CAMION, CAJAS DE ACEITE O AGUA, GARRAFAS ADBLUE";
 
+// --- QR HELPER (local primero, fallback API externa) ---
+// Genera el QR usando qrcode.min.js cargado localmente. Si por alguna razón
+// la lib no está disponible o falla, cae al endpoint externo de qrserver.com.
+// Usar SIEMPRE este helper en vez de URLs directas hardcoded de qrserver.
+window.npGenerateQrUrl = function(data, fallbackSize) {
+    fallbackSize = fallbackSize || 400;
+    try {
+        if (typeof qrcode !== 'undefined') {
+            var qr = qrcode(0, 'M');
+            qr.addData(data);
+            qr.make();
+            return qr.createDataURL(4, 0);
+        }
+    } catch (e) {
+        console.warn('[QR] local fail, fallback API:', e.message);
+    }
+    return 'https://api.qrserver.com/v1/create-qr-code/?size=' + fallbackSize + 'x' + fallbackSize + '&data=' + encodeURIComponent(data);
+};
+
 // --- PRINT HELPERS ---
 // Fuerza el formato a la impresora del cliente (cada navegador/driver pinta como
 // le da la gana — neutralizamos sus defaults). Esta versión es AGRESIVA:
@@ -3972,7 +3991,9 @@ function generateTicketHTML(t, footerLabel) {
         `|PAY:${paymentType}` +
         `|PAYBY:${portePagadoBy}` +
         `|COMP:${t.compId || ''}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
+
+    // QR local (sin dependencia externa) vía helper compartido
+    const qrUrl = window.npGenerateQrUrl(qrData, 400);
 
     // Bandas (cada artículo agrupado) — compactas para caber en media página A4
     const bandsHtml = grouped.map((p) => {
@@ -4463,9 +4484,9 @@ function generateLabelHTML(t, index, total, weightStr, isA4 = false) {
                 ${t.province ? `<div style="font-size: 22pt; font-weight:900; text-transform:uppercase; color: #FF6600; margin-top: 4px;">${t.province}</div>` : ''}
                 ${t.notes ? `<div style="font-size: 0.8rem; font-weight: bold; color: #333; margin-top: 10px; border-top: 1px dotted #ccc; padding-top: 5px; white-space: pre-wrap; word-break: break-word; overflow: hidden; line-height: 1.2;">OBS: ${t.notes}</div>` : ''}
                 
-                <!-- Label QR -->
+                <!-- Label QR (local) -->
                 <div style="position: absolute; bottom: 0; right: 0;">
-                     <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${total}|PESO:${t.weight || 0}|PKG:${index+1}/${total}`)}&t=${Date.now()}" 
+                     <img src="${window.npGenerateQrUrl(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${total}|PESO:${t.weight || 0}|PKG:${index+1}/${total}`, 250)}"
                          style="width: 100px !important; height: 100px !important; display: block; background: white; padding: 4px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; max-width: none !important; max-height: none !important; min-width: 100px !important; min-height: 100px !important;">
                 </div>
             </div>
