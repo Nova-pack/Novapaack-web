@@ -37,10 +37,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
     <script src="phantom-engine.js?v=1" defer></script>
 
+    <!-- Preload Xenotron (crítico para que el logo del albarán salga con la fuente correcta al imprimir) -->
+    <link rel="preload" href="/fonts/xenotron.woff2" as="font" type="font/woff2" crossorigin>
+
     <style>
         @font-face {
             font-family: 'Xenotron';
-            src: local('Xenotron'), url('https://db.onlinewebfonts.com/t/13f990d5baee565bea4d9ff96e201c84.woff2') format('woff2');
+            src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2'); font-display: block;
         }
 
         :root {
@@ -9633,7 +9636,7 @@ window.runPublicTicketsBackfill = async function() {
                 const win = window.open('', '_blank');
                 win.document.write(`<html><head><title>Listado NOVAPACK — ${typeLabels[type] || type}</title>
                 <style>
-                    @font-face { font-family: 'Xenotron'; src: url('https://db.onlinewebfonts.com/t/13f990d5baee565bea4d9ff96e201c84.woff2') format('woff2'); }
+                    @font-face { font-family: 'Xenotron'; src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2'); font-display: block; }
                     @media print { @page { size: A4 landscape; margin: 10mm; } .no-print { display: none !important; } }
                     body { font-family: ${sf}; color: #333; background: #f5f5f5; padding: 20px; }
                     .wrap { max-width: 1100px; margin: 0 auto; background: white; padding: 40px; box-shadow: 0 0 10px rgba(0,0,0,0.05); }
@@ -13164,7 +13167,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                 </div>`;
 
                 win.document.write(`<html><head><meta charset="UTF-8"><title>Albarán ${t.id}</title><style>
-                @font-face { font-family: 'Xenotron'; src: local('Xenotron'), url('https://db.onlinewebfonts.com/t/13f990d5baee565bea4d9ff96e201c84.woff2') format('woff2'); }
+                @font-face { font-family: 'Xenotron'; src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2'); font-display: block; }
                 * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                 body { margin:0; padding:0; background:#eee; font-family: sans-serif; }
                 .page { width: 210mm; height: 297mm; display: flex; flex-direction: column; background: white; margin: 0 auto; box-sizing: border-box; }

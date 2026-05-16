@@ -4025,7 +4025,7 @@ function generateTicketHTML(t, footerLabel) {
         <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:3px; margin-bottom:4px; position:relative; z-index:2;">
             <!-- Logo + empresa facturadora -->
             <div style="flex:0 0 26%; max-width:26%;">
-                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:15pt; color:#FF6600; line-height:1; letter-spacing:-0.5px;">NOVAPACK<span style="color:#000;">►</span></div>
+                <div style="font-family:'Xenotron','Outfit',sans-serif; font-weight:900; font-size:18pt; color:#FF6600; line-height:1; letter-spacing:2px;">NOVAPACK<span style="color:#FF3B30; font-family:sans-serif; font-weight:900;">►</span></div>
                 <div style="margin-top:3px; font-size:7pt; line-height:1.3; color:#333;">
                     ${escapeHtml(billingEmail)}<br>
                     ${billingNif ? `<span style="font-weight:700; color:#000;">NIF: ${escapeHtml(billingNif)}</span><br>` : ''}
