@@ -3483,6 +3483,45 @@ const clientPickerInput = document.getElementById('client-picker');
 const clientPickerResults = document.getElementById('client-picker-results');
 let agendaCache = null;
 let agendaSearchTimer = null;
+let novapackGlobalDirCache = null;  // /config/clients_directory/list/all
+let novapackGlobalDirLoading = false;
+
+// Carga el directorio público de clientes NOVAPACK (no expone datos sensibles)
+async function _loadNovapackGlobalDirectory() {
+    if (novapackGlobalDirCache) return novapackGlobalDirCache;
+    if (novapackGlobalDirLoading) {
+        return new Promise(function(resolve) {
+            var t = setInterval(function(){
+                if (novapackGlobalDirCache) { clearInterval(t); resolve(novapackGlobalDirCache); }
+            }, 200);
+        });
+    }
+    novapackGlobalDirLoading = true;
+    try {
+        const snap = await db.collection('config').doc('clients_directory').collection('list').doc('all').get();
+        novapackGlobalDirCache = (snap.exists ? (snap.data().clients || []) : []);
+        console.log('[NOVAPACK DIR] cargados', novapackGlobalDirCache.length, 'clientes globales');
+    } catch (err) {
+        console.warn('[NOVAPACK DIR] no se pudo cargar:', err && err.message);
+        novapackGlobalDirCache = [];
+    }
+    novapackGlobalDirLoading = false;
+    return novapackGlobalDirCache;
+}
+
+// Búsqueda en el directorio NOVAPACK (prioritario sobre el JSON Gesco antiguo)
+function _searchNovapackGlobal(query, limit) {
+    if (!novapackGlobalDirCache) return [];
+    const q = (query || '').toLowerCase().trim();
+    if (!q) return [];
+    var matches = [];
+    for (var i = 0; i < novapackGlobalDirCache.length && matches.length < (limit || 8); i++) {
+        var c = novapackGlobalDirCache[i];
+        var hay = ((c.name || '') + ' ' + (c.nif || '') + ' ' + (c.localidad || '') + ' ' + (c.cp || '')).toLowerCase();
+        if (hay.indexOf(q) !== -1) matches.push(c);
+    }
+    return matches;
+}
 
 if (clientPickerInput) {
     clientPickerInput.oninput = () => {
@@ -3526,13 +3565,43 @@ if (clientPickerInput) {
         });
 
         // ----------------------------------------------------
-        // INYECTAR DIRECTORIO GLOBAL (FANTASMA)
+        // 1) DIRECTORIO NOVAPACK REAL (Firestore) — PRIORIDAD ALTA
+        //    Aquí los clientes SIEMPRE tienen NIF si está cumplimentado en su ficha.
+        // ----------------------------------------------------
+        try {
+            await _loadNovapackGlobalDirectory();
+            const nvResults = _searchNovapackGlobal(q, 8);
+            nvResults.forEach(nv => {
+                const existsLocally = matches.some(m => (m.name || '').toLowerCase() === (nv.name || '').toLowerCase());
+                if (!existsLocally) {
+                    matches.push({
+                        name: nv.name || '',
+                        phone: '',
+                        nif: nv.nif || '',
+                        address: '',
+                        street: '',
+                        number: '',
+                        localidad: nv.localidad || '',
+                        cp: nv.cp || '',
+                        province: '',
+                        idNum: nv.idNum || '',
+                        docId: nv.docId || '',
+                        isGlobal: true,
+                        isNovapack: true   // distintivo visual
+                    });
+                }
+            });
+        } catch(nvErr) { console.warn('[novapack-dir] search fail:', nvErr); }
+
+        // ----------------------------------------------------
+        // 2) DIRECTORIO GESCO (fantasma, JSON estático antiguo) — FALLBACK
+        //    Muchas entradas sin NIF — solo se usa si no aparece nada arriba.
         // ----------------------------------------------------
         if (typeof window.searchPhantomDirectory === 'function') {
             const phantomResults = window.searchPhantomDirectory(q);
             phantomResults.forEach(pc => {
-                // Verificar que no sea un duplicado exacto por Nombre localmente
-                const existsLocally = matches.some(m => m.name.toLowerCase() === (pc.name || '').toLowerCase());
+                // Verificar que no sea un duplicado exacto por Nombre (ni en NOVAPACK ni en agenda)
+                const existsLocally = matches.some(m => (m.name || '').toLowerCase() === (pc.name || '').toLowerCase());
                 if (!existsLocally) {
                     matches.push({
                         name: pc.name || '',
@@ -3544,7 +3613,8 @@ if (clientPickerInput) {
                         localidad: pc.localidad || '',
                         cp: pc.cp || '',
                         province: pc.province || '',
-                        isGlobal: true
+                        isGlobal: true,
+                        isNovapack: false
                     });
                 }
             });
@@ -3558,9 +3628,19 @@ if (clientPickerInput) {
                 div.className = 'suggestion-item';
                 div.style = "padding:10px; border-bottom:1px solid var(--border-glass); cursor:pointer;";
                 
-                const badge = m.isGlobal ? `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">🌐 Global</span>` : `<span style="font-size:0.65rem; background:rgba(76,175,80,0.2); padding:2px 6px; border-radius:4px; margin-left:8px; color:#4CAF50; border:1px solid #4CAF50;">👤 Mi Agenda</span>`;
+                // Badge distintivo: NOVAPACK (verde) > Agenda (azul) > Gesco antiguo (gris)
+                let badge;
+                if (m.isNovapack) {
+                    badge = `<span style="font-size:0.65rem; background:rgba(76,175,80,0.25); padding:2px 6px; border-radius:4px; margin-left:8px; color:#4CAF50; border:1px solid #4CAF50; font-weight:700;">✓ NOVAPACK</span>`;
+                } else if (m.isGlobal) {
+                    badge = `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">🌐 Directorio antiguo</span>`;
+                } else {
+                    badge = `<span style="font-size:0.65rem; background:rgba(33,150,243,0.2); padding:2px 6px; border-radius:4px; margin-left:8px; color:#5DADE2; border:1px solid #5DADE2;">👤 Mi Agenda</span>`;
+                }
+                // Indicador NIF (verde tick si presente)
+                const nifBadge = m.nif ? `<span style="font-size:0.62rem; color:#4CAF50; margin-left:6px;" title="NIF: ${escapeHtml(m.nif)}">🆔 NIF ✓</span>` : '';
                 
-                div.innerHTML = `<strong>${escapeHtml(m.name)}</strong> ${badge}<br><span style="font-size:0.8rem; color:#888;">${escapeHtml(m.address)} - ${escapeHtml(m.localidad)}</span>`;
+                div.innerHTML = `<strong>${escapeHtml(m.name)}</strong> ${badge}${nifBadge}<br><span style="font-size:0.8rem; color:#888;">${escapeHtml(m.address || '')}${m.localidad ? ' - ' + escapeHtml(m.localidad) : ''}${m.cp ? ' (' + escapeHtml(m.cp) + ')' : ''}</span>`;
                 div.onclick = () => {
                     document.getElementById('ticket-receiver').value = m.name;
                     document.getElementById('ticket-address').value = m.street || m.address;
