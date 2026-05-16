@@ -1158,7 +1158,9 @@
                 if (!businessId) { alert('No hay albarán seleccionado.'); return; }
                 var origin = location.origin || ('https://' + location.hostname);
                 var trackUrl = origin + '/track.html?id=' + encodeURIComponent(businessId);
-                var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=' + encodeURIComponent(trackUrl);
+                var qrUrl = (typeof window.npGenerateQrUrl === 'function')
+                    ? window.npGenerateQrUrl(trackUrl, 140)
+                    : 'https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=0&data=' + encodeURIComponent(trackUrl);
 
                 var receiver = (document.getElementById('pod-res-receiver').textContent || '').trim();
                 var address = (document.getElementById('pod-res-address').textContent || '').trim();
@@ -2118,7 +2120,9 @@
             const id = _txt('pod-res-id');
             const businessIdRaw = (document.getElementById('pod-res-id').textContent || '').trim();
             const trackUrl = (location.origin || ('https://' + location.hostname)) + '/track.html?id=' + encodeURIComponent(businessIdRaw);
-            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&margin=0&data=' + encodeURIComponent(trackUrl);
+            const qrUrl = (typeof window.npGenerateQrUrl === 'function')
+                ? window.npGenerateQrUrl(trackUrl, 120)
+                : 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&margin=0&data=' + encodeURIComponent(trackUrl);
             const mywindow = window.open('', 'PRINT', 'height=800,width=600');
 
             mywindow.document.write('<html><head><title>Justificante POD - ' + id + '</title>');

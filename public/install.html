@@ -280,7 +280,7 @@
             setTimeout(function() { window.location.href = 'reparto.html'; }, 1200);
         });
 
-        // ===== Tiny QR generator (no deps) — uses Google Charts as fallback image =====
+        // ===== QR local con qrcode.min.js (fallback al API externo si la lib no carga) =====
         function drawQR(url) {
             var canvas = document.getElementById('qr-canvas');
             var ctx = canvas.getContext('2d');
@@ -290,7 +290,6 @@
                 ctx.drawImage(img, 0, 0, 200, 200);
             };
             img.onerror = function() {
-                // Fallback: just show the URL big
                 ctx.fillStyle = 'white';
                 ctx.fillRect(0, 0, 200, 200);
                 ctx.fillStyle = '#000';
@@ -299,8 +298,18 @@
                 ctx.fillText('QR no disponible', 100, 95);
                 ctx.fillText('offline', 100, 115);
             };
-            img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=' + encodeURIComponent(url);
+            var src = '';
+            try {
+                if (typeof qrcode !== 'undefined') {
+                    var qr = qrcode(0, 'M');
+                    qr.addData(url);
+                    qr.make();
+                    src = qr.createDataURL(4, 0);
+                }
+            } catch (e) { console.warn('[install] QR local fail:', e); }
+            img.src = src || ('https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=' + encodeURIComponent(url));
         }
     </script>
+    <script src="libs/qrcode.min.js"></script>
 </body>
 </html>
