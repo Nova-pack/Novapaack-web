@@ -3835,133 +3835,182 @@ function generateQRCode(text, size = 512) {
 
 function generateTicketHTML(t, footerLabel) {
     const ts = (t.createdAt && typeof t.createdAt.toDate === 'function') ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : new Date());
-    const validDateStr = !isNaN(ts.getTime()) ? (ts.toLocaleDateString() + " " + ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "Fecha pendiente";
+    const validDateStr = !isNaN(ts.getTime())
+        ? (ts.toLocaleDateString('es-ES') + " " + ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+        : "Fecha pendiente";
 
-    // Company name for header (use client's company, fallback to NOVAPACK)
-    const _comp = (typeof companies !== 'undefined' && typeof currentCompanyId !== 'undefined') ? companies.find(c => c.id === currentCompanyId) : null;
-    const companyName = (_comp && _comp.name) ? _comp.name : (t.compName || t.sender || 'NOVAPACK');
-    const companyEmail = (_comp && _comp.email) ? _comp.email : (t.senderEmail || 'administracion@novapack.info');
+    // ── Empresa facturadora ──
+    // Prioriza t.compId del ticket (la empresa REAL a la que va la factura),
+    // no currentCompanyId (la del admin que está navegando).
+    const _comp = (typeof companies !== 'undefined' && Array.isArray(companies))
+        ? companies.find(c => c.id === (t.compId || t.compID))
+          || companies.find(c => c.id === (typeof currentCompanyId !== 'undefined' ? currentCompanyId : null))
+        : null;
+    const billingName  = (_comp && _comp.name)  ? _comp.name  : (t.compName  || 'NOVAPACK Logística');
+    const billingNif   = (_comp && _comp.nif)   ? _comp.nif   : (t.compNif   || '');
+    const billingEmail = (_comp && _comp.email) ? _comp.email : (t.compEmail || t.senderEmail || 'administracion@novapack.info');
 
-    // Grouped Package List Logic (One line per UI row)
-    let displayList = [];
+    // ── Auto-agrupar items por size+peso ──
+    let rawList = [];
     if (t.packagesList && t.packagesList.length > 0) {
-        displayList = t.packagesList;
+        rawList = t.packagesList;
     } else {
-        // Legacy support
-        displayList = [{
+        rawList = [{
             qty: parseInt(t.packages) || 1,
-            weight: t.weight,
-            size: t.size
+            weight: parseFloat(t.weight) || 0,
+            size: t.size || 'Bulto'
         }];
     }
+    const groupMap = {};
+    rawList.forEach((p) => {
+        const qty    = parseInt(p.qty) || 1;
+        const weight = parseFloat(p.weight) || 0;
+        const size   = p.size || 'Bulto';
+        const key    = size + '|' + weight;
+        if (!groupMap[key]) groupMap[key] = { qty: 0, weight: weight, size: size };
+        groupMap[key].qty += qty;
+    });
+    const grouped = Object.values(groupMap);
 
-    // Check if COD (Reembolso) exists and is not zero
+    // Totales
+    const totalBultos = grouped.reduce((s, p) => s + p.qty, 0);
+    const totalPeso   = grouped.reduce((s, p) => s + (p.weight * p.qty), 0);
+    const anyWeight   = grouped.some(p => p.weight > 0);
+    const manyLines   = grouped.length > 6;
+
+    // Reembolso
     const hasCod = t.cod && t.cod.toString().trim() !== '' && t.cod.toString() !== '0';
 
-    let rowsHtml = '';
-    displayList.forEach((p) => {
-        // Handle "10 kg" string vs "10" number
-        let w = p.weight;
-        if (typeof w === 'number') w = w + " kg";
-        if (typeof w === 'string' && !w.includes('kg')) w = w + " kg";
+    // Pre-albarán (sello discreto B&N)
+    const isPrealbaran = (t.originType === 'driver_pickup_no_doc') || (t.status === 'pending_client_completion');
 
-        const qty = p.qty || 1;
+    // Porte
+    const porteLabel = t.shippingType === 'Debidos' ? 'DEBIDOS' : 'PAGADOS';
+    const paymentType = t.paymentType || (t.shippingType === 'Debidos' ? 'DEBIDO' : 'PAGADO');
+    const portePagadoBy = t.portePagadoBy || (paymentType === 'DEBIDO' ? 'receiver' : 'sender');
 
-        rowsHtml += `
-            <tr>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(qty)}</td>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(w)}</td>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(p.size || 'Bulto')}</td>
-               ${hasCod ? `<td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(t.cod)} €</td>` : ''}
-            </tr>
-        `;
-    });
+    // QR enriquecido — incluye PAY/PAYBY/COMP para auto-completar el formulario de facturación al escanear en oficina
+    const qrData =
+        `ID:${t.id || ''}` +
+        `|DEST:${t.receiver || ''}` +
+        `|ADDR:${t.address || ''}` +
+        `|PROV:${t.province || ''}` +
+        `|TEL:${t.phone || ''}` +
+        `|COD:${t.cod || 0}` +
+        `|BULTOS:${totalBultos}` +
+        `|PESO:${anyWeight ? totalPeso.toFixed(0) : 0}` +
+        `|OBS:${(t.notes || '').substring(0, 80)}` +
+        `|CLI:${t.clientIdNum || ''}` +
+        `|NIF:${t.receiverNif || ''}` +
+        `|PAY:${paymentType}` +
+        `|PAYBY:${portePagadoBy}` +
+        `|COMP:${t.compId || ''}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData)}`;
+
+    // Bandas (cada artículo agrupado)
+    const bandsHtml = grouped.map((p) => {
+        const w = (p.weight > 0)
+            ? `<div style="padding:3px 9px; font-size:7.5pt; color:#555; background:#f5f5f5; display:flex; align-items:center; border-left:1px dashed #999; font-weight:600;">${(p.weight * p.qty).toFixed(0)} kg</div>`
+            : '';
+        return `<div style="display:flex; align-items:stretch; border:1.5px solid #000;">` +
+            `<div style="background:#000; color:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:12pt; padding:3px 11px; min-width:36px; text-align:center; display:flex; align-items:center; justify-content:center; line-height:1;">${p.qty}</div>` +
+            `<div style="flex:1; padding:3px 9px; font-weight:800; font-size:9.5pt; display:flex; align-items:center; text-transform:uppercase;">${escapeHtml(p.size)}</div>` +
+            w +
+        `</div>`;
+    }).join('');
+
+    const bandsContainerStyle = manyLines
+        ? 'display:grid; grid-template-columns:1fr 1fr; gap:3px;'
+        : 'display:grid; gap:3px;';
+
+    // Sello pre-albarán (B&N, discreto)
+    const preStamp = isPrealbaran
+        ? `<div style="display:inline-block; margin-top:4px; padding:2px 8px; border:2px solid #000; background:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:7pt; letter-spacing:1px; line-height:1.2;">PRE-ALBARÁN<span style="display:block; font-size:5.5pt; font-weight:700; letter-spacing:0; margin-top:1px;">Completar 24h</span></div>`
+        : '';
 
     return `
-    <div style="font-family: Arial, sans-serif; padding: 4px; border: 2px solid #000; min-height: 100mm; max-height: 130mm; position: relative; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; background: white;">
-        <!-- Watermark (Province/Zone) -->
-        ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:4.5rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width: 100%; text-align: center; font-family: 'Arial Black', sans-serif; opacity: 0.04; text-transform: uppercase;">${escapeHtml(t.province)}</div>` : ''}
-        
-        <div style="z-index: 2;">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 5px; position:relative;">
-                <!-- Left: Logo -->
-                <div style="flex: 0 0 auto; max-width: 130px;">
-                    <div style="font-family: 'Xenotron', sans-serif; font-size: 14pt; color: #FF6600; line-height: 1;">NOVAPACK<span style="color:#FF3B30; font-weight:900; font-family:sans-serif;">&#10148;</span></div>
-                    <div style="font-size: 0.6rem; letter-spacing: 0.3px; color:#333; margin-top: 2px;">${escapeHtml(companyEmail)}</div>
-                </div>
+    <div style="font-family:'Inter',Arial,sans-serif; padding:4mm 5mm; border:2px solid #000; min-height:120mm; max-height:140mm; position:relative; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; background:white; color:#000;">
+        <!-- Marca de agua provincia (intacta) -->
+        ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:6rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width:100%; text-align:center; font-family:'Arial Black',sans-serif; opacity:0.05; text-transform:uppercase;">${escapeHtml(t.province)}</div>` : ''}
 
-                 <!-- Center: Zona Reparto -->
-                <div style="flex: 1; text-align: center; padding: 0 10px;">
-                     <div style="padding: 5px; background:#FFF; display: inline-block; min-width: 140px;">
-                        <div style="font-size: 0.9rem; font-weight: bold; color: #000; margin-bottom: 5px;">
-                            PORTES ${t.shippingType === 'Debidos' ? 'DEBIDOS' : 'PAGADOS'}
-                        </div>
-                        <div style="font-size: 1.6rem; font-weight: 900; color: #FF6600; text-transform:uppercase; line-height: 1.1;">
-                            ${t.province ? escapeHtml(t.province) : '&nbsp;'}
-                        </div>
-                            ${t.timeSlot ? `<div style="font-size: 0.9rem; font-weight: 900; background: #EEE; color: #000; text-align: center; padding: 3px 5px; margin-top: 4px; border-radius: 4px;">TURNO: ${escapeHtml(t.timeSlot)}</div>` : ''}
-                            ${hasCod ? `<div style="font-size: 1.1rem; font-weight: 900; color: #FF3B30; margin-top: 5px; border-top: 1px solid #FF6600; padding-top:4px;">REEMBOLSO: ${escapeHtml(t.cod)} €</div>` : ''}
-                         </div>
-                    </div>
-
-                     <!-- Right: Ticket ID & QR -->
-                    <div style="flex: 1; text-align: right; display: flex; flex-direction: row-reverse; gap: 10px; align-items: start;">
-                         <div style="text-align: right;">
-                              <div style="font-size: 1rem; font-weight: bold; margin-bottom: 5px;">${validDateStr}</div>
-                              <div style="font-size: 0.75rem; color: #555; text-transform:uppercase; font-weight: 800;">Albarán Nº</div>
-                              <div style="font-family: 'Outfit', sans-serif; font-size: 1.28rem; color: #000; font-weight: 800; letter-spacing: -1px;">${escapeHtml(t.id)}</div>
-                         </div>
-                         <div style="background: white; padding: 2px; border: 1px solid #eee;">
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${t.packages || 1}|PESO:${t.weight || 0}|OBS:${t.notes || ''}|CLI:${t.clientIdNum || ''}|NIF:${t.receiverNif || ''}`)}" 
-                                 alt="QR Albaran" style="display: block; width: 110px; height: 110px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges;">
-                         </div>
-                    </div>
+        <!-- ── CABECERA ── -->
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #000; padding-bottom:5px; margin-bottom:8px; position:relative; z-index:2;">
+            <!-- Logo + empresa facturadora -->
+            <div style="flex:0 0 28%; max-width:28%;">
+                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:18pt; color:#FF6600; line-height:1; letter-spacing:-0.5px;">NOVAPACK<span style="color:#000;">►</span></div>
+                <div style="margin-top:5px; font-size:7.5pt; line-height:1.35; color:#333;">
+                    ${escapeHtml(billingEmail)}<br>
+                    ${billingNif ? `<span style="font-weight:700; color:#000;">NIF: ${escapeHtml(billingNif)}</span><br>` : ''}
+                    <span style="color:#777; font-size:7pt;">${escapeHtml(billingName)}</span>
                 </div>
-            
-            <div style="margin-top: 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; position:relative;">
-                <div style="border: 1px solid #ccc; padding: 5px; font-size: 0.8rem;">
-                    <strong>REMITENTE:</strong><br>
-                    ${escapeHtml(t.sender)}<br>
-                    ${escapeHtml(t.senderAddress || '')}<br>
-                    ${t.senderPhone ? `Telf: ${escapeHtml(t.senderPhone)}` : ''}
-                </div>
-                <div style="border: 1px solid #000; padding: 5px; font-size: 10pt;">
-                    <strong>DESTINATARIO:</strong><br>
-                    <div style="font-weight:bold; font-size:1.1em;">${escapeHtml(t.receiver)}</div>
-                    ${escapeHtml(t.address)}
-                </div>
+                ${preStamp}
             </div>
 
-            <table style="width: 100%; margin-top: 5px; border-collapse: collapse; border: 1px solid #ccc;">
-                <thead>
-                    <tr style="border-bottom: 1px solid #ccc; color: #000;">
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">BULTOS</th>
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">PESO</th>
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">MEDIDA</th>
-                        ${hasCod ? '<th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">REEMBOLSO</th>' : ''}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rowsHtml}
-                </tbody>
-            </table>
-
-            <!-- Total Summary -->
-            <div style="margin-top: 5px; border: 1px solid #ccc; padding: 5px; background:transparent; display:flex; justify-content:space-around; font-weight:bold; font-size:1rem;">
-                <span>TOTAL BULTOS: ${displayList.reduce((sum, p) => sum + (parseInt(p.qty) || 1), 0)}</span>
-                <span>TOTAL PESO: ${displayList.reduce((sum, p) => sum + ((parseFloat(p.weight) || 0) * (parseInt(p.qty) || 1)), 0).toFixed(2)} kg</span>
+            <!-- Centro: bloque protagonista (Portes + Provincia + Turno + Reemb) -->
+            <div style="flex:1; padding:0 8px; text-align:center;">
+                <div style="font-size:9pt; font-weight:700; color:#000; letter-spacing:1.5px; margin-bottom:3px;">PORTES</div>
+                <div style="font-family:'Outfit',sans-serif; font-size:18pt; font-weight:900; line-height:1; color:#000; padding:2px 0; border-top:1.5px solid #000; border-bottom:1.5px solid #000; background:#f0f0f0; letter-spacing:1px;">${porteLabel}</div>
+                <div style="margin-top:6px; padding:4px 6px; border:3px solid #000; font-family:'Outfit',sans-serif; font-weight:900; font-size:22pt; line-height:1; letter-spacing:-0.5px;">${escapeHtml(t.id || '')}</div>
+                ${t.province ? `<div style="margin-top:5px; font-family:'Outfit',sans-serif; font-weight:900; font-size:11pt; text-transform:uppercase; letter-spacing:2px;">→ ${escapeHtml(t.province)} ←</div>` : ''}
+                ${(t.timeSlot || hasCod) ? `<div style="margin-top:4px; font-size:8pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 6px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
             </div>
 
-             <div style="margin-top: 4px; border: 1px solid #ccc; padding: 2px 5px; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word; overflow: hidden; max-height: 50px;">
-                <strong>Observaciones:</strong> ${escapeHtml(t.notes)}
+            <!-- Derecha: Fecha + QR -->
+            <div style="flex:0 0 110px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+                <div style="font-size:8pt; font-weight:700; margin-bottom:4px; color:#000;">${validDateStr}</div>
+                <div style="width:105px; height:105px; border:1px solid #ccc; padding:3px; background:#fff; display:flex; align-items:center; justify-content:center;">
+                    <img src="${qrUrl}" alt="QR" style="display:block; width:100%; height:100%; image-rendering:pixelated;">
+                </div>
             </div>
         </div>
 
-        <div style="margin-top: 5px; font-size: 0.7rem; width: 100%; display: flex; justify-content: flex-end; padding-right: 10px;">
-            <div style="text-align:right;">
-                <span>Firma y Sello:</span><br>
-                <span style="font-weight: bold; text-transform: uppercase;">${escapeHtml(footerLabel)}</span>
+        <!-- ── REMITENTE / DESTINATARIO ── -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px; position:relative; z-index:2;">
+            <div style="border:1px solid #999; padding:5px 7px; font-size:9pt; line-height:1.35;">
+                <h4 style="margin:0 0 3px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#555;">Remitente</h4>
+                <div style="font-weight:700; font-size:10pt; margin-bottom:2px;">${escapeHtml(t.sender || '')}</div>
+                ${escapeHtml(t.senderAddress || '')}<br>
+                ${t.senderPhone ? `<span style="color:#555; font-size:8.5pt;">Tel: ${escapeHtml(t.senderPhone)}</span>` : ''}
             </div>
+            <div style="border:1.5px solid #000; padding:5px 7px; font-size:9pt; line-height:1.35;">
+                <h4 style="margin:0 0 3px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Destinatario</h4>
+                <div style="font-weight:900; font-size:11pt; margin-bottom:2px;">${escapeHtml(t.receiver || '')}</div>
+                ${escapeHtml([t.address, t.cp, t.localidad].filter(Boolean).join(' · '))}<br>
+                ${t.phone ? `<span style="color:#555; font-size:8.5pt;">Tel: ${escapeHtml(t.phone)}</span>` : ''}
+            </div>
+        </div>
+
+        <!-- ── ARTÍCULOS (Hero total + bandas) ── -->
+        <div style="margin-bottom:8px; position:relative; z-index:2;">
+            <div style="border:4px solid #000; text-align:center; padding:6px 10px 8px; margin-bottom:6px;">
+                <div style="font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:3px; color:#555;">Total</div>
+                <div style="font-family:'Outfit',sans-serif; font-weight:900; font-size:44pt; line-height:1; letter-spacing:-2px;">${totalBultos}</div>
+                <div style="font-size:11pt; font-weight:800; text-transform:uppercase; letter-spacing:3px;">Bultos</div>
+                ${anyWeight ? `<div style="margin-top:4px; padding-top:4px; border-top:1px dashed #999; font-size:9pt; font-weight:700; color:#333; letter-spacing:1px;">+ ${totalPeso.toFixed(0)} KG TOTAL</div>` : ''}
+            </div>
+            <div style="${bandsContainerStyle}">${bandsHtml}</div>
+        </div>
+
+        <!-- ── OBSERVACIONES ── -->
+        ${t.notes ? `<div style="border:1px solid #ccc; padding:4px 8px; font-size:8.5pt; margin-bottom:8px; position:relative; z-index:2; line-height:1.4;">
+            <strong style="font-size:7.5pt; text-transform:uppercase; letter-spacing:1px; color:#555;">Observaciones:</strong> ${escapeHtml(t.notes)}
+        </div>` : ''}
+
+        <!-- ── FIRMA SIMPLIFICADA ── -->
+        <div style="margin-top:auto; display:grid; grid-template-columns:1fr 1.4fr; gap:10px; border-top:1.5px solid #000; padding-top:6px; position:relative; z-index:2;">
+            <div>
+                <h4 style="margin:0 0 2px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">DNI / Sello</h4>
+                <div style="border-bottom:1px solid #000; height:18mm;"></div>
+            </div>
+            <div>
+                <h4 style="margin:0 0 2px; font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Firma</h4>
+                <div style="border:1px solid #000; height:22mm;"></div>
+            </div>
+        </div>
+
+        <!-- Ejemplar -->
+        <div style="margin-top:4px; text-align:right; font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#666; position:relative; z-index:2;">
+            ${escapeHtml(footerLabel || '')}
         </div>
     </div>
     `;
