@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Comparativa — Líneas de artículos del albarán</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Outfit:wght@700;900&display=swap" rel="stylesheet">
+<style>
+    body {
+        margin: 0;
+        padding: 20px;
+        background: #2a2a2a;
+        font-family: 'Inter', Arial, sans-serif;
+        color: #ddd;
+    }
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 20px;
+        max-width: 1500px;
+        margin: 0 auto;
+    }
+    .opt {
+        background: #fff;
+        color: #000;
+        border-radius: 6px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    .opt-header {
+        background: #FF6600;
+        color: #fff;
+        padding: 8px 14px;
+        font-weight: 800;
+        font-size: 0.9rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .opt-header .num {
+        background: #fff;
+        color: #FF6600;
+        width: 24px; height: 24px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        margin-right: 8px;
+    }
+    .opt-header .pros {
+        font-size: 0.7rem;
+        font-weight: 600;
+        opacity: 0.95;
+    }
+    .opt-body {
+        padding: 12px 18px 18px;
+        background: #fff;
+    }
+    .opt-totals {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 6px;
+        border-bottom: 2px solid #000;
+        padding-bottom: 4px;
+    }
+    .opt-totals h4 {
+        margin: 0;
+        font-size: 8pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #000;
+    }
+    .opt-totals .t {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 11pt;
+    }
+    .toolbar {
+        max-width: 1500px;
+        margin: 0 auto 18px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .toolbar button {
+        background: #FF6600;
+        color: #fff;
+        border: 0;
+        padding: 8px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 700;
+        font-size: 0.82rem;
+    }
+    .toolbar label { color: #ccc; font-size: 0.85rem; }
+    .vote {
+        margin-top: 12px;
+        background: #f5f5f5;
+        padding: 8px 14px;
+        font-size: 0.78rem;
+        color: #555;
+        border-radius: 0 0 6px 6px;
+    }
+
+    /* ====================== */
+    /* OPCIÓN 1 — TABLA ZEBRA */
+    /* ====================== */
+    .opt1 table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+    .opt1 th { text-align: left; padding: 5px 8px; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 1px; color: #555; border-bottom: 1.5px solid #000; }
+    .opt1 td { padding: 6px 8px; }
+    .opt1 tbody tr:nth-child(even) { background: #f4f4f4; }
+    .opt1 .qty { font-weight: 900; font-size: 11pt; text-align: center; width: 50px; }
+    .opt1 .name { font-weight: 700; }
+    .opt1 .weight { text-align: right; font-weight: 700; width: 80px; }
+
+    /* ============================ */
+    /* OPCIÓN 2 — LISTA LIMPIA      */
+    /* ============================ */
+    .opt2 .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 6px 4px;
+        border-bottom: 1px solid #eee;
+        font-size: 10pt;
+    }
+    .opt2 .row:last-child { border-bottom: 0; }
+    .opt2 .qty {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 13pt;
+        color: #000;
+        min-width: 44px;
+    }
+    .opt2 .name { flex: 1; font-weight: 600; margin-left: 8px; }
+    .opt2 .weight { font-weight: 700; color: #333; font-size: 10pt; }
+
+    /* =============================== */
+    /* OPCIÓN 3 — TARJETAS HORIZONTALES */
+    /* =============================== */
+    .opt3 .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        gap: 8px;
+    }
+    .opt3 .card {
+        border: 1.5px solid #000;
+        padding: 6px 4px;
+        text-align: center;
+        background: #fff;
+    }
+    .opt3 .card .qty {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 18pt;
+        line-height: 1;
+        color: #000;
+    }
+    .opt3 .card .name {
+        font-size: 8pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        margin: 4px 0 2px;
+    }
+    .opt3 .card .weight {
+        font-size: 8pt;
+        color: #555;
+        border-top: 1px dashed #999;
+        padding-top: 2px;
+    }
+
+    /* ============================ */
+    /* OPCIÓN 4 — TICKET DE CAJA    */
+    /* ============================ */
+    .opt4 .ticket-box {
+        font-family: 'Courier New', monospace;
+        padding: 12px 4px;
+        border-top: 2px dashed #000;
+        border-bottom: 2px dashed #000;
+    }
+    .opt4 .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 3px 0;
+        font-size: 11pt;
+    }
+    .opt4 .qty { font-weight: 900; min-width: 40px; }
+    .opt4 .name { flex: 1; font-weight: 700; text-transform: uppercase; }
+    .opt4 .weight { font-weight: 900; }
+    .opt4 .total-row {
+        margin-top: 10px;
+        padding-top: 6px;
+        border-top: 1px solid #000;
+        display: flex;
+        justify-content: space-between;
+        font-weight: 900;
+        font-size: 12pt;
+    }
+
+    /* ============================ */
+    /* OPCIÓN 5 — BANDAS GRANDES    */
+    /* ============================ */
+    .opt5 .band {
+        display: flex;
+        align-items: stretch;
+        margin-bottom: 3px;
+        border: 1.5px solid #000;
+    }
+    .opt5 .band .qty {
+        background: #000;
+        color: #fff;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 16pt;
+        padding: 8px 14px;
+        min-width: 50px;
+        text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .opt5 .band .name {
+        flex: 1;
+        padding: 8px 12px;
+        font-weight: 800;
+        font-size: 12pt;
+        display: flex;
+        align-items: center;
+        text-transform: uppercase;
+    }
+    .opt5 .band .weight {
+        padding: 8px 14px;
+        font-weight: 700;
+        font-size: 11pt;
+        background: #f0f0f0;
+        display: flex;
+        align-items: center;
+        border-left: 1px solid #000;
+    }
+
+    /* ============================ */
+    /* OPCIÓN 6 — ETIQUETAS INLINE  */
+    /* ============================ */
+    .opt6 .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
+    }
+    .opt6 .chip {
+        display: inline-flex;
+        align-items: center;
+        border: 1.5px solid #000;
+        padding: 4px 10px;
+        font-size: 10pt;
+        font-weight: 700;
+        background: #fff;
+    }
+    .opt6 .chip .qty {
+        background: #000;
+        color: #fff;
+        font-weight: 900;
+        margin: -4px 10px -4px -10px;
+        padding: 4px 8px;
+        font-family: 'Outfit', sans-serif;
+        font-size: 11pt;
+    }
+    .opt6 .chip .weight {
+        margin-left: 8px;
+        color: #555;
+        font-weight: 600;
+        font-size: 9pt;
+    }
+
+    @media print {
+        body { background: #fff; padding: 0; }
+        .toolbar, .opt-header { display: none; }
+        .grid { display: block; }
+        .opt { box-shadow: none; }
+    }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <button onclick="toggleData()">🔀 Cambiar pocos / muchos artículos</button>
+    <label>Estado actual:</label>
+    <span id="status" style="color:#FFB300; font-weight:700; font-size:0.85rem;"></span>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+var state = { manyArticles: false };
+
+function items() {
+    return state.manyArticles ? [
+        { qty: 5, size: 'PAQUETE',  weight: 30 },
+        { qty: 3, size: 'BULTO',    weight: 25 },
+        { qty: 2, size: 'PALET',    weight: 50 },
+        { qty: 4, size: 'BI-200L',  weight: 10 },
+        { qty: 1, size: 'LUNA',     weight: 8  },
+        { qty: 2, size: 'SOBRE',    weight: 1  },
+        { qty: 3, size: 'BAT',      weight: 12 },
+        { qty: 1, size: 'GV',       weight: 25 },
+    ] : [
+        { qty: 5, size: 'PAQUETE', weight: 30 },
+        { qty: 3, size: 'BULTO',   weight: 25 },
+        { qty: 2, size: 'PALET',   weight: 50 },
+    ];
+}
+
+function totals(arr) {
+    var u = arr.reduce(function(s,p){ return s+p.qty; }, 0);
+    var w = arr.reduce(function(s,p){ return s+p.weight; }, 0);
+    return { uds: u, kg: w };
+}
+
+function header(num, label, pros) {
+    return '<div class="opt-header"><span><span class="num">' + num + '</span>' + label + '</span><span class="pros">' + pros + '</span></div>';
+}
+
+function totalsBar(t) {
+    return '<div class="opt-totals"><h4>Artículos recogidos</h4><span class="t">' + t.uds + ' uds · ' + t.kg + ' kg</span></div>';
+}
+
+function opt1() {
+    var arr = items(); var t = totals(arr);
+    var rows = arr.map(function(p) {
+        return '<tr><td class="qty">' + p.qty + '×</td><td class="name">' + p.size + '</td><td class="weight">' + p.weight + ' kg</td></tr>';
+    }).join('');
+    return '<div class="opt opt1">' +
+        header(1, 'Tabla zebra clásica', 'Lo conocido, B&N perfecto') +
+        '<div class="opt-body">' + totalsBar(t) +
+        '<table><thead><tr><th class="qty">Cant.</th><th class="name">Artículo</th><th class="weight">Peso</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>' +
+        '</div>' +
+        '<div class="vote">✅ Fácil de leer · Familiar · Funciona con cualquier cantidad de líneas</div>' +
+    '</div>';
+}
+
+function opt2() {
+    var arr = items(); var t = totals(arr);
+    var rows = arr.map(function(p) {
+        return '<div class="row"><span class="qty">' + p.qty + '×</span><span class="name">' + p.size + '</span><span class="weight">' + p.weight + ' kg</span></div>';
+    }).join('');
+    return '<div class="opt opt2">' +
+        header(2, 'Lista limpia (estilo app móvil)', 'Sin bordes, más aire') +
+        '<div class="opt-body">' + totalsBar(t) + rows + '</div>' +
+        '<div class="vote">✅ Aire blanco · Lectura cómoda · Moderno · Línea sutil entre filas</div>' +
+    '</div>';
+}
+
+function opt3() {
+    var arr = items(); var t = totals(arr);
+    var cards = arr.map(function(p) {
+        return '<div class="card"><div class="qty">' + p.qty + '×</div><div class="name">' + p.size + '</div><div class="weight">' + p.weight + ' kg</div></div>';
+    }).join('');
+    return '<div class="opt opt3">' +
+        header(3, 'Tarjetas / mini-cards', 'Visual rápido, escanea de un vistazo') +
+        '<div class="opt-body">' + totalsBar(t) +
+        '<div class="cards">' + cards + '</div>' +
+        '</div>' +
+        '<div class="vote">✅ Cada item destaca solo · Bueno para inventario rápido · Ocupa más espacio</div>' +
+    '</div>';
+}
+
+function opt4() {
+    var arr = items(); var t = totals(arr);
+    var rows = arr.map(function(p) {
+        return '<div class="row"><span class="qty">' + p.qty + 'x</span><span class="name">' + p.size + '</span><span class="weight">' + p.weight + ' kg</span></div>';
+    }).join('');
+    return '<div class="opt opt4">' +
+        header(4, 'Ticket de caja registradora', 'Monospace, todo alineado') +
+        '<div class="opt-body">' + totalsBar(t) +
+        '<div class="ticket-box">' + rows +
+            '<div class="total-row"><span>TOTAL ' + t.uds + ' UDS</span><span>' + t.kg + ' KG</span></div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="vote">✅ Estilo recibo · Alineación perfecta · Aire vintage · Familiar para almacén</div>' +
+    '</div>';
+}
+
+function opt5() {
+    var arr = items(); var t = totals(arr);
+    var rows = arr.map(function(p) {
+        return '<div class="band"><div class="qty">' + p.qty + '</div><div class="name">' + p.size + '</div><div class="weight">' + p.weight + ' kg</div></div>';
+    }).join('');
+    return '<div class="opt opt5">' +
+        header(5, 'Bandas grandes con cantidad invertida', 'Imposible no ver las cantidades') +
+        '<div class="opt-body">' + totalsBar(t) + rows + '</div>' +
+        '<div class="vote">✅ Cantidades muy visibles · Buen contraste · Algo más alto cada línea</div>' +
+    '</div>';
+}
+
+function opt6() {
+    var arr = items(); var t = totals(arr);
+    var chips = arr.map(function(p) {
+        return '<div class="chip"><span class="qty">' + p.qty + '</span>' + p.size + '<span class="weight">· ' + p.weight + ' kg</span></div>';
+    }).join('');
+    return '<div class="opt opt6">' +
+        header(6, 'Etiquetas inline (chips)', 'Muy compacto, caben muchos') +
+        '<div class="opt-body">' + totalsBar(t) +
+        '<div class="chips">' + chips + '</div>' +
+        '</div>' +
+        '<div class="vote">✅ Mucha info en poco espacio · Mejor para envíos con muchos tipos distintos</div>' +
+    '</div>';
+}
+
+function render() {
+    document.getElementById('grid').innerHTML = opt1() + opt2() + opt3() + opt4() + opt5() + opt6();
+    document.getElementById('status').textContent = state.manyArticles ?
+        'Mostrando 8 tipos de artículo' :
+        'Mostrando 3 tipos de artículo';
+}
+
+function toggleData() { state.manyArticles = !state.manyArticles; render(); }
+render();
+</script>
+
+</body>
+</html>
