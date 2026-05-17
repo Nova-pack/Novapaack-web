@@ -132,16 +132,26 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
         entries[0].debit = total; // total ya lleva la resta del IRPF
     }
 
+    // Si es ABONO (factura rectificativa) → invertir signos: el cliente nos debe MENOS
+    // (HABER en 430), reducimos ingresos (DEBE en 700), reducimos IVA repercutido (DEBE en 477).
+    // Sprint1 #3 fix — antes los abonos generaban asiento incoherente.
+    const isAbono = !!invoiceData.isAbono;
+    if (isAbono) {
+        entries.forEach(e => {
+            const d = e.debit; e.debit = e.credit; e.credit = d;
+        });
+    }
+
     const journalEntry = {
         number: asientoNum,
         date: invoiceData.date || new Date(),
-        description: `Factura emitida ${invoiceId} a ${clientName}`,
+        description: (isAbono ? `Factura rectificativa ${invoiceId} a ${clientName}` : `Factura emitida ${invoiceId} a ${clientName}`),
         entries: entries,
         invoiceRef: invoiceDocId,
         invoiceId: invoiceId,
         clientId: clientId,
         clientName: clientName,
-        type: 'invoice', // invoice | payment | credit_note | manual
+        type: isAbono ? 'credit_note' : 'invoice', // invoice | payment | credit_note | manual
         subtotal: subtotal,
         ivaAmount: ivaAmount,
         irpfAmount: irpfAmount,
@@ -152,7 +162,7 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
 
     try {
         await db.collection('journal').add(journalEntry);
-        console.log(`[CONTA] ✅ Asiento #${asientoNum} generado para factura ${invoiceId}`);
+        console.log(`[CONTA] ✅ Asiento #${asientoNum} ${isAbono ? '(ABONO)' : ''} generado para ${invoiceId}`);
     } catch(e) {
         console.error('[CONTA] Error generando asiento:', e);
     }

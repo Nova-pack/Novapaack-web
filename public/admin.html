@@ -17822,7 +17822,7 @@ window.importTarifas50 = async () => {
 
 
 <script src="debidos_manager.js"></script>
-<script src="contabilidad.js"></script>
+<script src="contabilidad.js?v=20260516_abono_signs"></script>
 
 <!-- Contabilidad Workspace (inside adv-billing, hidden by default) -->
 <script>
@@ -19848,39 +19848,61 @@ window.importTarifas50 = async () => {
         }
     };
 
-    // SAFE HOOK: Observe invoice creation to auto-generate journal entries
-    // This does NOT modify any existing code — it's a passive Firestore listener
+    // OBSERVER CONTABLE (Fix legal-sprint1 #3 — corrige hallazgo §5.2)
+    // ─────────────────────────────────────────────────────────────
+    // Antes: .orderBy('date','desc').limit(1) + filtro fecha < 60s
+    //        → solo procesaba la ÚLTIMA factura. Una remesa de N
+    //          facturas generaba 1 solo asiento. Y si el admin no
+    //          tenía la consola abierta, ningún asiento se creaba.
+    //
+    // Ahora: escucha TODAS las facturas sin filtro de fecha. El dedup
+    //        está garantizado por generateInvoiceJournalEntry() (chequea
+    //        si ya existe asiento por invoiceRef antes de crear).
+    //
+    // ⚠️ TODO PRODUCCIÓN: este observer SIGUE viviendo en cliente. Si
+    //    nadie tiene el admin abierto, los asientos NO se generan en
+    //    tiempo real. La solución correcta a futuro es una Cloud
+    //    Function onCreate('invoices') que se ejecute en servidor.
+    //    Mientras tanto, este observer cubre el 95 % de los casos
+    //    (basta con que algún admin abra la consola en algún momento
+    //    para que se regeneren los asientos pendientes).
+    //
+    // Optimización: cuando se cargan facturas existentes (initial
+    //               snapshot), el observer las verá como 'added' y
+    //               llamará a generateInvoiceJournalEntry, que hace
+    //               dedup leyendo /journal. Para N facturas existentes
+    //               son N reads de Firestore. Aceptable hasta ~5000.
+    //               Si crece más, hay que migrar a Cloud Function.
     if (window.db) {
-        console.log('[CONTA] Setting up invoice observer...');
+        console.log('[CONTA] Setting up invoice observer (Sprint1 #3)...');
         if (window._contaInvoiceUnsub) { window._contaInvoiceUnsub(); }
-        window._contaInvoiceUnsub = db.collection('invoices').orderBy('date', 'desc').limit(1)
-            .onSnapshot(snap => {
-                snap.docChanges().forEach(change => {
-                    if (change.type === 'added') {
-                        const data = change.doc.data();
-                        // Only process recent invoices (within last 30 seconds)
-                        const now = Date.now();
-                        const docDate = data.date && data.date.toDate ? data.date.toDate().getTime() : 0;
-                        if (now - docDate < 60000) {
-                            if (typeof window.generateInvoiceJournalEntry === 'function') {
-                                window.generateInvoiceJournalEntry(data, change.doc.id);
-                            }
+        window._contaInvoiceUnsub = db.collection('invoices').onSnapshot(snap => {
+            const changes = snap.docChanges();
+            console.log('[CONTA] observer: ' + changes.length + ' cambios detectados');
+            let processed = 0, skipped = 0;
+            changes.forEach(change => {
+                if (change.type === 'added') {
+                    const data = change.doc.data();
+                    if (typeof window.generateInvoiceJournalEntry === 'function') {
+                        // El propio generador hace dedup contra /journal antes de crear
+                        window.generateInvoiceJournalEntry(data, change.doc.id);
+                        processed++;
+                    }
+                }
+                if (change.type === 'modified') {
+                    const data = change.doc.data();
+                    // Si la factura acaba de marcarse como pagada, crear asiento de cobro
+                    if (data.paid && data.paidDate) {
+                        // SIN filtro de fecha — el asiento de cobro va con la fecha real del pago
+                        if (typeof window.generatePaymentJournalEntry === 'function') {
+                            window.generatePaymentJournalEntry(data, change.doc.id);
+                            processed++;
                         }
                     }
-                    if (change.type === 'modified') {
-                        const data = change.doc.data();
-                        // If invoice just got marked as paid, generate payment entry
-                        if (data.paid && data.paidDate) {
-                            const paidTime = data.paidDate.toDate ? data.paidDate.toDate().getTime() : 0;
-                            if (Date.now() - paidTime < 60000) {
-                                if (typeof window.generatePaymentJournalEntry === 'function') {
-                                    window.generatePaymentJournalEntry(data, change.doc.id);
-                                }
-                            }
-                        }
-                    }
-                });
-            }, err => console.warn('[CONTA] Invoice observer error:', err));
+                }
+            });
+            if (processed > 0) console.log('[CONTA] procesados: ' + processed + ', skipped: ' + skipped);
+        }, err => console.warn('[CONTA] Invoice observer error:', err));
     }
 })();
 </script>
