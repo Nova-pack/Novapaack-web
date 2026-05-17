@@ -1145,6 +1145,178 @@ window.contaLoadModelo347 = async function() {
 };
 
 // ============================================================
+//  MODELO 111 — Retenciones IRPF practicadas a profesionales
+//  (Sprint 2 §1.6 — antes calculaba mal IRPF soportado)
+//  Lee de /expenses los gastos con retencionIrpf > 0 y los agrupa
+//  por trimestre. Excluye alquileres (van al 115).
+// ============================================================
+window.contaLoadModelo111 = async function() {
+    contaCurrentView = 'modelo111';
+    const container = document.getElementById('conta-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">Calculando Modelo 111...</div>';
+    try {
+        const year = new Date().getFullYear();
+        const expSnap = await db.collection('expenses')
+            .where('date', '>=', new Date(year, 0, 1))
+            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+            .orderBy('date', 'asc').limit(10000).get();
+
+        const quarters = { 1: { perceptores: 0, base: 0, ret: 0 }, 2: {perceptores:0,base:0,ret:0}, 3:{perceptores:0,base:0,ret:0}, 4:{perceptores:0,base:0,ret:0} };
+        const detailByPerceptor = {};
+
+        expSnap.forEach(doc => {
+            const e = doc.data();
+            const retIrpf = parseFloat(e.retencionIrpf || 0);
+            if (retIrpf <= 0) return;  // sin retención → no aplica
+            // Excluir alquileres (van al modelo 115)
+            if ((e.category || '').toLowerCase().indexOf('alquiler') !== -1) return;
+            const date = e.date && e.date.toDate ? e.date.toDate() : new Date(e.date);
+            if (!date || isNaN(date.getTime())) return;
+            const q = Math.floor(date.getMonth() / 3) + 1;
+            const base = parseFloat(e.base || 0);
+
+            quarters[q].base += base;
+            quarters[q].ret += retIrpf;
+            const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+            const key = (nif || e.provider || 'sin-id') + '|q' + q;
+            if (!detailByPerceptor[key]) {
+                detailByPerceptor[key] = { provider: e.provider || e.providerName || '—', nif: nif, q: q, base: 0, ret: 0, n: 0 };
+                quarters[q].perceptores++;
+            }
+            detailByPerceptor[key].base += base;
+            detailByPerceptor[key].ret += retIrpf;
+            detailByPerceptor[key].n++;
+        });
+
+        const detail = Object.values(detailByPerceptor).sort((a,b) => a.q - b.q || b.ret - a.ret);
+        const totalBase = Object.values(quarters).reduce((s,q) => s+q.base, 0);
+        const totalRet = Object.values(quarters).reduce((s,q) => s+q.ret, 0);
+
+        let html = `
+        <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">📋 MODELO 111 — Retenciones IRPF practicadas a profesionales/empleados — ${year}</div>
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Trimestral. Excluye alquileres (van al modelo 115).</div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px;">
+            ${[1,2,3,4].map(q => `
+                <div style="background:rgba(255,152,0,0.08); border:1px solid rgba(255,152,0,0.3); padding:10px; border-radius:6px; text-align:center;">
+                    <div style="font-size:0.7rem; color:#FFB74D; font-weight:700;">${q}T</div>
+                    <div style="font-size:1.1rem; color:#FFD700; font-weight:900; margin-top:4px;">${quarters[q].ret.toFixed(2)}€</div>
+                    <div style="font-size:0.65rem; color:#888; margin-top:2px;">${quarters[q].perceptores} perceptor(es)<br>Base: ${quarters[q].base.toFixed(2)}€</div>
+                </div>`).join('')}
+        </div>
+
+        <div style="background:rgba(76,175,80,0.08); border:1px solid #4CAF50; border-radius:8px; padding:12px; margin-bottom:15px; text-align:center;">
+            <span style="color:#4CAF50; font-weight:700; font-size:1.3rem;">${totalRet.toFixed(2)}€</span>
+            <span style="color:#aaa; font-size:0.8rem;"> retenciones totales año · sobre base ${totalBase.toFixed(2)}€</span>
+        </div>`;
+
+        if (detail.length === 0) {
+            html += '<div style="text-align:center; padding:30px; color:#888;">No hay gastos con retención IRPF este año.<br><small>Recuerda: añade campo <code>retencionIrpf</code> al crear gastos de profesionales/autónomos.</small></div>';
+        } else {
+            html += `<table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                <thead><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
+                    <th style="padding:6px;">Trim.</th><th style="padding:6px; text-align:left;">Perceptor</th><th style="padding:6px;">NIF</th>
+                    <th style="padding:6px; text-align:right;">Base €</th><th style="padding:6px; text-align:right;">Retención €</th>
+                </tr></thead><tbody>`;
+            detail.forEach(d => {
+                html += `<tr style="border-bottom:1px solid #2d2d30;"><td style="padding:5px; text-align:center;">${d.q}T</td>
+                <td style="padding:5px;">${d.provider}</td><td style="padding:5px; font-family:monospace; color:#888;">${d.nif || '—'}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${d.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#FFD700; font-weight:700;">${d.ret.toFixed(2)}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">💡 <strong>Para que un gasto aparezca aquí</strong>: añade campo <code>retencionIrpf</code> (importe €) al crear el gasto. La AEAT exige presentar modelo 111 trimestral con esta info.</div>';
+        container.innerHTML = html;
+    } catch(e) { container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`; }
+};
+
+// ============================================================
+//  MODELO 115 — Retenciones IRPF por alquileres de inmuebles urbanos
+//  (Sprint 2 §1.7 — antes no existía)
+// ============================================================
+window.contaLoadModelo115 = async function() {
+    contaCurrentView = 'modelo115';
+    const container = document.getElementById('conta-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">Calculando Modelo 115...</div>';
+    try {
+        const year = new Date().getFullYear();
+        const expSnap = await db.collection('expenses')
+            .where('date', '>=', new Date(year, 0, 1))
+            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+            .orderBy('date', 'asc').limit(10000).get();
+
+        const quarters = { 1:{arrendadores:0,base:0,ret:0}, 2:{arrendadores:0,base:0,ret:0}, 3:{arrendadores:0,base:0,ret:0}, 4:{arrendadores:0,base:0,ret:0} };
+        const detailByArrendador = {};
+
+        expSnap.forEach(doc => {
+            const e = doc.data();
+            // Solo alquileres
+            if ((e.category || '').toLowerCase().indexOf('alquiler') === -1) return;
+            const retIrpf = parseFloat(e.retencionIrpf || 0);
+            if (retIrpf <= 0) return;
+            const date = e.date && e.date.toDate ? e.date.toDate() : new Date(e.date);
+            if (!date || isNaN(date.getTime())) return;
+            const q = Math.floor(date.getMonth() / 3) + 1;
+            const base = parseFloat(e.base || 0);
+            quarters[q].base += base;
+            quarters[q].ret += retIrpf;
+            const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+            const key = (nif || e.provider || 'sin-id') + '|q' + q;
+            if (!detailByArrendador[key]) {
+                detailByArrendador[key] = { provider: e.provider || e.providerName || '—', nif: nif, q: q, base: 0, ret: 0 };
+                quarters[q].arrendadores++;
+            }
+            detailByArrendador[key].base += base;
+            detailByArrendador[key].ret += retIrpf;
+        });
+
+        const detail = Object.values(detailByArrendador).sort((a,b) => a.q - b.q || b.ret - a.ret);
+        const totalRet = Object.values(quarters).reduce((s,q) => s+q.ret, 0);
+        const totalBase = Object.values(quarters).reduce((s,q) => s+q.base, 0);
+
+        let html = `
+        <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">🏢 MODELO 115 — Retenciones IRPF por alquileres de inmuebles urbanos — ${year}</div>
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Trimestral. Retención del 19% sobre rentas de alquiler (LIRPF art. 101).</div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px;">
+            ${[1,2,3,4].map(q => `
+                <div style="background:rgba(33,150,243,0.08); border:1px solid rgba(33,150,243,0.3); padding:10px; border-radius:6px; text-align:center;">
+                    <div style="font-size:0.7rem; color:#5DADE2; font-weight:700;">${q}T</div>
+                    <div style="font-size:1.1rem; color:#FFD700; font-weight:900; margin-top:4px;">${quarters[q].ret.toFixed(2)}€</div>
+                    <div style="font-size:0.65rem; color:#888; margin-top:2px;">${quarters[q].arrendadores} arrendador(es)<br>Base: ${quarters[q].base.toFixed(2)}€</div>
+                </div>`).join('')}
+        </div>
+
+        <div style="background:rgba(76,175,80,0.08); border:1px solid #4CAF50; border-radius:8px; padding:12px; margin-bottom:15px; text-align:center;">
+            <span style="color:#4CAF50; font-weight:700; font-size:1.3rem;">${totalRet.toFixed(2)}€</span>
+            <span style="color:#aaa; font-size:0.8rem;"> retenciones por alquileres · sobre base ${totalBase.toFixed(2)}€</span>
+        </div>`;
+
+        if (detail.length === 0) {
+            html += '<div style="text-align:center; padding:30px; color:#888;">No hay alquileres con retención IRPF este año.<br><small>Si alquilas nave/oficina, añade gasto con categoría "Alquiler Local/Nave" y campo <code>retencionIrpf</code> (19% sobre la base).</small></div>';
+        } else {
+            html += `<table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                <thead><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
+                    <th style="padding:6px;">Trim.</th><th style="padding:6px; text-align:left;">Arrendador</th><th style="padding:6px;">NIF</th>
+                    <th style="padding:6px; text-align:right;">Base €</th><th style="padding:6px; text-align:right;">Retención 19% €</th>
+                </tr></thead><tbody>`;
+            detail.forEach(d => {
+                html += `<tr style="border-bottom:1px solid #2d2d30;"><td style="padding:5px; text-align:center;">${d.q}T</td>
+                <td style="padding:5px;">${d.provider}</td><td style="padding:5px; font-family:monospace; color:#888;">${d.nif || '—'}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${d.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#FFD700; font-weight:700;">${d.ret.toFixed(2)}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">💡 La AEAT exige presentar modelo 115 trimestral. Excepciones: viviendas <span style="color:#FF8A50;">(no se retiene)</span>, alquileres &lt;900€/año al mismo arrendador.</div>';
+        container.innerHTML = html;
+    } catch(e) { container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`; }
+};
+
+// ============================================================
 //  MÓDULO DE GASTOS / EXPENSES
 // ============================================================
 

@@ -772,10 +772,26 @@ document.getElementById('btn-adv-save').onclick = async () => {
             return;
         }
 
+        // fechaDevengo (Sprint 2 §2.3): cuándo se devenga el IVA. Para facturas
+        // manuales, asumimos que se devenga el día de emisión salvo que advCurrentTickets
+        // exista — en cuyo caso es la fecha del último ticket incluido.
+        let _fechaDevengo = finalDate;
+        try {
+            if (Array.isArray(window.advCurrentTickets) && window.advCurrentTickets.length > 0) {
+                let maxTs = 0;
+                window.advCurrentTickets.forEach(t => {
+                    const d = t.createdAt && t.createdAt.toDate ? t.createdAt.toDate() : (t.date ? new Date(t.date) : null);
+                    if (d && !isNaN(d.getTime()) && d.getTime() > maxTs) maxTs = d.getTime();
+                });
+                if (maxTs > 0) _fechaDevengo = new Date(maxTs);
+            }
+        } catch(_) {}
+
         const invoiceData = {
             number: nextNum,
             invoiceId: `FAC-${invYY}-${nextNum}`,
-            date: finalDate,
+            date: finalDate,           // fecha EXPEDICIÓN
+            fechaDevengo: _fechaDevengo, // fecha OPERACIÓN (devengo IVA)
             clientId: advCurrentClient.id,
             clientName: advCurrentClient.name,
             clientCIF: _clientFiscalId,

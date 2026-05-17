@@ -156,6 +156,16 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ─── SEPA MANDATE LOG — historial de cargos por mandato ───
+    // Usado para determinar FRST (1er cargo) vs RCUR (recurrente) en remesas.
+    // No se puede editar/borrar (auditoría inmutable).
+    match /sepa_mandate_log/{docId} {
+      allow read: if isAuth();
+      allow create: if isAdmin();
+      allow update: if false;
+      allow delete: if false;
+    }
+
     // ─── BLACKLIST (auth read, admin write) ───
     match /deleted_erp_ids/{docId} {
       allow read: if isAuth();

@@ -656,6 +656,42 @@
         }
     };
 
+    // Sube un PDF de mandato SEPA firmado al cliente actual.
+    // Lo guarda en Storage /sepa_mandates/{clientId}/{timestamp}.pdf
+    // Y actualiza /users/{clientId} con sepaMandateURL + sepaMandateUploadedAt.
+    window._fichaUploadSepaMandate = async function() {
+        if (!_fichaClientId) { alert('Guarda la ficha primero'); return; }
+        const fileInput = document.getElementById('fc-sepa-mandate-file');
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) return;
+        const file = fileInput.files[0];
+        if (file.type !== 'application/pdf') { alert('El mandato debe ser PDF.'); return; }
+        if (file.size > 5 * 1024 * 1024) { alert('Tamaño máximo 5 MB.'); return; }
+
+        try {
+            if (typeof showLoading === 'function') showLoading();
+            const storage = firebase.storage();
+            const safeName = file.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+            const ref = storage.ref('sepa_mandates/' + _fichaClientId + '/' + Date.now() + '_' + safeName);
+            const snap = await ref.put(file);
+            const url = await snap.ref.getDownloadURL();
+
+            const savedId = await _fichaUpdateUserDoc({
+                sepaMandateURL: url,
+                sepaMandateFileName: file.name,
+                sepaMandateUploadedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            if (savedId && _fichaClientData) _fichaClientData.sepaMandateURL = url;
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('✅ Mandato SEPA cargado correctamente.');
+            _fichaRender();
+        } catch(e) {
+            if (typeof hideLoading === 'function') hideLoading();
+            console.error('[sepa upload]', e);
+            alert('Error subiendo mandato: ' + e.message);
+        }
+    };
+
     // Guarda inmediatamente el tariffId en Firestore + actualiza caches locales.
     async function _fichaAutoSaveTariffId(newTariffId) {
         if (!_fichaClientId) return;
@@ -1604,8 +1640,21 @@
 
         ${_sectionTitle('description', 'Mandato SEPA', '#E040FB')}
         <div style="display:grid; grid-template-columns: 1fr 150px; gap:6px; margin-bottom:6px;">
-            ${_field('Referencia SEPA', 'fc-sepa-ref', d.sepaRef, { minWidth: 'auto' })}
-            ${_field('Fecha Mandato', 'fc-sepa-date', d.sepaDate, { type: 'date', minWidth: 'auto' })}
+            ${_field('Referencia Mandato', 'fc-sepa-ref', d.sepaRef, { minWidth: 'auto', placeholder: 'Ej: NPACK-001' })}
+            ${_field('Fecha Firma', 'fc-sepa-date', d.sepaDate, { type: 'date', minWidth: 'auto' })}
+        </div>
+        <div style="background:rgba(224,64,251,0.05); border:1px solid rgba(224,64,251,0.3); border-radius:6px; padding:8px 10px; margin-bottom:6px;">
+            <div style="font-size:0.65rem; color:#E040FB; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">📄 Mandato SEPA firmado (PDF) — obligatorio para remesar</div>
+            ${ d.sepaMandateURL ? `
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                    <a href="${d.sepaMandateURL}" target="_blank" style="color:#4CAF50; font-size:0.78rem; font-weight:700;">✓ Mandato cargado · Ver PDF</a>
+                    <span style="font-size:0.65rem; color:#888;">subido el ${d.sepaMandateUploadedAt ? new Date(d.sepaMandateUploadedAt.toDate ? d.sepaMandateUploadedAt.toDate() : d.sepaMandateUploadedAt).toLocaleDateString('es-ES') : '?'}</span>
+                </div>
+            ` : '<div style="font-size:0.72rem; color:#FF8A50; margin-bottom:6px;">⚠️ Sin mandato firmado · Las remesas SEPA rechazarán este cliente</div>' }
+            <input type="file" id="fc-sepa-mandate-file" accept="application/pdf" style="display:none;" onchange="window._fichaUploadSepaMandate()">
+            <button type="button" onclick="document.getElementById('fc-sepa-mandate-file').click()" style="background:#7B1FA2; border:0; color:#fff; padding:5px 12px; border-radius:4px; font-size:0.72rem; font-weight:700; cursor:pointer;">
+                📤 ${d.sepaMandateURL ? 'Reemplazar' : 'Subir'} mandato PDF
+            </button>
         </div>
 
         ${_sectionTitle('sell', 'Tarifa y Cuota Plana', '#FFD700')}

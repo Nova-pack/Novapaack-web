@@ -4906,7 +4906,12 @@ window.runPublicTicketsBackfill = async function() {
                     <div class="form-group"><label>Dirección Fiscal Completa</label><input type="text" id="fiscal-address" placeholder="Calle Ejemplo 123, 29000 Málaga"></div>
                     <div class="form-group"><label>Email de Facturación</label><input type="email" id="fiscal-email" placeholder="facturacion@novapack.info"></div>
                     <div class="form-group"><label>IBAN / Cuenta Bancaria (Para Cobros)</label><input type="text" id="fiscal-bank" placeholder="ES00 0000 0000 0000 0000 0000"></div>
-                    <div class="form-group"><label>ID Acreedor SEPA (Sufijo)</label><input type="text" id="fiscal-sepa-id" placeholder="Ej: 000"></div>
+                    <div class="form-group"><label>ID Acreedor SEPA (Sufijo legado)</label><input type="text" id="fiscal-sepa-id" placeholder="Ej: 000"></div>
+                    <div class="form-group" style="grid-column:1/-1;">
+                        <label style="color:#FF9800; font-weight:700;">🏦 Identificador de Acreedor SEPA (Creditor Identifier)</label>
+                        <input type="text" id="fiscal-creditor-id" placeholder="Ej: ES12000B12345678" style="text-transform:uppercase; font-family:monospace; letter-spacing:1px;">
+                        <small style="display:block; color:#888; font-size:0.7rem; margin-top:4px;">Lo asigna tu banco. Estructura: ES + 2 dígitos check + 3 dígitos suffix + NIF (9 chars). Obligatorio para generar remesas SEPA.</small>
+                    </div>
                     <div class="form-group"><label>Tipo de IVA por Defecto (%)</label><input type="number" id="fiscal-iva" value="21"></div>
                     <div class="form-group"><label>Retención IRPF (%) - (Transportistas)</label><input type="number" id="fiscal-irpf" value="0"></div>
                 </div>
@@ -12234,6 +12239,8 @@ window.runPublicTicketsBackfill = async function() {
                     document.getElementById('fiscal-email').value = invCompanyData.email || '';
                     document.getElementById('fiscal-bank').value = invCompanyData.bank || '';
                     document.getElementById('fiscal-sepa-id').value = invCompanyData.sepaId || '';
+                    const _cidEl = document.getElementById('fiscal-creditor-id');
+                    if (_cidEl) _cidEl.value = invCompanyData.creditorId || '';
                     document.getElementById('fiscal-iva').value = invCompanyData.iva || 21;
                     document.getElementById('fiscal-irpf').value = invCompanyData.irpf || 0;
                 }
@@ -12242,6 +12249,7 @@ window.runPublicTicketsBackfill = async function() {
             const btnSaveFiscal = document.getElementById('btn-save-fiscal');
             if (btnSaveFiscal) {
                 btnSaveFiscal.onclick = async () => {
+                    const _cidEl = document.getElementById('fiscal-creditor-id');
                     const data = {
                         name: document.getElementById('fiscal-name').value.trim(),
                         cif: document.getElementById('fiscal-cif').value.trim(),
@@ -12249,12 +12257,14 @@ window.runPublicTicketsBackfill = async function() {
                         email: document.getElementById('fiscal-email').value.trim(),
                         bank: document.getElementById('fiscal-bank').value.trim(),
                         sepaId: document.getElementById('fiscal-sepa-id').value.trim(),
+                        creditorId: _cidEl ? _cidEl.value.trim().toUpperCase() : '',
                         iva: parseFloat(document.getElementById('fiscal-iva').value) || 0,
                         irpf: parseFloat(document.getElementById('fiscal-irpf').value) || 0,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     };
                     await db.collection('config').doc('fiscal').set(data);
                     invCompanyData = data;
+                    alert('✅ Datos fiscales guardados.');
                 };
             }
 
@@ -17238,7 +17248,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
             </div>
         </div>
 
-        <script src="billing_adv_v4.js?v=20260516_sprint2"></script>
+        <script src="billing_adv_v4.js?v=20260516_sprint2_final"></script>
     
     <!-- MODAL REASIGNAR REPARTIDOR -->
     <div id="modal-ticket-reassign" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:102070; justify-content:center; align-items:center; padding:20px; overflow-y:auto;">
@@ -17923,7 +17933,7 @@ window.importTarifas50 = async () => {
 
 
 <script src="debidos_manager.js"></script>
-<script src="contabilidad.js?v=20260516_sprint2_347"></script>
+<script src="contabilidad.js?v=20260516_sprint2_final"></script>
 
 <!-- Contabilidad Workspace (inside adv-billing, hidden by default) -->
 <script>
@@ -17949,6 +17959,8 @@ window.importTarifas50 = async () => {
                 <button onclick="contaLoadCartera()" style="background:#333; border:1px solid #555; color:#ff6b6b; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">📋 Cartera</button>
                 <button onclick="contaLoadModelo303()" style="background:#333; border:1px solid #555; color:#00BCD4; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">🏛️ Mod.303</button>
                 <button onclick="contaLoadModelo347()" style="background:#333; border:1px solid #555; color:#FF9800; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">📄 Mod.347</button>
+                <button onclick="contaLoadModelo111()" style="background:#333; border:1px solid #555; color:#FFB74D; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">📋 Mod.111</button>
+                <button onclick="contaLoadModelo115()" style="background:#333; border:1px solid #555; color:#5DADE2; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">🏢 Mod.115</button>
                 <button onclick="contaLoadGastos()" style="background:#333; border:1px solid #555; color:#ffab91; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">💸 Gastos</button>
                 <button onclick="contaLoadPyG()" style="background:#333; border:1px solid #555; color:#00E5FF; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">📈 PyG</button>
                 <button onclick="contaLoadSEPA()" style="background:#333; border:1px solid #555; color:#2196F3; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">🏦 SEPA</button>
@@ -20013,10 +20025,10 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260516_contacts_btn"></script>
 <script src="mailbox_manager.js?v=20260515_pickup_no_doc"></script>
-<script src="ficha_cliente.js?v=20260516_contacts_sync"></script>
+<script src="ficha_cliente.js?v=20260516_sprint2_sepa"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260516_serie_R"></script>
-<script src="monthly_billing_flow.js?v=20260516_sprint2_sepa_nif"></script>
+<script src="monthly_billing_flow.js?v=20260516_sprint2_final"></script>
 <script src="comunicaciones.js?v=20260404"></script>
 <script src="nif_enrichment.js?v=20260404"></script>
 <script src="erp_tabs.js?v=20260516_prealb"></script>

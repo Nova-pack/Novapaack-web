@@ -51,6 +51,15 @@ service firebase.storage {
                    && request.resource.contentType.matches('image/.*');
     }
 
+    // MANDATOS SEPA - PDFs firmados por el deudor (RD-Ley 19/2018, Reg UE 260/2012)
+    // Limite 5MB. Solo PDF (la firma es legalmente válida como PDF). Solo admin escribe.
+    match /sepa_mandates/{clientId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType == 'application/pdf';
+    }
+
     // DENEGAR todo lo demas por seguridad
     match /{allPaths=**} {
       allow read, write: if false;

@@ -615,10 +615,25 @@
                 }
                 const invoiceIdStr = `FAC-${currentYY}-${nextInvNumber}`;
 
+                // FECHA DE DEVENGO (Sprint 2 §2.3) — el IVA se devenga cuando se
+                // presta el servicio (fecha del último albarán del grupo), NO cuando
+                // se emite la factura. Si facturamos el 5 junio los albaranes de mayo,
+                // el IVA debe declararse en 1T (mayo) no en 2T (junio).
+                let fechaDevengo = invoiceDate;
+                try {
+                    let maxTs = 0;
+                    tkts.forEach(t => {
+                        const d = t.createdAt && t.createdAt.toDate ? t.createdAt.toDate() : (t.date ? new Date(t.date) : null);
+                        if (d && !isNaN(d.getTime()) && d.getTime() > maxTs) maxTs = d.getTime();
+                    });
+                    if (maxTs > 0) fechaDevengo = new Date(maxTs);
+                } catch(_) { /* keep invoiceDate */ }
+
                 const invoiceData = {
                     number: nextInvNumber,
                     invoiceId: invoiceIdStr,
-                    date: invoiceDate,
+                    date: invoiceDate,           // fecha EXPEDICIÓN (cuándo se emite)
+                    fechaDevengo: fechaDevengo,  // fecha OPERACIÓN (cuándo se devenga IVA)
                     clientId: client.id,
                     clientName: client.name || 'Sin nombre',
                     clientCIF: clientFiscalId,
@@ -790,7 +805,7 @@
     // ============================================================
     //  SEPA XML Generation + Download
     // ============================================================
-    window._mbDownloadSEPA = function() {
+    window._mbDownloadSEPA = async function() {
         const checkboxes = document.querySelectorAll('.mb-sepa-check:checked');
         const selectedInvoices = [];
         checkboxes.forEach(cb => {
@@ -921,6 +936,29 @@
         </PmtInf>
     </CstmrDrctDbtInitn>
 </Document>`;
+
+        // REGISTRAR en /sepa_mandate_log cada cargo para que futuras remesas
+        // detecten correctamente FRST (1er cargo) vs RCUR (recurrente).
+        try {
+            const logBatch = db.batch();
+            const now = firebase.firestore.FieldValue.serverTimestamp();
+            for (const inv of validInvs) {
+                const client = window.userMap ? window.userMap[inv.clientId] : null;
+                if (!client || !client.sepaRef) continue;
+                const logRef = db.collection('sepa_mandate_log').doc();
+                logBatch.set(logRef, {
+                    mandateId: client.sepaRef,
+                    clientId: inv.clientId,
+                    invoiceId: inv.invoiceId,
+                    invoiceDocId: inv.docId || inv.id,
+                    amount: inv.total,
+                    collectedAt: collectionDate,
+                    createdAt: now,
+                    msgId: msgId
+                });
+            }
+            await logBatch.commit();
+        } catch(logErr) { console.warn('[sepa] no se pudo registrar mandate_log:', logErr); }
 
         // Download
         const blob = new Blob([xml], { type: 'application/xml' });
