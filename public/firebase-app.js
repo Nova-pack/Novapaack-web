@@ -3483,45 +3483,51 @@ const clientPickerInput = document.getElementById('client-picker');
 const clientPickerResults = document.getElementById('client-picker-results');
 let agendaCache = null;
 let agendaSearchTimer = null;
-let novapackGlobalDirCache = null;  // /config/clients_directory/list/all
-let novapackGlobalDirLoading = false;
 
-// Carga el directorio público de clientes NOVAPACK (no expone datos sensibles)
-async function _loadNovapackGlobalDirectory() {
-    if (novapackGlobalDirCache) return novapackGlobalDirCache;
-    if (novapackGlobalDirLoading) {
+// /contacts cache — directorio UNIFICADO Gesco + NOVAPACK (Fase 2 migración 2026-05-16)
+// Una sola fuente de verdad, no más dedup en cliente.
+let contactsCache = null;
+let contactsCacheLoading = false;
+
+async function _loadContactsCache() {
+    if (contactsCache) return contactsCache;
+    if (contactsCacheLoading) {
         return new Promise(function(resolve) {
             var t = setInterval(function(){
-                if (novapackGlobalDirCache) { clearInterval(t); resolve(novapackGlobalDirCache); }
+                if (contactsCache) { clearInterval(t); resolve(contactsCache); }
             }, 200);
         });
     }
-    novapackGlobalDirLoading = true;
+    contactsCacheLoading = true;
     try {
-        const snap = await db.collection('config').doc('clients_directory').collection('list').doc('all').get();
-        novapackGlobalDirCache = (snap.exists ? (snap.data().clients || []) : []);
-        console.log('[NOVAPACK DIR] cargados', novapackGlobalDirCache.length, 'clientes globales');
+        const snap = await db.collection('contacts').get();
+        contactsCache = [];
+        snap.forEach(d => contactsCache.push({ _docId: d.id, ...d.data() }));
+        console.log('[CONTACTS] cargados', contactsCache.length, 'contactos del directorio unificado');
     } catch (err) {
-        console.warn('[NOVAPACK DIR] no se pudo cargar:', err && err.message);
-        novapackGlobalDirCache = [];
+        console.warn('[CONTACTS] no se pudo cargar:', err && err.message);
+        contactsCache = [];
     }
-    novapackGlobalDirLoading = false;
-    return novapackGlobalDirCache;
+    contactsCacheLoading = false;
+    return contactsCache;
 }
 
-// Búsqueda en el directorio NOVAPACK (prioritario sobre el JSON Gesco antiguo)
-function _searchNovapackGlobal(query, limit) {
-    if (!novapackGlobalDirCache) return [];
+function _searchContacts(query, limit) {
+    if (!contactsCache) return [];
     const q = (query || '').toLowerCase().trim();
     if (!q) return [];
     var matches = [];
-    for (var i = 0; i < novapackGlobalDirCache.length && matches.length < (limit || 8); i++) {
-        var c = novapackGlobalDirCache[i];
-        var hay = ((c.name || '') + ' ' + (c.nif || '') + ' ' + (c.localidad || '') + ' ' + (c.cp || '')).toLowerCase();
+    for (var i = 0; i < contactsCache.length && matches.length < (limit || 15); i++) {
+        var c = contactsCache[i];
+        var hay = ((c.name || '') + ' ' + (c.nif || '') + ' ' + (c.localidad || '') + ' ' + (c.cp || '') + ' ' + (c.idNum || '')).toLowerCase();
         if (hay.indexOf(q) !== -1) matches.push(c);
     }
     return matches;
 }
+
+// --- LEGACY (mantenido por seguridad — devuelve vacío si /contacts está al día) ---
+async function _loadNovapackGlobalDirectory() { return []; }
+function _searchNovapackGlobal() { return []; }
 
 if (clientPickerInput) {
     clientPickerInput.oninput = () => {
@@ -3565,79 +3571,46 @@ if (clientPickerInput) {
         });
 
         // ----------------------------------------------------
-        // 1) DIRECTORIO NOVAPACK REAL (Firestore) — PRIORIDAD ALTA
-        //    Si coincide por nombre con uno de la agenda → ENRIQUECE en vez
-        //    de descartar (copia NIF/teléfono/etc. faltantes a la entrada local).
+        // DIRECTORIO UNIFICADO /contacts (Fase 2 migración 2026-05-16)
+        // Una sola fuente — fusiona Gesco + NOVAPACK. Sin dedup en cliente.
+        // Si coincide con uno de "Mi Agenda" → ENRIQUECE (preserva tu agenda).
         // ----------------------------------------------------
         try {
-            await _loadNovapackGlobalDirectory();
-            const nvResults = _searchNovapackGlobal(q, 8);
-            nvResults.forEach(nv => {
-                const existing = matches.find(m => (m.name || '').toLowerCase() === (nv.name || '').toLowerCase());
+            await _loadContactsCache();
+            const cResults = _searchContacts(q, 15);
+            cResults.forEach(c => {
+                const existing = matches.find(m => (m.name || '').toLowerCase() === (c.name || '').toLowerCase());
                 if (existing) {
-                    // ENRIQUECER: rellenar campos vacíos con datos del NOVAPACK
-                    if (!existing.nif && nv.nif)            existing.nif = nv.nif;
-                    if (!existing.cp && nv.cp)              existing.cp = nv.cp;
-                    if (!existing.localidad && nv.localidad) existing.localidad = nv.localidad;
-                    if (!existing.idNum && nv.idNum)        existing.idNum = nv.idNum;
-                    if (!existing.docId && nv.docId)        existing.docId = nv.docId;
-                    existing._enrichedFrom = 'novapack';   // audit
-                    existing.isNovapack = true;            // badge verde para indicar match con NOVAPACK
+                    // Enriquecer la entrada de Mi Agenda con campos faltantes
+                    if (!existing.nif && c.nif)              existing.nif = c.nif;
+                    if (!existing.phone && c.phone)          existing.phone = c.phone;
+                    if (!existing.cp && c.cp)                existing.cp = c.cp;
+                    if (!existing.localidad && c.localidad)  existing.localidad = c.localidad;
+                    if (!existing.address && c.address)      existing.address = c.address;
+                    if (!existing.street && c.address)       existing.street = c.address;
+                    if (!existing.province && c.province)    existing.province = c.province;
+                    if (!existing.idNum && c.idNum)          existing.idNum = c.idNum;
+                    existing._enrichedFrom = 'contacts';
+                    existing.isNovapack = !!c.novapackUid;   // marca verde si en su origen es cliente NOVAPACK
                 } else {
                     matches.push({
-                        name: nv.name || '',
-                        phone: '',
-                        nif: nv.nif || '',
-                        address: '',
-                        street: '',
+                        name: c.name || '',
+                        phone: c.phone || '',
+                        nif: c.nif || '',
+                        address: c.address || '',
+                        street: c.address || '',
                         number: '',
-                        localidad: nv.localidad || '',
-                        cp: nv.cp || '',
-                        province: '',
-                        idNum: nv.idNum || '',
-                        docId: nv.docId || '',
+                        localidad: c.localidad || '',
+                        cp: c.cp || '',
+                        province: c.province || '',
+                        idNum: c.idNum || '',
+                        docId: c.novapackUid || c._docId || '',
                         isGlobal: true,
-                        isNovapack: true
+                        isNovapack: !!c.novapackUid
                     });
                 }
             });
-        } catch(nvErr) { console.warn('[novapack-dir] search fail:', nvErr); }
-
-        // ----------------------------------------------------
-        // 2) DIRECTORIO GESCO (fantasma, JSON estático antiguo) — FALLBACK
-        //    Mismo principio: si coincide con uno ya en matches, enriquecer
-        //    SOLO los campos que sigan vacíos (no pisar NOVAPACK).
-        // ----------------------------------------------------
-        if (typeof window.searchPhantomDirectory === 'function') {
-            const phantomResults = window.searchPhantomDirectory(q);
-            phantomResults.forEach(pc => {
-                const existing = matches.find(m => (m.name || '').toLowerCase() === (pc.name || '').toLowerCase());
-                if (existing) {
-                    if (!existing.nif && pc.nif)            existing.nif = pc.nif;
-                    if (!existing.phone && pc.senderPhone)  existing.phone = pc.senderPhone;
-                    if (!existing.cp && pc.cp)              existing.cp = pc.cp;
-                    if (!existing.localidad && pc.localidad) existing.localidad = pc.localidad;
-                    if (!existing.address && pc.street)     existing.address = pc.street;
-                    if (!existing.street && pc.street)      existing.street = pc.street;
-                    if (!existing.province && pc.province)  existing.province = pc.province;
-                    if (!existing._enrichedFrom) existing._enrichedFrom = 'gesco';
-                } else {
-                    matches.push({
-                        name: pc.name || '',
-                        phone: pc.senderPhone || '',
-                        nif: pc.nif || '',
-                        address: pc.street || '',
-                        street: pc.street || '',
-                        number: '',
-                        localidad: pc.localidad || '',
-                        cp: pc.cp || '',
-                        province: pc.province || '',
-                        isGlobal: true,
-                        isNovapack: false
-                    });
-                }
-            });
-        }
+        } catch(cErr) { console.warn('[contacts] search fail:', cErr); }
 
         if (matches.length > 0) {
             clientPickerResults.innerHTML = '';
@@ -3647,12 +3620,12 @@ if (clientPickerInput) {
                 div.className = 'suggestion-item';
                 div.style = "padding:10px; border-bottom:1px solid var(--border-glass); cursor:pointer;";
                 
-                // Badge distintivo: NOVAPACK (verde) > Agenda (azul) > Gesco antiguo (gris)
+                // Badge distintivo: NOVAPACK cliente (verde) > Directorio (gris) > Mi Agenda (azul)
                 let badge;
                 if (m.isNovapack) {
                     badge = `<span style="font-size:0.65rem; background:rgba(76,175,80,0.25); padding:2px 6px; border-radius:4px; margin-left:8px; color:#4CAF50; border:1px solid #4CAF50; font-weight:700;">✓ NOVAPACK</span>`;
                 } else if (m.isGlobal) {
-                    badge = `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">🌐 Directorio antiguo</span>`;
+                    badge = `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">📒 Directorio</span>`;
                 } else {
                     badge = `<span style="font-size:0.65rem; background:rgba(33,150,243,0.2); padding:2px 6px; border-radius:4px; margin-left:8px; color:#5DADE2; border:1px solid #5DADE2;">👤 Mi Agenda</span>`;
                 }

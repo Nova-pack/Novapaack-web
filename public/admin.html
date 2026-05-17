@@ -17864,44 +17864,53 @@ window.importTarifas50 = async () => {
                 window._advClientsCache.push({ id: doc.id, ...doc.data() });
             });
 
-            // Inyectar Clientes Globales (Phantom / gesco_clients.json)
-            if (window.PhantomDirectory && Array.isArray(window.PhantomDirectory) && window.PhantomDirectory.length > 0) {
-                console.log('[Clientes] Inyectando ' + window.PhantomDirectory.length + ' contactos globales...');
-                // Build lookup sets for fast dedup (only by real NIF, not idNum)
-                const localNifs = new Set();
-                const localNames = new Set();
-                window._advClientsCache.forEach(c => {
-                    const nif = (c.nif || '').toUpperCase().trim();
-                    if (nif) localNifs.add(nif);
-                    const name = (c.name || '').toUpperCase().trim();
-                    if (name) localNames.add(name);
-                });
+            // Inyectar contactos del directorio UNIFICADO /contacts (Fase 2 mig. 2026-05-16)
+            // Antes leía de window.PhantomDirectory (gesco_clients.json). Ahora una sola
+            // fuente con dedup ya hecho en la migración.
+            try {
+                const contactsSnap = await db.collection('contacts').get();
+                console.log('[Clientes] Inyectando ' + contactsSnap.size + ' contactos del directorio unificado...');
+                // Build lookup of NOVAPACK uids ya cargados para no duplicar
+                const localUids = new Set();
+                window._advClientsCache.forEach(c => { if (c.id) localUids.add(c.id); });
 
-                window.PhantomDirectory.forEach(gl => {
-                    // Dedup by NIF only (not idNum — idNum is a number, not a fiscal ID)
-                    const glNif = (gl.nif || '').toUpperCase().trim();
-                    if (glNif && localNifs.has(glNif)) return;
-                    // Dedup by exact name
-                    const glName = (gl.name || '').toUpperCase().trim();
-                    if (glName && localNames.has(glName)) return;
-
+                contactsSnap.forEach(d => {
+                    const gl = d.data();
+                    // Si el contacto YA es cliente NOVAPACK cargado (novapackUid coincide con uid de users), saltar
+                    if (gl.novapackUid && localUids.has(gl.novapackUid)) return;
                     window._advClientsCache.push({
-                        id: 'GLOBAL_' + (gl.nif || gl.idNum || Math.random().toString(36).substr(2,8)),
+                        id: 'CONTACT_' + d.id,
                         name: gl.name || 'Sin Nombre',
                         nif: gl.nif || '',
-                        email: gl.email || '',
-                        phone: gl.senderPhone || '',
+                        email: '',
+                        phone: gl.phone || '',
                         city: gl.localidad || '',
-                        street: gl.street || '',
+                        street: gl.address || '',
                         cp: gl.cp || '',
                         isGlobal: true,
                         idNum: gl.idNum || 'GLOBAL',
-                        clientNumber: 'GLOBAL'
+                        clientNumber: gl.idNum || 'GLOBAL'
                     });
                 });
-                console.log('[Clientes] Total con globales: ' + window._advClientsCache.length);
-            } else {
-                console.warn('[Clientes] PhantomDirectory no disponible o vacío. isLoaded:', window.isPhantomLoaded, 'length:', (window.PhantomDirectory||[]).length);
+                console.log('[Clientes] Total con contactos: ' + window._advClientsCache.length);
+            } catch(e) {
+                console.warn('[Clientes] error cargando /contacts, fallback a PhantomDirectory:', e.message);
+                // Fallback de emergencia al método antiguo si /contacts falla
+                if (window.PhantomDirectory && Array.isArray(window.PhantomDirectory) && window.PhantomDirectory.length > 0) {
+                    const localNifs = new Set();
+                    window._advClientsCache.forEach(c => { const n=(c.nif||'').toUpperCase().trim(); if(n) localNifs.add(n); });
+                    window.PhantomDirectory.forEach(gl => {
+                        const glNif = (gl.nif || '').toUpperCase().trim();
+                        if (glNif && localNifs.has(glNif)) return;
+                        window._advClientsCache.push({
+                            id: 'GLOBAL_' + (gl.nif || gl.idNum || Math.random().toString(36).substr(2,8)),
+                            name: gl.name || 'Sin Nombre', nif: gl.nif || '',
+                            phone: gl.senderPhone || '', city: gl.localidad || '',
+                            street: gl.street || '', cp: gl.cp || '',
+                            isGlobal: true, idNum: gl.idNum || 'GLOBAL', clientNumber: 'GLOBAL'
+                        });
+                    });
+                }
             }
             // Sort by client number (numeric ascending)
             window._advClientsCache.sort((a, b) => {
