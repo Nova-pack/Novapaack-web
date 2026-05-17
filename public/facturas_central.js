@@ -478,11 +478,20 @@
             // Rectifica reference
             const rectRef = inv.rectificaA ? `<div style="font-size:0.65rem; color:#888;">Rectifica: ${inv.rectificaA}</div>` : '';
 
+            // Chip status email (Sprint email-automation)
+            let emailChip = '';
+            if (inv.emailSentAt) {
+                const sentDt = inv.emailSentAt.toDate ? inv.emailSentAt.toDate() : new Date(inv.emailSentAt);
+                emailChip = `<span style="background:rgba(76,175,80,0.2); color:#4CAF50; padding:1px 6px; border-radius:3px; font-size:0.62rem; font-weight:700; margin-left:4px;" title="Enviada el ${sentDt.toLocaleString('es-ES')} a ${inv.emailSentTo || ''}">📧✓</span>`;
+            } else if (inv.emailQueuedAt) {
+                emailChip = `<span style="background:rgba(255,152,0,0.2); color:#FFB74D; padding:1px 6px; border-radius:3px; font-size:0.62rem; font-weight:700; margin-left:4px;" title="En cola para envío automático">📧⏳</span>`;
+            }
+
             html += `
             <tr style="border-bottom:1px solid #2d2d30;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
                 <td style="padding:6px; color:#ccc;">${dateStr}</td>
                 <td style="padding:6px; color:${numColor}; font-weight:bold;">${inv.invoiceId || 'N/A'}${rectRef}</td>
-                <td style="padding:6px; color:#64B5F6;">[#${inv.clientCIF || '?'}] ${(inv.clientName || '-').substring(0, 30)}</td>
+                <td style="padding:6px; color:#64B5F6;">[#${inv.clientCIF || '?'}] ${(inv.clientName || '-').substring(0, 30)}${emailChip}</td>
                 <td style="padding:6px; color:#aaa; font-size:0.75rem;">${senderName}</td>
                 <td style="padding:6px; text-align:right; color:#ccc;">${fmt(inv.subtotal || 0)}€</td>
                 <td style="padding:6px; text-align:right; color:#ccc;">${fmt(inv.iva || 0)}€</td>

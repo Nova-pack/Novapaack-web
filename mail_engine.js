@@ -400,6 +400,33 @@ async function processOutgoingQueue(db) {
         if (isHtml) mailOpts.html = body;
         else mailOpts.text = body;
 
+        // ADJUNTOS — nodemailer descarga URLs HTTPS automáticamente cuando se le
+        // pasa { path: <url> }. Esto permite enviar facturas PDF subidas a Storage.
+        if (Array.isArray(doc.attachments) && doc.attachments.length > 0) {
+            mailOpts.attachments = doc.attachments.map(a => {
+                if (!a) return null;
+                if (a.contentBase64) {
+                    // Modo embebido (limitado por tamaño doc Firestore ~1MB)
+                    return {
+                        filename: a.filename || 'adjunto',
+                        content: Buffer.from(a.contentBase64, 'base64'),
+                        contentType: a.contentType || 'application/octet-stream'
+                    };
+                }
+                if (a.url) {
+                    return {
+                        filename: a.filename || 'adjunto.pdf',
+                        path: a.url,  // nodemailer descarga la URL
+                        contentType: a.contentType || 'application/pdf'
+                    };
+                }
+                return null;
+            }).filter(Boolean);
+            if (mailOpts.attachments.length > 0) {
+                console.log('[MAIL ENGINE] ' + id + ' lleva ' + mailOpts.attachments.length + ' adjunto(s)');
+            }
+        }
+
         try {
             const info = await transporter.sendMail(mailOpts);
             await doc.ref.update({
@@ -417,6 +444,17 @@ async function processOutgoingQueue(db) {
                     await db.collection('users').doc(doc.clientId).set({
                         welcomeDeliveredAt: firebase.firestore.FieldValue.serverTimestamp()
                     }, { merge: true });
+                }
+            } catch(_) {}
+
+            // FACTURAS: marcar la factura como emailSentAt
+            try {
+                if (doc.type === 'invoice_email' && doc.invoiceDocId) {
+                    await db.collection('invoices').doc(doc.invoiceDocId).update({
+                        emailSentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        emailSentTo: to,
+                        emailSmtpId: info.messageId || null
+                    });
                 }
             } catch(_) {}
             console.log('[MAIL ENGINE] Sent ' + (doc.type || 'mail') + ' → ' + to + ' ✅ ' + (info.messageId || ''));

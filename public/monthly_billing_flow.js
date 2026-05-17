@@ -806,7 +806,10 @@
 
             <div style="display:flex; justify-content:space-between; margin-top:20px; flex-wrap:wrap; gap:8px;">
                 <button onclick="document.getElementById('${MODAL_ID}').remove(); if(typeof window._facRefresh === 'function') window._facRefresh();" style="padding:10px 24px; background:#3c3c3c; border:none; color:#ccc; border-radius:8px; cursor:pointer; font-size:0.85rem;">Cerrar</button>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="window._mbSendAllInvoiceEmails()" style="padding:10px 24px; background:linear-gradient(135deg,#FF6600,#E55300); border:none; color:#fff; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem; box-shadow:0 2px 8px rgba(255,102,0,0.4); display:flex; align-items:center; gap:6px;">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">mail</span> 📧 Enviar TODAS por email
+                    </button>
                     <button onclick="window._mbDownloadSEPA()" ${hasBank ? '' : 'disabled'} style="padding:10px 24px; background:${hasBank ? 'linear-gradient(135deg,#1565C0,#1E88E5)' : '#555'}; border:none; color:#fff; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem; box-shadow:0 2px 8px rgba(21,101,192,0.4); display:flex; align-items:center; gap:6px;">
                         <span class="material-symbols-outlined" style="font-size:1rem;">account_balance</span> Descargar XML SEPA
                     </button>
@@ -814,6 +817,21 @@
             </div>
         </div>`;
     }
+
+    // Enviar TODAS las facturas generadas en esta sesión por email.
+    // Sprint email-automation: usa window.enqueueInvoicesMass (admin.html)
+    window._mbSendAllInvoiceEmails = async function() {
+        if (!Array.isArray(_mbGeneratedInvoices) || _mbGeneratedInvoices.length === 0) {
+            alert('No hay facturas generadas en esta sesión para enviar.');
+            return;
+        }
+        if (typeof window.enqueueInvoicesMass !== 'function') {
+            alert('La función de envío masivo no está disponible. Recarga la página.');
+            return;
+        }
+        const docIds = _mbGeneratedInvoices.map(i => i.invoiceDocId || i.docId || i.id).filter(Boolean);
+        await window.enqueueInvoicesMass(docIds);
+    };
 
     window._mbToggleSEPA = function(checked) {
         document.querySelectorAll('.mb-sepa-check:not(:disabled)').forEach(cb => { cb.checked = checked; });

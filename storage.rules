@@ -60,6 +60,16 @@ service firebase.storage {
                    && request.resource.contentType == 'application/pdf';
     }
 
+    // FACTURAS PDF - generadas para envío por email automático
+    // Tamaño máx 10MB (facturas con muchas líneas). Solo PDF. Read auth (link va
+    // en el correo). El mail_engine descarga vía URL pública firmada.
+    match /invoices/{invoiceDocId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && request.resource.size < 10 * 1024 * 1024
+                   && request.resource.contentType == 'application/pdf';
+    }
+
     // DENEGAR todo lo demas por seguridad
     match /{allPaths=**} {
       allow read, write: if false;

@@ -13068,17 +13068,192 @@ window.runPublicTicketsBackfill = async function() {
                 });
             };
 
-            window.emailInvoice = async (id) => {
-                const doc = await db.collection('invoices').doc(id).get();
-                const inv = doc.data();
-                const client = userMap[inv.clientId];
-                const email = client ? (client.adminEmail || client.email) : '';
-                const payTermsLabels = {'contado':'Contado','giro_30':'Giro 30 d\u00edas','giro_60':'Giro 60 d\u00edas','giro_90':'Giro 90 d\u00edas','giro_120':'Giro 120 d\u00edas','transferencia':'Transferencia','recibo_sepa':'Recibo SEPA'};
+            // ============================================================
+            // ENV\u00cdO AUTOM\u00c1TICO DE FACTURAS POR EMAIL
+            // Genera el PDF, lo sube a Storage, encola en /mailbox para que
+            // el mail_engine.js lo env\u00ede v\u00eda SMTP con adjunto.
+            // ============================================================
+            window.enqueueInvoiceEmail = async function(invoiceDocId, opts) {
+                opts = opts || {};
+                const silent = !!opts.silent;
+                try {
+                    const doc = await db.collection('invoices').doc(invoiceDocId).get();
+                    if (!doc.exists) {
+                        if (!silent) alert('Factura no encontrada.');
+                        return { ok: false, reason: 'not_found' };
+                    }
+                    const inv = doc.data();
+                    const client = userMap[inv.clientId];
+                    if (!client) {
+                        if (!silent) alert('Cliente no encontrado en cache.');
+                        return { ok: false, reason: 'no_client' };
+                    }
+
+                    // GDPR: verificar consentimiento (si NO est\u00e1 marcado false, asume true por defecto)
+                    if (client.consentEmail === false) {
+                        if (!silent) alert('El cliente "' + client.name + '" no ha dado consentimiento para emails (GDPR).');
+                        return { ok: false, reason: 'no_consent' };
+                    }
+
+                    const email = (client.adminEmail || client.email || '').trim();
+                    if (!email || !email.includes('@')) {
+                        if (!silent) alert('El cliente "' + client.name + '" no tiene email v\u00e1lido en su ficha.');
+                        return { ok: false, reason: 'no_email' };
+                    }
+
+                    // Evitar doble env\u00edo: si ya tiene emailSentAt sin error, confirmar
+                    if (inv.emailSentAt && !silent) {
+                        if (!confirm('Esta factura ya se envi\u00f3 el ' +
+                            new Date(inv.emailSentAt.toDate ? inv.emailSentAt.toDate() : inv.emailSentAt).toLocaleString('es-ES') +
+                            '\n\n\u00bfReenviar a ' + email + '?')) return { ok: false, reason: 'cancelled' };
+                    }
+
+                    // Generar PDF + subir a Storage
+                    const date = (inv.date && inv.date.toDate) ? inv.date.toDate().toLocaleDateString('es-ES') : 'N/A';
+                    const element = document.createElement('div');
+                    element.innerHTML = generateInvoiceHTML(inv, date, client);
+                    document.body.appendChild(element);
+                    element.style.position = 'absolute';
+                    element.style.left = '-9999px';
+
+                    const pdfBlob = await html2pdf().from(element).set({
+                        margin: 10,
+                        image: { type: 'jpeg', quality: 0.95 },
+                        html2canvas: { scale: 2 },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    }).outputPdf('blob');
+                    document.body.removeChild(element);
+
+                    const storage = firebase.storage();
+                    const filename = 'Factura_' + (inv.invoiceId || invoiceDocId).replace(/[^a-zA-Z0-9_\-]/g, '_') + '.pdf';
+                    const ref = storage.ref('invoices/' + invoiceDocId + '/' + filename);
+                    const upSnap = await ref.put(pdfBlob, { contentType: 'application/pdf' });
+                    const pdfUrl = await upSnap.ref.getDownloadURL();
+
+                    // Componer cuerpo HTML
+                    const subject = 'Factura ' + inv.invoiceId + ' \u2014 ' + (inv.senderData?.name || 'NOVAPACK Log\u00edstica');
+                    const body = _composeInvoiceEmailBody(inv, client);
+
+                    // Encolar en /mailbox para que mail_engine.js lo env\u00ede
+                    const mailDoc = {
+                        type: 'invoice_email',
+                        category: 'facturacion',
+                        status: 'queued',
+                        direction: 'outgoing',
+                        to: email,
+                        subject: subject,
+                        body: body,
+                        attachments: [{
+                            url: pdfUrl,
+                            filename: filename,
+                            contentType: 'application/pdf'
+                        }],
+                        clientId: inv.clientId || null,
+                        clientName: inv.clientName || '',
+                        invoiceId: inv.invoiceId || '',
+                        invoiceDocId: invoiceDocId,
+                        invoiceTotal: inv.total || 0,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdBy: (window.currentUser ? window.currentUser.uid : 'admin')
+                    };
+                    await db.collection('mailbox').add(mailDoc);
+
+                    // Marcar factura
+                    await db.collection('invoices').doc(invoiceDocId).update({
+                        emailQueuedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        emailQueuedTo: email,
+                        emailPdfURL: pdfUrl
+                    });
+
+                    if (!silent) alert('\u2705 Factura encolada para env\u00edo a ' + email + '\n\nEl mail_engine la enviar\u00e1 en su pr\u00f3xima ejecuci\u00f3n (1-2 min).');
+                    return { ok: true, email: email, pdfUrl: pdfUrl };
+                } catch(e) {
+                    console.error('[enqueueInvoiceEmail]', e);
+                    if (!silent) alert('Error encolando: ' + e.message);
+                    return { ok: false, reason: 'error', error: e.message };
+                }
+            };
+
+            // Compatibilidad: el bot\u00f3n antiguo "\ud83d\udce7" llamaba a emailInvoice (mailto).
+            // Ahora redirige al flujo autom\u00e1tico.
+            window.emailInvoice = window.enqueueInvoiceEmail;
+
+            // Helper: cuerpo HTML profesional del email de factura
+            function _composeInvoiceEmailBody(inv, client) {
+                const payTermsLabels = {'contado':'Contado','giro_30':'Giro 30 d\u00edas','giro_60':'Giro 60 d\u00edas','giro_90':'Giro 90 d\u00edas','giro_120':'Giro 120 d\u00edas','transferencia':'Transferencia','recibo_sepa':'Recibo domiciliado SEPA'};
                 const payLabel = payTermsLabels[inv.paymentTerms] || 'Contado';
                 const dueStr = inv.dueDate && inv.dueDate.toDate ? inv.dueDate.toDate().toLocaleDateString('es-ES') : (inv.dueDate ? new Date(inv.dueDate).toLocaleDateString('es-ES') : 'Contado');
-                const subject = encodeURIComponent('Factura ' + inv.invoiceId + ' - NOVAPACK LOG\u00cdSTICA');
-                const body = encodeURIComponent('Hola ' + inv.clientName + ', \n\nLe adjuntamos el detalle de su factura ' + inv.invoiceId + ' por importe de ' + inv.total.toFixed(2) + '\u20ac.\n\nForma de pago: ' + payLabel + '\nFecha de vencimiento: ' + dueStr + '\nDatos bancarios: ' + (inv.senderData ? inv.senderData.bank : 'la cuenta habitual') + ' \n\nGracias por confiar en NOVAPACK.');
-                window.location.href = 'mailto:' + email + '?subject=' + subject + '&body=' + body;
+                const senderName = inv.senderData?.name || 'NOVAPACK Log\u00edstica';
+                const senderCif = inv.senderData?.cif || '';
+                const senderEmail = inv.senderData?.email || 'administracion@novapack.info';
+                const senderBank = inv.senderData?.bank || '';
+
+                return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>Factura ${inv.invoiceId}</title></head>
+<body style="font-family:'Segoe UI',Arial,sans-serif; background:#f5f5f5; margin:0; padding:20px;">
+<div style="max-width:600px; margin:0 auto; background:#fff; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.08); overflow:hidden;">
+    <div style="background:#FF6600; color:#fff; padding:20px 24px;">
+        <div style="font-family:'Outfit',Arial; font-size:24pt; font-weight:900; letter-spacing:1px;">${senderName.toUpperCase()}</div>
+        <div style="font-size:13px; opacity:0.9; margin-top:4px;">Factura ${inv.invoiceId}</div>
+    </div>
+    <div style="padding:24px;">
+        <p style="font-size:15px; color:#333;">Estimado/a <strong>${(client.name || inv.clientName || '').replace(/</g,'&lt;')}</strong>,</p>
+        <p style="font-size:14px; color:#444; line-height:1.5;">Adjuntamos su factura <strong>${inv.invoiceId}</strong> correspondiente a los servicios de transporte prestados.</p>
+
+        <table style="width:100%; border-collapse:collapse; margin:18px 0; font-size:14px;">
+            <tr style="background:#f9f9f9;"><td style="padding:8px 12px; color:#666;">N\u00famero de factura</td><td style="padding:8px 12px; font-weight:700; text-align:right;">${inv.invoiceId}</td></tr>
+            <tr><td style="padding:8px 12px; color:#666;">Fecha de emisi\u00f3n</td><td style="padding:8px 12px; text-align:right;">${(inv.date && inv.date.toDate) ? inv.date.toDate().toLocaleDateString('es-ES') : '-'}</td></tr>
+            <tr style="background:#f9f9f9;"><td style="padding:8px 12px; color:#666;">Importe total</td><td style="padding:8px 12px; font-weight:900; color:#FF6600; font-size:16px; text-align:right;">${(inv.total || 0).toFixed(2)} \u20ac</td></tr>
+            <tr><td style="padding:8px 12px; color:#666;">Forma de pago</td><td style="padding:8px 12px; text-align:right;">${payLabel}</td></tr>
+            <tr style="background:#f9f9f9;"><td style="padding:8px 12px; color:#666;">Fecha de vencimiento</td><td style="padding:8px 12px; font-weight:700; text-align:right;">${dueStr}</td></tr>
+        </table>
+
+        ${senderBank ? `<div style="background:#f0f7ff; border-left:4px solid #2196F3; padding:12px 16px; margin:18px 0; font-size:13px; color:#1a3a5f;">
+            <strong>Datos bancarios para transferencia:</strong><br>
+            IBAN: <code style="background:#fff; padding:2px 6px; border-radius:3px;">${senderBank}</code>
+        </div>` : ''}
+
+        <p style="font-size:14px; color:#444;">Encontrar\u00e1 el detalle completo en el PDF adjunto.</p>
+        <p style="font-size:14px; color:#444;">Para cualquier consulta sobre esta factura, responda a este correo o escriba a <a href="mailto:${senderEmail}" style="color:#FF6600;">${senderEmail}</a>.</p>
+
+        <p style="font-size:14px; color:#444; margin-top:24px;">Gracias por confiar en nosotros.<br><strong>${senderName}</strong></p>
+    </div>
+    <div style="background:#f5f5f5; padding:14px 24px; font-size:11px; color:#888; text-align:center; border-top:1px solid #eee;">
+        ${senderName}${senderCif ? ' \u00b7 CIF ' + senderCif : ''}<br>
+        Este correo se env\u00eda de forma autom\u00e1tica. Si no desea recibir m\u00e1s facturas por email, comun\u00edquelo a ${senderEmail}.
+    </div>
+</div>
+</body></html>`;
+            }
+
+            // ============================================================
+            // ENV\u00cdO MASIVO \u2014 todas las facturas seleccionadas
+            // ============================================================
+            window.enqueueInvoicesMass = async function(invoiceDocIds) {
+                if (!Array.isArray(invoiceDocIds) || invoiceDocIds.length === 0) {
+                    alert('No hay facturas seleccionadas para enviar.');
+                    return;
+                }
+                if (!confirm('Vas a encolar el env\u00edo autom\u00e1tico de ' + invoiceDocIds.length + ' factura(s) por email.\n\nCada cliente recibir\u00e1 su factura individual con PDF adjunto.\n\n\u00bfContinuar?')) return;
+
+                if (typeof showLoading === 'function') showLoading();
+                let sent = 0, noEmail = 0, noConsent = 0, errors = 0;
+                const errorList = [];
+                for (let i = 0; i < invoiceDocIds.length; i++) {
+                    const r = await window.enqueueInvoiceEmail(invoiceDocIds[i], { silent: true });
+                    if (r.ok) sent++;
+                    else if (r.reason === 'no_email') noEmail++;
+                    else if (r.reason === 'no_consent') noConsent++;
+                    else { errors++; errorList.push(invoiceDocIds[i].substring(0,8) + ': ' + (r.reason || r.error)); }
+                }
+                if (typeof hideLoading === 'function') hideLoading();
+
+                let msg = '\u2705 ' + sent + ' facturas encoladas correctamente.';
+                if (noEmail > 0) msg += '\n\n\u26a0\ufe0f ' + noEmail + ' cliente(s) sin email \u2014 completa en sus fichas.';
+                if (noConsent > 0) msg += '\n\u26a0\ufe0f ' + noConsent + ' sin consentimiento GDPR \u2014 p\u00eddelos antes.';
+                if (errors > 0) msg += '\n\n\u274c ' + errors + ' errores:\n  ' + errorList.slice(0,5).join('\n  ');
+                msg += '\n\nEl mail_engine procesar\u00e1 la cola en su pr\u00f3xima ejecuci\u00f3n (1-2 min).';
+                alert(msg);
             };
 
             window.downloadInvoicePDF = async (id) => {
@@ -20026,10 +20201,10 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260516_contacts_btn"></script>
 <script src="mailbox_manager.js?v=20260515_pickup_no_doc"></script>
-<script src="ficha_cliente.js?v=20260516_sprint2_sepa"></script>
+<script src="ficha_cliente.js?v=20260516_email_auto"></script>
 <script src="albaranes_central.js?v=20260402"></script>
-<script src="facturas_central.js?v=20260516_sprint3"></script>
-<script src="monthly_billing_flow.js?v=20260516_sprint3"></script>
+<script src="facturas_central.js?v=20260516_email_auto"></script>
+<script src="monthly_billing_flow.js?v=20260516_email_auto"></script>
 <script src="comunicaciones.js?v=20260404"></script>
 <script src="nif_enrichment.js?v=20260404"></script>
 <script src="erp_tabs.js?v=20260516_prealb"></script>

@@ -1638,6 +1638,15 @@
             ${_field('IBAN Bancario', 'fc-iban', d.iban, { placeholder: 'ES00 0000 0000 0000 0000 0000', minWidth: 'auto' })}
         </div>
 
+        <!-- Consentimiento GDPR para envío automático de facturas -->
+        <div style="background:rgba(76,175,80,0.05); border:1px solid rgba(76,175,80,0.3); border-radius:6px; padding:8px 10px; margin:8px 0;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.8rem; color:#A5D6A7;">
+                <input type="checkbox" id="fc-consent-email" ${(d.consentEmail !== false) ? 'checked' : ''} style="width:16px; height:16px; accent-color:#4CAF50;">
+                <span><strong>✉️ Acepta recibir facturas por email automático</strong> (GDPR)</span>
+            </label>
+            <div style="font-size:0.65rem; color:#888; margin-top:4px; padding-left:24px;">Si está marcado, las facturas se enviarán automáticamente al email del cliente. Si lo desactivas, el cliente nunca recibirá facturas por email aunque se envíen masivamente.</div>
+        </div>
+
         ${_sectionTitle('description', 'Mandato SEPA', '#E040FB')}
         <div style="display:grid; grid-template-columns: 1fr 150px; gap:6px; margin-bottom:6px;">
             ${_field('Referencia Mandato', 'fc-sepa-ref', d.sepaRef, { minWidth: 'auto', placeholder: 'Ej: NPACK-001' })}
@@ -2431,6 +2440,9 @@
         // Económico fields
         if (getVal('fc-payment-terms') !== null) updates.paymentTerms = getVal('fc-payment-terms');
         if (getVal('fc-iban') !== null) updates.iban = getVal('fc-iban');
+        // Consentimiento GDPR (checkbox)
+        const _consentEl = document.getElementById('fc-consent-email');
+        if (_consentEl) updates.consentEmail = !!_consentEl.checked;
         if (getVal('fc-sepa-ref') !== null) updates.sepaRef = getVal('fc-sepa-ref');
         if (getVal('fc-sepa-date') !== null) updates.sepaDate = getVal('fc-sepa-date');
         if (getVal('fc-flatrate') !== null) updates.isFlatRate = getVal('fc-flatrate') === 'Sí';
