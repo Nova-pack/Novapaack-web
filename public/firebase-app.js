@@ -3488,6 +3488,12 @@ let agendaSearchTimer = null;
 // Una sola fuente de verdad, no más dedup en cliente.
 let contactsCache = null;
 let contactsCacheLoading = false;
+// Helper para invalidar cache desde otros módulos (admin tras edit/delete)
+window.invalidateContactsCache = function() {
+    contactsCache = null;
+    contactsCacheLoading = false;
+    console.log('[CONTACTS] cache invalidada — próxima búsqueda re-cargará');
+};
 
 async function _loadContactsCache() {
     if (contactsCache) return contactsCache;

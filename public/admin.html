@@ -9325,16 +9325,48 @@ window.runPublicTicketsBackfill = async function() {
                     batch.delete(db.collection('users').doc(id));
                     operationsCount++;
 
-                    // 5. NOTA: el directorio global de clientes y los directorios por ruta
-                    // contendrán al cliente borrado hasta que admin pulse "Reconstruir
-                    // directorios" en Alertas Pickup. El cliente ya no podrá ser elegido
-                    // como remitente (sin doc en /users) pero todavía aparece en el
-                    // autocomplete del repartidor hasta el rebuild.
-
-                    // Final commit
+                    // Final commit del batch del usuario + cascada
                     await batch.commit();
 
-                    alert(`✅ Cliente "${uData.name}" enviado a Papelera.\n\nEn cascada también van a papelera:\n  • ${countedTickets} albaranes\n  • ${countedInvoices} facturas\n  • ${countedCompanies} sedes\n  • ${countedDestinations} destinations\n\nPuedes restaurarlo desde 🗑️ Papelera (toolbar superior).\n\n⚠️ Recuerda reconstruir los directorios en Alertas Pickup.`);
+                    // 5. /contacts — limpiar entradas con novapackUid == id (cliente borrado).
+                    //    Las entradas `np_*` se borran (eran exclusivas NOVAPACK).
+                    //    Las entradas `gesco_*` se UNLINKEAN (clear novapackUid) — el contacto
+                    //    sigue en el directorio Gesco pero ya no está enlazado al cliente borrado.
+                    let contactsCleaned = 0;
+                    try {
+                        const cSnap = await db.collection('contacts').where('novapackUid', '==', id).get();
+                        if (!cSnap.empty) {
+                            let cBatch = db.batch();
+                            let cOps = 0;
+                            cSnap.forEach(cDoc => {
+                                if (cDoc.id.indexOf('np_') === 0) {
+                                    // Era exclusivamente NOVAPACK → borrar entrada
+                                    cBatch.delete(cDoc.ref);
+                                } else {
+                                    // Era Gesco enriquecido → desenganchar, queda como Gesco-only
+                                    cBatch.update(cDoc.ref, {
+                                        novapackUid: '',
+                                        source: 'gesco',
+                                        _unlinkedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                                        _unlinkedReason: 'novapack_user_deleted'
+                                    });
+                                }
+                                cOps++;
+                                contactsCleaned++;
+                            });
+                            await cBatch.commit();
+                        }
+                    } catch(cErr) {
+                        console.warn('[deleteUser] no se pudo limpiar /contacts:', cErr);
+                    }
+
+                    // 6. Invalidar caches en memoria para forzar recarga
+                    try {
+                        if (typeof window.invalidateContactsCache === 'function') window.invalidateContactsCache();
+                        if (window._advClientsCache) window._advClientsCache = null;
+                    } catch(_){}
+
+                    alert(`✅ Cliente "${uData.name}" enviado a Papelera.\n\nEn cascada:\n  • ${countedTickets} albaranes\n  • ${countedInvoices} facturas\n  • ${countedCompanies} sedes\n  • ${countedDestinations} destinations\n  • ${contactsCleaned} contactos limpiados de /contacts\n\nPuedes restaurarlo desde 🗑️ Papelera (toolbar superior).\n\n⚠️ Si quieres una reconstrucción completa de directorios, pulsa "Reconstruir directorios" en Alertas Pickup.`);
                     loadUsers('first'); // Recargar página 1
                 } catch (err) {
                     console.error("Error durante Soft Delete Cascade:", err);
@@ -19839,7 +19871,7 @@ window.importTarifas50 = async () => {
 <script src="export_engine.js?v=20260402"></script>
 <script src="phones_manager.js?v=20260516_contacts_btn"></script>
 <script src="mailbox_manager.js?v=20260515_pickup_no_doc"></script>
-<script src="ficha_cliente.js?v=20260515_global_dir"></script>
+<script src="ficha_cliente.js?v=20260516_contacts_sync"></script>
 <script src="albaranes_central.js?v=20260402"></script>
 <script src="facturas_central.js?v=20260404"></script>
 <script src="monthly_billing_flow.js?v=20260514_flat"></script>

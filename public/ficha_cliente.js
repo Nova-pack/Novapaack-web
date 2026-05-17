@@ -2462,6 +2462,45 @@
                     window._clientsDirectoryUpdateForClient(savedId, _fichaClientData)
                         .catch(function(){});
                 }
+                // /contacts: actualizar entrada unificada si cambian campos públicos
+                if (touchesDirFields) {
+                    try {
+                        const u = _fichaClientData;
+                        const name = u.companyName || u.businessName || u.name || u.nombreFiscal || '';
+                        const normNif = String(u.cif || u.nif || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim();
+                        const contactsRef = db.collection('contacts');
+                        // Buscar entrada existente por novapackUid
+                        contactsRef.where('novapackUid', '==', savedId).limit(1).get().then(s => {
+                            const payload = {
+                                name: name.trim(),
+                                nif: normNif,
+                                phone: (u.phone || u.senderPhone || '').trim(),
+                                address: (u.address || u.senderAddress || '').trim(),
+                                cp: String(u.cp || '').replace(/[^0-9]/g,'').padStart(5,'0').slice(-5),
+                                localidad: (u.localidad || u.city || '').trim(),
+                                province: (u.province || '').trim(),
+                                novapackUid: savedId,
+                                idNum: u.idNum || '',
+                                source: 'novapack',
+                                _searchName: name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,'').trim(),
+                                _searchNif: normNif,
+                                _updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                            };
+                            if (s.empty) {
+                                // No existía: crearla
+                                contactsRef.doc('np_' + savedId).set(payload, { merge: true })
+                                    .then(() => { if (typeof window.invalidateContactsCache==='function') window.invalidateContactsCache(); })
+                                    .catch(e => console.warn('[ficha→contacts] create fail:', e));
+                            } else {
+                                // Existía: actualizar (puede ser gesco_X o np_X)
+                                const docRef = s.docs[0].ref;
+                                docRef.set(payload, { merge: true })
+                                    .then(() => { if (typeof window.invalidateContactsCache==='function') window.invalidateContactsCache(); })
+                                    .catch(e => console.warn('[ficha→contacts] update fail:', e));
+                            }
+                        });
+                    } catch(ce) { console.warn('[ficha save] /contacts sync fail:', ce); }
+                }
             } catch(rde) { console.warn('[ficha save] dir sync fail:', rde); }
 
             alert('✅ Ficha de cliente actualizada correctamente.' + (compMainUpdate ? '\n\n📦 Prefijo / nº albarán también guardados.' : ''));
