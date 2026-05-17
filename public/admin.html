@@ -29,6 +29,8 @@
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-storage-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-functions-compat.js"></script>
     <script src="firebase-config.js?v=20260310c"></script>
     <script src="libs/qrcode.min.js?v=20260310_BETA"></script>
     <script src="libs/qrious.min.js?v=20260310_BETA"></script>
@@ -13178,6 +13180,120 @@ window.runPublicTicketsBackfill = async function() {
             // Ahora redirige al flujo autom\u00e1tico.
             window.emailInvoice = window.enqueueInvoiceEmail;
 
+            // ============================================================
+            // CLOUD FUNCTIONS \u2014 motor SMTP en servidor (always-on)
+            // ============================================================
+            // Inicializar Functions con regi\u00f3n europe-west1
+            try {
+                if (firebase.functions && typeof firebase.app === 'function') {
+                    window.npFunctions = firebase.app().functions('europe-west1');
+                }
+            } catch(_) {}
+
+            // Llamar al health check (no env\u00eda, solo devuelve stats de cola)
+            window.callMailboxHealth = async function() {
+                if (!window.npFunctions) throw new Error('Cloud Functions no inicializadas');
+                const fn = window.npFunctions.httpsCallable('mailboxHealth');
+                const r = await fn();
+                return r.data;
+            };
+
+            // Forzar flush manual (procesa cola al instante)
+            window.flushMailboxNow = async function() {
+                if (!window.npFunctions) throw new Error('Cloud Functions no inicializadas');
+                const fn = window.npFunctions.httpsCallable('flushMailboxNow');
+                const r = await fn();
+                return r.data;
+            };
+
+            // Widget visual de salud del motor SMTP
+            window.openMailEngineHealth = async function() {
+                let existing = document.getElementById('_smtp-health-modal');
+                if (existing) existing.remove();
+
+                const modal = document.createElement('div');
+                modal.id = '_smtp-health-modal';
+                modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:99999; display:flex; align-items:center; justify-content:center; padding:20px;';
+                modal.innerHTML = `
+                    <div style="background:#1e1e20; border:2px solid #FF9800; border-radius:12px; padding:24px; max-width:560px; width:100%; color:#ddd;">
+                        <h2 style="margin:0 0 6px; color:#FFB74D; font-size:1.2rem;">\ud83d\udce7 Motor SMTP \u2014 Estado de la cola</h2>
+                        <p style="color:#888; font-size:0.78rem; margin:0 0 18px;">Procesado por Cloud Function cada 2 min. Sin dependencia de PCs locales.</p>
+                        <div id="_smtp-health-content" style="min-height:120px;"><div style="text-align:center; padding:30px; color:#888;">Consultando\u2026</div></div>
+                        <div style="display:flex; gap:8px; margin-top:18px; flex-wrap:wrap;">
+                            <button onclick="window._smtpFlush()" style="flex:1; background:linear-gradient(135deg,#FF6600,#E55300); border:0; color:#fff; padding:10px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.85rem;">\ud83d\ude80 Procesar AHORA</button>
+                            <button onclick="window._smtpRefresh()" style="background:#444; border:0; color:#fff; padding:10px 16px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.85rem;">\ud83d\udd04</button>
+                            <button onclick="document.getElementById('_smtp-health-modal').remove();" style="background:#444; border:0; color:#fff; padding:10px 16px; border-radius:6px; cursor:pointer; font-weight:700; font-size:0.85rem;">Cerrar</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+                window._smtpRefresh = async function() {
+                    const content = document.getElementById('_smtp-health-content');
+                    if (!content) return;
+                    content.innerHTML = '<div style="text-align:center; padding:30px; color:#888;">Consultando\u2026</div>';
+                    try {
+                        const h = await window.callMailboxHealth();
+                        const ageMin = h.oldestQueuedAgeMin || 0;
+                        let healthState, healthColor, healthMsg;
+                        if (h.queued === 0) {
+                            healthState = '\u2713 OK'; healthColor = '#4CAF50';
+                            healthMsg = 'Sin correos pendientes. Motor activo.';
+                        } else if (ageMin < 5) {
+                            healthState = '\u23f3 Procesando'; healthColor = '#FFB74D';
+                            healthMsg = `${h.queued} correos en cola, el m\u00e1s viejo de ${ageMin} min. Esperando pr\u00f3ximo tick (cada 2 min).`;
+                        } else if (ageMin < 15) {
+                            healthState = '\u26a0 Lento'; healthColor = '#FF9800';
+                            healthMsg = `${h.queued} correos llevan +${ageMin} min en cola. Puede haber un problema temporal.`;
+                        } else {
+                            healthState = '\ud83d\udea8 PARADO'; healthColor = '#F44336';
+                            healthMsg = `${h.queued} correos llevan +${ageMin} min sin procesarse. La Cloud Function PUEDE estar ca\u00edda. Pulsa "Procesar AHORA" o revisa Firebase Console.`;
+                        }
+                        content.innerHTML = `
+                            <div style="background:${healthColor}22; border:2px solid ${healthColor}; border-radius:8px; padding:14px; margin-bottom:12px;">
+                                <div style="font-size:1.2rem; font-weight:900; color:${healthColor};">${healthState}</div>
+                                <div style="font-size:0.85rem; color:#ddd; margin-top:6px;">${healthMsg}</div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; font-size:0.78rem;">
+                                <div style="background:rgba(255,152,0,0.12); padding:10px; border-radius:6px; text-align:center;">
+                                    <div style="font-size:1.4rem; font-weight:900; color:#FFB74D;">${h.queued || 0}</div>
+                                    <div style="color:#888; font-size:0.65rem; text-transform:uppercase;">En cola</div>
+                                </div>
+                                <div style="background:rgba(33,150,243,0.12); padding:10px; border-radius:6px; text-align:center;">
+                                    <div style="font-size:1.4rem; font-weight:900; color:#5DADE2;">${h.sending || 0}</div>
+                                    <div style="color:#888; font-size:0.65rem; text-transform:uppercase;">Enviando</div>
+                                </div>
+                                <div style="background:rgba(244,67,54,0.12); padding:10px; border-radius:6px; text-align:center;">
+                                    <div style="font-size:1.4rem; font-weight:900; color:#FF6E6E;">${h.failed || 0}</div>
+                                    <div style="color:#888; font-size:0.65rem; text-transform:uppercase;">Fallidos</div>
+                                </div>
+                            </div>
+                            <div style="font-size:0.7rem; color:#666; margin-top:10px; text-align:right;">Consultado: ${new Date().toLocaleTimeString('es-ES')}</div>
+                        `;
+                    } catch(e) {
+                        content.innerHTML = `<div style="background:rgba(244,67,54,0.15); border:1px solid #F44336; border-radius:8px; padding:14px; color:#FF6E6E; font-size:0.85rem;">
+                            <strong>\ud83d\udea8 Cloud Function no responde</strong><br>
+                            ${e.message}<br><br>
+                            <span style="color:#aaa; font-size:0.75rem;">Posibles causas: no se despleg\u00f3 la function, el proyecto no est\u00e1 en plan Blaze, o tu sesi\u00f3n no est\u00e1 autenticada como admin.</span>
+                        </div>`;
+                    }
+                };
+                window._smtpFlush = async function() {
+                    const content = document.getElementById('_smtp-health-content');
+                    if (content) content.innerHTML = '<div style="text-align:center; padding:30px; color:#FFB74D;">\ud83d\ude80 Lanzando flush manual\u2026</div>';
+                    try {
+                        const r = await window.flushMailboxNow();
+                        await window._smtpRefresh();
+                        alert(`\u2705 Flush completado:\n  \u2022 Enviados: ${r.sent || 0}\n  \u2022 Fallidos: ${r.failed || 0}\n  \u2022 Saltados: ${r.skipped || 0}`);
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                        window._smtpRefresh();
+                    }
+                };
+                window._smtpRefresh();
+            };
+
             // Helper: cuerpo HTML profesional del email de factura
             function _composeInvoiceEmailBody(inv, client) {
                 const payTermsLabels = {'contado':'Contado','giro_30':'Giro 30 d\u00edas','giro_60':'Giro 60 d\u00edas','giro_90':'Giro 90 d\u00edas','giro_120':'Giro 120 d\u00edas','transferencia':'Transferencia','recibo_sepa':'Recibo domiciliado SEPA'};
@@ -18140,6 +18256,7 @@ window.importTarifas50 = async () => {
                 <button onclick="contaLoadGastos()" style="background:#333; border:1px solid #555; color:#ffab91; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">💸 Gastos</button>
                 <button onclick="contaLoadPyG()" style="background:#333; border:1px solid #555; color:#00E5FF; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">📈 PyG</button>
                 <button onclick="contaLoadSEPA()" style="background:#333; border:1px solid #555; color:#2196F3; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;">🏦 SEPA</button>
+                <button onclick="window.openMailEngineHealth()" style="background:#333; border:1px solid #555; color:#FFB74D; padding:5px 12px; font-size:0.78rem; cursor:pointer; border-radius:3px;" title="Estado del motor SMTP (Cloud Function)">📧 Motor SMTP</button>
             </div>
         </div>
         <div id="conta-content" style="flex:1; overflow-y:auto;"></div>
