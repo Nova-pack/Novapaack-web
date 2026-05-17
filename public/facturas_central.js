@@ -645,38 +645,46 @@
 
         if (!confirm(`¿Confirmas generar un abono parcial con ${selectedLines.length} línea(s)?`)) return;
 
+        // LEGAL: capturar motivo de rectificación (RD 1619/2012 art. 15)
+        const motivo = await _facPedirMotivoRectificacion();
+        if (motivo === null) return; // cancelado
+
         try {
-            // Year-based numbering: ABO-YY-SEQ
+            // Numeración atómica con serie R independiente (Fix legal-sprint1 #2)
+            // Counter: sequence_counters/credits_YYYY
+            // Serie:   R-YY-N  (rectificativa, conforme RD 1619/2012 art. 6.1.a)
             const aboYear = new Date().getFullYear();
             const aboYY = String(aboYear).slice(-2);
-            const aboYrStart = new Date(aboYear, 0, 1);
-            const aboYrEnd = new Date(aboYear + 1, 0, 1);
-            const invSnap = await db.collection('invoices')
-                .where('date', '>=', aboYrStart)
-                .where('date', '<', aboYrEnd)
-                .orderBy('date', 'desc')
-                .limit(10000)
-                .get();
-            let nextNum = 0;
-            invSnap.forEach(doc => {
-                const iid = doc.data().invoiceId || '';
-                const match = iid.match(/^(?:FAC|ABO)-\d{2}-(\d+)$/);
-                if (match) {
-                    const seq = parseInt(match[1], 10);
-                    if (!isNaN(seq) && seq >= nextNum) nextNum = seq + 1;
-                }
+            const counterPath = 'sequence_counters/credits_' + aboYear;
+
+            const nextNum = await window.allocSequentialNumber(counterPath, async () => {
+                // Seed inicial: máximo R-{aboYY}-N + máximo ABO-{aboYY}-N legacy + máximo FAC-{aboYY}-N
+                // Aseguramos no chocar con ningún número existente (transición)
+                const yrStart = new Date(aboYear, 0, 1);
+                const yrEnd = new Date(aboYear + 1, 0, 1);
+                const snap = await db.collection('invoices')
+                    .where('date', '>=', yrStart).where('date', '<', yrEnd)
+                    .limit(20000).get();
+                let max = 0;
+                snap.forEach(d => {
+                    const iid = d.data().invoiceId || '';
+                    const m = iid.match(/^R-\d{2}-(\d+)$/);
+                    if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+                });
+                return max;
             });
 
             const subtotal = selectedLines.reduce((s, l) => s + l.total, 0);
             const ivaRate = _facAbonoOriginal.ivaRate || 21;
-            const ivaAmount = subtotal * (ivaRate / 100);
+            const ivaAmount = Math.round(subtotal * (ivaRate / 100) * 100) / 100;
             const irpfRate = _facAbonoOriginal.irpfRate || 0;
-            const irpfAmount = subtotal * (irpfRate / 100);
-            const total = subtotal + ivaAmount - irpfAmount;
+            const irpfAmount = Math.round(subtotal * (irpfRate / 100) * 100) / 100;
+            const total = Math.round((subtotal + ivaAmount - irpfAmount) * 100) / 100;
 
             const abonoData = {
                 number: nextNum,
-                invoiceId: `ABO-${aboYY}-${nextNum}`,
+                invoiceId: `R-${aboYY}-${nextNum}`,
+                serie: 'R',
                 date: new Date(),
                 clientId: _facAbonoOriginal.clientId,
                 clientName: _facAbonoOriginal.clientName,
@@ -687,25 +695,58 @@
                 irpf: irpfAmount,
                 irpfRate: irpfRate,
                 total: total,
-                paid: true,
+                paid: false,  // pendiente devolver/compensar
                 isAbono: true,
                 isPartialAbono: true,
                 rectificaA: _facAbonoOriginal.invoiceId,
                 rectificaDocId: _facAbonoInvoiceId,
+                rectificaDate: _facAbonoOriginal.date || null,
+                motivoRectificacion: motivo.codigo,
+                motivoRectificacionTexto: motivo.texto,
                 senderData: _facAbonoOriginal.senderData || {},
                 advancedGrid: selectedLines,
-                paymentTerms: _facAbonoOriginal.paymentTerms || 'contado'
+                paymentTerms: _facAbonoOriginal.paymentTerms || 'contado',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
             };
 
             await db.collection('invoices').add(abonoData);
-            alert(`✅ Abono parcial ${abonoData.invoiceId} generado (${total.toFixed(2)}€)`);
+            alert(`✅ Factura rectificativa ${abonoData.invoiceId} generada (${total.toFixed(2)}€)\n\nMotivo: ${motivo.texto}`);
 
             document.getElementById('fac-abono-modal').style.display = 'none';
             _facLoadData();
         } catch(e) {
+            console.error('[abono parcial]', e);
             alert('Error generando abono: ' + e.message);
         }
     };
+
+    // ============================================================
+    //  Captura motivo rectificación (RD 1619/2012 art. 15)
+    //  Causas tipificadas — devuelve {codigo, texto} o null si cancelado
+    // ============================================================
+    async function _facPedirMotivoRectificacion() {
+        const causas = [
+            { codigo: 'R1', texto: 'Error fundado en derecho (datos identificativos, importes, tipo IVA, etc.)' },
+            { codigo: 'R2', texto: 'Modificación BI: descuento/bonificación posterior a la emisión' },
+            { codigo: 'R3', texto: 'Anulación total de la operación' },
+            { codigo: 'R4', texto: 'Devolución de mercancías o envases' },
+            { codigo: 'R5', texto: 'Impago judicialmente declarado (concurso, art. 80.3 LIVA)' },
+            { codigo: 'R6', texto: 'Modificación BI por sentencia firme o resolución administrativa' },
+            { codigo: 'R7', texto: 'Otro motivo legal (especificar)' }
+        ];
+        const list = causas.map((c, i) => `  ${i+1}. ${c.codigo} — ${c.texto}`).join('\n');
+        const sel = prompt('MOTIVO DE LA RECTIFICACIÓN (obligatorio - RD 1619/2012 art. 15)\n\n' + list + '\n\nEscribe el número (1-7):');
+        if (sel === null) return null;
+        const idx = parseInt(sel, 10) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= causas.length) { alert('Causa no válida.'); return null; }
+        let causa = causas[idx];
+        if (causa.codigo === 'R7') {
+            const txt = prompt('Especifica el motivo:');
+            if (!txt || !txt.trim()) return null;
+            causa = { codigo: 'R7', texto: txt.trim() };
+        }
+        return causa;
+    }
 
     // ============================================================
     //  EXPORT CSV

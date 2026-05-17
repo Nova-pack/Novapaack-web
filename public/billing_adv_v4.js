@@ -896,37 +896,60 @@ if(btnCredit) {
     btnCredit.addEventListener('click', async () => {
         if(!advCurrentInvoiceId) { alert("Debes guardar o cargar una factura primero."); return; }
         if(!confirm("¿Deseas generar una FACTURA RECTIFICATIVA (Abono) idéntica pero en negativo para esta factura?")) return;
-        
+
+        // LEGAL: capturar motivo de rectificación (RD 1619/2012 art. 15)
+        const _causas = [
+            { codigo: 'R1', texto: 'Error fundado en derecho (datos identificativos, importes, tipo IVA, etc.)' },
+            { codigo: 'R2', texto: 'Modificación BI: descuento/bonificación posterior a la emisión' },
+            { codigo: 'R3', texto: 'Anulación total de la operación' },
+            { codigo: 'R4', texto: 'Devolución de mercancías o envases' },
+            { codigo: 'R5', texto: 'Impago judicialmente declarado (concurso, art. 80.3 LIVA)' },
+            { codigo: 'R6', texto: 'Modificación BI por sentencia firme o resolución administrativa' },
+            { codigo: 'R7', texto: 'Otro motivo legal (especificar)' }
+        ];
+        const _listaCausas = _causas.map((c, i) => `  ${i+1}. ${c.codigo} — ${c.texto}`).join('\n');
+        const _sel = prompt('MOTIVO DE LA RECTIFICACIÓN (obligatorio - RD 1619/2012 art. 15)\n\n' + _listaCausas + '\n\nEscribe el número (1-7):');
+        if (_sel === null) return;
+        const _idx = parseInt(_sel, 10) - 1;
+        if (isNaN(_idx) || _idx < 0 || _idx >= _causas.length) { alert('Causa no válida.'); return; }
+        let _causa = _causas[_idx];
+        if (_causa.codigo === 'R7') {
+            const _t = prompt('Especifica el motivo:');
+            if (!_t || !_t.trim()) return;
+            _causa = { codigo: 'R7', texto: _t.trim() };
+        }
+
         if(typeof showLoading === 'function') showLoading();
         try {
             const doc = await db.collection('invoices').doc(advCurrentInvoiceId).get();
             if(!doc.exists) throw new Error("La factura original ya no existe.");
             const orig = doc.data();
-            
-            // Year-based numbering for credit note: ABO-YY-SEQ
+
+            // Numeración atómica con serie R independiente (Fix legal-sprint1 #2)
             const aboYear = new Date().getFullYear();
             const aboYY = String(aboYear).slice(-2);
-            const aboYrStart = new Date(aboYear, 0, 1);
-            const aboYrEnd = new Date(aboYear + 1, 0, 1);
-            const invSnapAbo = await db.collection('invoices')
-                .where('date', '>=', aboYrStart)
-                .where('date', '<', aboYrEnd)
-                .orderBy('date', 'desc')
-                .get();
-            let nextNum = 0;
-            invSnapAbo.forEach(doc => {
-                const iid = doc.data().invoiceId || '';
-                const match = iid.match(/^(?:FAC|ABO)-\d{2}-(\d+)$/);
-                if (match) {
-                    const seq = parseInt(match[1], 10);
-                    if (!isNaN(seq) && seq >= nextNum) nextNum = seq + 1;
-                }
+            const counterPath = 'sequence_counters/credits_' + aboYear;
+
+            const nextNum = await window.allocSequentialNumber(counterPath, async () => {
+                const yrStart = new Date(aboYear, 0, 1);
+                const yrEnd = new Date(aboYear + 1, 0, 1);
+                const snap = await db.collection('invoices')
+                    .where('date', '>=', yrStart).where('date', '<', yrEnd)
+                    .limit(20000).get();
+                let max = 0;
+                snap.forEach(d => {
+                    const iid = d.data().invoiceId || '';
+                    const m = iid.match(/^R-\d{2}-(\d+)$/);
+                    if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+                });
+                return max;
             });
 
             const abonoData = {
                 ...orig,
                 number: nextNum,
-                invoiceId: `ABO-${aboYY}-${nextNum}`,
+                invoiceId: `R-${aboYY}-${nextNum}`,
+                serie: 'R',
                 date: new Date(),
                 subtotal: -orig.subtotal,
                 iva: -orig.iva,
@@ -934,8 +957,13 @@ if(btnCredit) {
                 total: -orig.total,
                 isAbono: true,
                 rectificaA: orig.invoiceId,
-                paid: true, // usually a credit note is considered balanced
-                advancedGrid: (orig.advancedGrid || []).map(r => ({...r, qty: -r.qty, total: -r.total}))
+                rectificaDocId: advCurrentInvoiceId,
+                rectificaDate: orig.date || null,
+                motivoRectificacion: _causa.codigo,
+                motivoRectificacionTexto: _causa.texto,
+                paid: false,  // pendiente devolver/compensar
+                advancedGrid: (orig.advancedGrid || []).map(r => ({...r, qty: -r.qty, total: -r.total})),
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
             };
             
             if (abonoData.ticketsDetail) {
