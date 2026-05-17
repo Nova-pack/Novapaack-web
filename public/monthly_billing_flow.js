@@ -557,6 +557,7 @@
 
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             const invoiceDate = new Date();
+            const failures = [];  // clientes saltados (sin NIF, etc.) — Sprint 2 §2.3
 
             for (let i = 0; i < clientIds.length; i++) {
                 const cid = clientIds[i];
@@ -595,12 +596,21 @@
                 }
 
                 const irpfRate = parseFloat(client.irpf) || 0;
+
+                // VALIDACIÓN NIF (Sprint 2 — hallazgo §2.3)
+                // Factura sin NIF cliente es FORMALMENTE INVÁLIDA (RD 1619/2012 art. 6.1.d).
+                // No deducible para el cliente + sanción para emisor si AEAT lo detecta.
+                const clientFiscalId = (client.cif || client.nif || '').toString().trim().toUpperCase();
+                if (!clientFiscalId || clientFiscalId === 'N/A' || clientFiscalId === '-') {
+                    failures.push({ name: client.name || client.id, reason: 'Sin NIF/CIF fiscal — factura no se puede emitir (RD 1619/2012 art. 6.1.d)' });
+                    continue;
+                }
+
                 // Reserve next number atomically for THIS invoice only.
                 let nextInvNumber;
                 if (typeof window.allocSequentialNumber === 'function') {
                     nextInvNumber = await window.allocSequentialNumber(_invCounterPath, _seedInvFromHistory);
                 } else {
-                    // Should not happen, but degrade gracefully.
                     nextInvNumber = (await _seedInvFromHistory()) + 1;
                 }
                 const invoiceIdStr = `FAC-${currentYY}-${nextInvNumber}`;
@@ -611,7 +621,7 @@
                     date: invoiceDate,
                     clientId: client.id,
                     clientName: client.name || 'Sin nombre',
-                    clientCIF: client.idNum || client.nif || 'N/A',
+                    clientCIF: clientFiscalId,
                     subtotal: group.subtotal,
                     iva: group.iva,
                     ivaRate: ivaRate,
@@ -646,6 +656,12 @@
                     senderData: _mbSenderData
                 });
                 // (No manual increment: each iteration calls allocSequentialNumber.)
+            }
+
+            // Avisar de clientes saltados por validaciones legales (NIF, etc.)
+            if (failures.length > 0) {
+                const txt = failures.map(f => `  • ${f.name} → ${f.reason}`).join('\n');
+                alert('⚠️ ' + failures.length + ' cliente(s) NO se facturaron:\n\n' + txt + '\n\nCompleta sus datos fiscales y vuelve a ejecutar la facturación.');
             }
 
             // Done — go to SEPA step
@@ -793,71 +809,115 @@
             alert('La empresa emisora no tiene IBAN configurado. Configúralo en Datos Fiscales.'); return;
         }
 
-        // Build SEPA PAIN.008.001.02 XML
+        // SEPA pain.008.001.02 — Sprint 2 fix legal aplicado:
+        //  • Escape XML real (no eliminación)
+        //  • Validación IBAN MOD-97 (rechaza inválidos)
+        //  • Creditor Identifier desde company.creditorId (no autocalculado)
+        //  • DbtrAgt + ChrgBr SLEV añadidos
+        //  • Mandato SEPA OBLIGATORIO (rechaza si no hay sepaRef firmado)
+        function _xmlEscape(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+        }
+        function _validateIBAN(iban) {
+            if (typeof window.validateIBAN === 'function') return window.validateIBAN(iban);
+            const clean = String(iban||'').replace(/\s/g,'').toUpperCase();
+            if (clean.length < 15 || clean.length > 34) return false;
+            if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(clean)) return false;
+            const rearranged = clean.slice(4) + clean.slice(0, 4);
+            let numeric = '';
+            for (const ch of rearranged) {
+                const code = ch.charCodeAt(0);
+                numeric += (code >= 48 && code <= 57) ? ch : (code - 55).toString();
+            }
+            let remainder = 0;
+            for (let i = 0; i < numeric.length; i += 7) {
+                remainder = parseInt(String(remainder) + numeric.substring(i, i+7), 10) % 97;
+            }
+            return remainder === 1;
+        }
+
+        if (!company.bank) { alert('Falta IBAN de empresa emisora.'); return; }
+        if (!_validateIBAN(company.bank)) { alert('IBAN de empresa emisora NO válido (check MOD-97 falló).'); return; }
+        if (!company.creditorId) {
+            alert('Falta el IDENTIFICADOR DE ACREEDOR SEPA (campo creditorId en datos fiscales).\n\nLo asigna tu banco. NO se autocalcula.\n\nFormato: ES + 2 dígitos check + 3 dígitos suffix + NIF (9).');
+            return;
+        }
+
         const msgId = 'MSG' + Date.now();
         const creationDate = new Date().toISOString().split('.')[0];
-        const totalAmount = selectedInvoices.reduce((sum, inv) => sum + inv.total, 0).toFixed(2);
         const numTrans = selectedInvoices.length;
-        const creditorIBAN = company.bank.replace(/\s/g, '');
-        const creditorCIF = (company.cif || '').replace(/[^A-Z0-9]/gi, '');
-        const creditorName = (company.name || 'NOVAPACK').substring(0, 70).replace(/[&<>"]/g, '');
-        const sepaId = company.sepaId || '000';
-        const creditorId = `ES${creditorIBAN.substring(2, 4)}${sepaId}${creditorCIF}`;
-        const collectionDate = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
+        const creditorIBAN = company.bank.replace(/\s/g, '').toUpperCase();
+        const creditorName = (company.name || 'NOVAPACK').substring(0, 70);
+        const creditorId = company.creditorId.trim();
+        const collectionDate = new Date(Date.now() + 86400000 * 6).toISOString().split('T')[0];
 
         let transactions = '';
-        let skipped = 0;
+        const skipped = [];
+        const validInvs = [];
         selectedInvoices.forEach(inv => {
             const client = window.userMap ? window.userMap[inv.clientId] : null;
-            if (!client) { skipped++; return; }
-            const clientIBAN = (client.iban || '').replace(/\s/g, '');
-            if (clientIBAN.length < 20) { skipped++; return; }
-            const clientName = (client.name || inv.clientName).substring(0, 70).replace(/[&<>"]/g, '');
-            const mandateId = client.sepaRef || ('MANDATO-' + (inv.clientId || '').substring(0, 8));
+            if (!client) { skipped.push({inv: inv.invoiceId, reason: 'cliente no encontrado'}); return; }
+            const clientIBAN = (client.iban || '').replace(/\s/g, '').toUpperCase();
+            if (!clientIBAN) { skipped.push({inv: inv.invoiceId, reason: 'sin IBAN'}); return; }
+            if (!_validateIBAN(clientIBAN)) { skipped.push({inv: inv.invoiceId, reason: 'IBAN inválido (MOD-97)'}); return; }
+            if (!client.sepaRef) { skipped.push({inv: inv.invoiceId, reason: 'sin mandato SEPA firmado'}); return; }
+            const clientName = (client.name || inv.clientName || '').substring(0, 70);
+            const mandateId = client.sepaRef;
             const mandateDate = client.sepaDate || new Date().toISOString().split('T')[0];
+            validInvs.push(inv);
 
             transactions += `
         <DrctDbtTxInf>
-            <PmtId><EndToEndId>${inv.invoiceId}</EndToEndId></PmtId>
+            <PmtId><EndToEndId>${_xmlEscape(inv.invoiceId)}</EndToEndId></PmtId>
             <InstdAmt Ccy="EUR">${inv.total.toFixed(2)}</InstdAmt>
             <DrctDbtTx>
                 <MndtRltdInf>
-                    <MndtId>${mandateId}</MndtId>
-                    <DtOfSgntr>${mandateDate}</DtOfSgntr>
+                    <MndtId>${_xmlEscape(mandateId)}</MndtId>
+                    <DtOfSgntr>${_xmlEscape(mandateDate)}</DtOfSgntr>
                 </MndtRltdInf>
             </DrctDbtTx>
-            <Dbtr><Nm>${clientName}</Nm></Dbtr>
-            <DbtrAcct><Id><IBAN>${clientIBAN}</IBAN></Id></DbtrAcct>
-            <RmtInf><Ustrd>Factura ${inv.invoiceId}</Ustrd></RmtInf>
+            <DbtrAgt><FinInstnId><Othr><Id>NOTPROVIDED</Id></Othr></FinInstnId></DbtrAgt>
+            <Dbtr><Nm>${_xmlEscape(clientName)}</Nm></Dbtr>
+            <DbtrAcct><Id><IBAN>${_xmlEscape(clientIBAN)}</IBAN></Id></DbtrAcct>
+            <RmtInf><Ustrd>${_xmlEscape('Factura ' + inv.invoiceId)}</Ustrd></RmtInf>
         </DrctDbtTxInf>`;
         });
 
-        const actualTrans = numTrans - skipped;
-        if (actualTrans === 0) {
-            alert('Ninguna factura seleccionada tiene IBAN válido.'); return;
+        if (validInvs.length === 0) {
+            const txt = skipped.map(s => `  • ${s.inv}: ${s.reason}`).join('\n');
+            alert('No quedan facturas válidas para la remesa.\n\nRechazadas:\n' + txt); return;
         }
+        if (skipped.length > 0) {
+            const txt = skipped.map(s => `  • ${s.inv}: ${s.reason}`).join('\n');
+            if (!confirm('⚠️ ' + skipped.length + ' facturas RECHAZADAS:\n\n' + txt + '\n\n¿Generar remesa solo con las ' + validInvs.length + ' válidas?')) return;
+        }
+        const totalAmount = validInvs.reduce((sum, inv) => sum + inv.total, 0).toFixed(2);
+        const actualTrans = validInvs.length;
 
         const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02">
     <CstmrDrctDbtInitn>
         <GrpHdr>
-            <MsgId>${msgId}</MsgId>
+            <MsgId>${_xmlEscape(msgId)}</MsgId>
             <CreDtTm>${creationDate}</CreDtTm>
             <NbOfTxs>${actualTrans}</NbOfTxs>
             <CtrlSum>${totalAmount}</CtrlSum>
-            <InitgPty><Nm>${creditorName}</Nm></InitgPty>
+            <InitgPty><Nm>${_xmlEscape(creditorName)}</Nm></InitgPty>
         </GrpHdr>
         <PmtInf>
-            <PmtInfId>${msgId}-INF</PmtInfId>
+            <PmtInfId>${_xmlEscape(msgId)}-INF</PmtInfId>
             <PmtMtd>DD</PmtMtd>
             <NbOfTxs>${actualTrans}</NbOfTxs>
             <CtrlSum>${totalAmount}</CtrlSum>
             <PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl><LclInstrm><Cd>CORE</Cd></LclInstrm><SeqTp>RCUR</SeqTp></PmtTpInf>
             <ReqdColltnDt>${collectionDate}</ReqdColltnDt>
-            <Cdtr><Nm>${creditorName}</Nm></Cdtr>
-            <CdtrAcct><Id><IBAN>${creditorIBAN}</IBAN></Id></CdtrAcct>
+            <Cdtr><Nm>${_xmlEscape(creditorName)}</Nm></Cdtr>
+            <CdtrAcct><Id><IBAN>${_xmlEscape(creditorIBAN)}</IBAN></Id></CdtrAcct>
             <CdtrAgt><FinInstnId><Othr><Id>NOTPROVIDED</Id></Othr></FinInstnId></CdtrAgt>
-            <CdtrSchmeId><Id><PrvtId><Othr><Id>${creditorId}</Id><SchmeNm><Prtry>SEPA</Prtry></SchmeNm></Othr></PrvtId></Id></CdtrSchmeId>${transactions}
+            <ChrgBr>SLEV</ChrgBr>
+            <CdtrSchmeId><Id><PrvtId><Othr><Id>${_xmlEscape(creditorId)}</Id><SchmeNm><Prtry>SEPA</Prtry></SchmeNm></Othr></PrvtId></Id></CdtrSchmeId>${transactions}
         </PmtInf>
     </CstmrDrctDbtInitn>
 </Document>`;

@@ -764,13 +764,21 @@ document.getElementById('btn-adv-save').onclick = async () => {
             finalSenderData = Object.assign({}, window.invCompanyData);
         }
 
+        // VALIDACIÓN NIF (Sprint 2 §2.3) — sin NIF la factura es legalmente nula
+        const _clientFiscalId = ((advCurrentClient.cif || advCurrentClient.nif || '') + '').trim().toUpperCase();
+        if (!_clientFiscalId || _clientFiscalId === 'N/A' || _clientFiscalId === '-') {
+            alert('🔒 NO PERMITIDO\n\nEl cliente "' + (advCurrentClient.name || advCurrentClient.id) + '" no tiene NIF/CIF en su ficha.\n\nUna factura sin NIF es FORMALMENTE NULA (RD 1619/2012 art. 6.1.d) y no deducible para el receptor.\n\nCompleta el NIF en su ficha de cliente y vuelve a intentarlo.');
+            if (typeof hideLoading === 'function') hideLoading();
+            return;
+        }
+
         const invoiceData = {
             number: nextNum,
             invoiceId: `FAC-${invYY}-${nextNum}`,
             date: finalDate,
             clientId: advCurrentClient.id,
             clientName: advCurrentClient.name,
-            clientCIF: advCurrentClient.nif || advCurrentClient.idNum || 'N/A',
+            clientCIF: _clientFiscalId,
             subtotal: advCurrentCalculations.subtotal,
             iva: advCurrentCalculations.iva,
             ivaRate: advGridRows.length > 0 ? advGridRows[0].iva : 21, // Simplified avg if mixed

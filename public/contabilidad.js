@@ -1021,52 +1021,91 @@ window.contaLoadModelo347 = async function() {
     try {
         const year = new Date().getFullYear();
         const UMBRAL = 3005.06;
-        
-        const invSnap = await db.collection('invoices')
-            .where('date', '>=', new Date(year, 0, 1))
-            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
-            .orderBy('date', 'asc')
-            .limit(5000)
-            .get();
-        
-        // Aggregate by client + quarter
-        const clientOps = {};
-        
+
+        // Cargar EN PARALELO invoices y expenses (Sprint 2 — corrige §1.3)
+        const [invSnap, expSnap] = await Promise.all([
+            db.collection('invoices')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get(),
+            db.collection('expenses')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get().catch(() => ({ forEach: () => {} }))
+        ]);
+
+        // Normalizador NIF (clave fiscal — Sprint 2 §1.3)
+        const _normNif = nif => String(nif || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+
+        // Agregar por NIF + lado (CLIENTE vs PROVEEDOR), no por nombre
+        const ops = {};
+
         invSnap.forEach(doc => {
             const inv = doc.data();
+            // Excluir abonos del cómputo (se suman/restan automáticamente con su signo)
+            const cNIF = _normNif(inv.clientCIF);
+            if (!cNIF || cNIF === 'NA' || cNIF === '-') return;  // sin NIF → no declarable
             const cName = inv.clientName || 'Desconocido';
-            const cNIF = inv.clientCIF || '-';
             const date = inv.date && inv.date.toDate ? inv.date.toDate() : new Date(inv.date);
             const quarter = Math.floor(date.getMonth() / 3) + 1;
-            
-            if (!clientOps[cName]) clientOps[cName] = { nif: cNIF, total: 0, q1: 0, q2: 0, q3: 0, q4: 0 };
-            clientOps[cName].total += inv.total || 0;
-            clientOps[cName]['q' + quarter] += inv.total || 0;
+            const key = 'C|' + cNIF;
+            if (!ops[key]) ops[key] = { side: 'C', sideLabel: 'Cliente', nif: cNIF, name: cName, total: 0, q1: 0, q2: 0, q3: 0, q4: 0, n: 0 };
+            // Abonos restan: total ya es negativo en abonos según billing_adv_v4 y facturas_central
+            ops[key].total += (inv.total || 0);
+            ops[key]['q' + quarter] += (inv.total || 0);
+            ops[key].n++;
         });
-        
-        // Filter only those >3.005,06€
-        const declarables = Object.entries(clientOps)
-            .filter(([_, data]) => data.total >= UMBRAL)
-            .sort((a, b) => b[1].total - a[1].total);
-        
+
+        // Lado proveedores (gastos)
+        expSnap.forEach(doc => {
+            const exp = doc.data();
+            const pNIF = _normNif(exp.providerNif || exp.providerCIF || exp.nif);
+            if (!pNIF) return;  // gastos sin NIF de proveedor no se pueden declarar
+            const pName = exp.provider || exp.providerName || 'Proveedor';
+            const date = exp.date && exp.date.toDate ? exp.date.toDate() : new Date(exp.date);
+            if (!date || isNaN(date.getTime())) return;
+            const quarter = Math.floor(date.getMonth() / 3) + 1;
+            const amount = parseFloat(exp.total || exp.amount || 0) || 0;
+            const key = 'P|' + pNIF;
+            if (!ops[key]) ops[key] = { side: 'P', sideLabel: 'Proveedor', nif: pNIF, name: pName, total: 0, q1: 0, q2: 0, q3: 0, q4: 0, n: 0 };
+            ops[key].total += amount;
+            ops[key]['q' + quarter] += amount;
+            ops[key].n++;
+        });
+
+        // Filtrar por umbral (cliente o proveedor)
+        const declarables = Object.values(ops)
+            .filter(d => Math.abs(d.total) >= UMBRAL)
+            .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+
+        const totalClientes = declarables.filter(d => d.side === 'C').length;
+        const totalProveedores = declarables.filter(d => d.side === 'P').length;
+
         let html = `
         <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">📄 MODELO 347 — Operaciones con Terceros — ${year}</div>
-        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Clientes con operaciones anuales ≥ ${UMBRAL.toFixed(2)}€ (IVA incluido)</div>`;
-        
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Clientes y proveedores con operaciones anuales ≥ ${UMBRAL.toFixed(2)}€ (IVA incluido). Agrupado por NIF.</div>`;
+
         if (declarables.length === 0) {
-            html += '<div style="text-align:center; padding:40px; color:#888; font-size:0.9rem;">No hay clientes que superen el umbral de 3.005,06€ este año.</div>';
+            html += '<div style="text-align:center; padding:40px; color:#888; font-size:0.9rem;">No hay operaciones que superen el umbral de 3.005,06€ este año.</div>';
         } else {
             html += `
-            <div style="background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:8px; padding:10px; margin-bottom:15px; text-align:center;">
-                <span style="color:#FFB74D; font-weight:bold;">${declarables.length}</span>
-                <span style="color:#888;"> clientes declarables</span>
+            <div style="display:flex; gap:10px; margin-bottom:15px;">
+                <div style="flex:1; background:rgba(76,175,80,0.1); border:1px solid #4CAF50; border-radius:8px; padding:10px; text-align:center;">
+                    <span style="color:#4CAF50; font-weight:bold; font-size:1.2rem;">${totalClientes}</span>
+                    <div style="color:#888; font-size:0.7rem;">Clientes declarables</div>
+                </div>
+                <div style="flex:1; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:8px; padding:10px; text-align:center;">
+                    <span style="color:#FFB74D; font-weight:bold; font-size:1.2rem;">${totalProveedores}</span>
+                    <div style="color:#888; font-size:0.7rem;">Proveedores declarables</div>
+                </div>
             </div>
-            
+
             <table style="width:100%; border-collapse:collapse; font-size:0.8rem;">
                 <thead>
                     <tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
-                        <th style="padding:8px 6px; text-align:left;">Cliente</th>
-                        <th style="padding:8px 6px; text-align:left;">NIF/ID</th>
+                        <th style="padding:8px 6px; text-align:center; width:80px;">Lado</th>
+                        <th style="padding:8px 6px; text-align:left;">Razón Social</th>
+                        <th style="padding:8px 6px; text-align:left;">NIF</th>
                         <th style="padding:8px 6px; text-align:right;">1T</th>
                         <th style="padding:8px 6px; text-align:right;">2T</th>
                         <th style="padding:8px 6px; text-align:right;">3T</th>
@@ -1075,21 +1114,28 @@ window.contaLoadModelo347 = async function() {
                     </tr>
                 </thead>
                 <tbody>`;
-            
-            declarables.forEach(([name, data]) => {
+
+            declarables.forEach(d => {
+                const badge = d.side === 'C'
+                    ? '<span style="background:rgba(76,175,80,0.2); color:#4CAF50; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:700;">A · Cliente</span>'
+                    : '<span style="background:rgba(255,152,0,0.2); color:#FFB74D; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:700;">B · Proveedor</span>';
                 html += `
                 <tr style="border-bottom:1px solid #2d2d30;">
-                    <td style="padding:6px; color:#fff; font-weight:600;">${name}</td>
-                    <td style="padding:6px; color:#888;">${data.nif}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q1 > 0 ? data.q1.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q2 > 0 ? data.q2.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q3 > 0 ? data.q3.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q4 > 0 ? data.q4.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#FFD700; font-weight:bold;">${data.total.toFixed(2)}€</td>
+                    <td style="padding:6px; text-align:center;">${badge}</td>
+                    <td style="padding:6px; color:#fff; font-weight:600;">${d.name}</td>
+                    <td style="padding:6px; color:#888; font-family:monospace;">${d.nif}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q1 !== 0 ? d.q1.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q2 !== 0 ? d.q2.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q3 !== 0 ? d.q3.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q4 !== 0 ? d.q4.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#FFD700; font-weight:bold;">${d.total.toFixed(2)}€</td>
                 </tr>`;
             });
-            
+
             html += '</tbody></table>';
+            html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">';
+            html += '💡 <strong>Recordatorio AEAT</strong>: el modelo 347 declara operaciones ≥ 3.005,06€ anuales con un mismo NIF. Las claves típicas son <strong>A</strong> (adquisición/compra a proveedores) y <strong>B</strong> (entrega/venta a clientes). Cobros en efectivo &gt; 6.000€ en metálico se marcan aparte. Excluye operaciones declaradas en modelo 349 (intracomunitarias).';
+            html += '</div>';
         }
         
         container.innerHTML = html;
