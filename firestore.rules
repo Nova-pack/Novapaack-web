@@ -79,10 +79,29 @@ service cloud.firestore {
       }
     }
 
-    // ─── INVOICES (admin-only write) ───
+    // ─── INVOICES — Inmutabilidad post-emisión (RD 1619/2012 art. 8) ───
+    // Una factura emitida NO se modifica ni se borra: solo se rectifica
+    // mediante factura rectificativa (abono). Admin puede:
+    //   - crear nuevas facturas
+    //   - actualizar SOLO campos no fiscales (paid, paidDate, notes_internas,
+    //     sentToClient, lastReminderAt y similares)
+    //   - delete: PROHIBIDO. Si hay un error → emitir abono rectificativo.
     match /invoices/{docId} {
       allow read: if isAuth();
-      allow write: if isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin()
+        && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny([
+              'invoiceId', 'number', 'numero', 'serie',
+              'date', 'invoiceDate', 'fechaDevengo',
+              'subtotal', 'iva', 'irpf', 'total', 'baseImponible',
+              'clientCIF', 'clientName', 'clientNIF', 'clientAddress',
+              'advancedGrid', 'lines', 'concepto',
+              'senderData', 'senderCIF', 'compId',
+              'rectificaA', 'isAbono', 'tipoRectificacion', 'motivoRectificacion',
+              'createdAt', 'createdBy'
+            ]);
+      allow delete: if false;
     }
 
     // ─── TARIFFS, ARTICLES, BILLING COMPANIES (admin-only write) ───
@@ -100,17 +119,24 @@ service cloud.firestore {
     }
 
     // ─── PAPELERA (admin-only) ───
+    // Tickets: borrado definitivo permitido (operacional, no fiscal)
     match /deleted_tickets/{docId} {
       allow read: if isAuth();
       allow write: if isAdmin();
     }
+    // Invoices y Abonos en papelera: NO se borran (conservación 4-6 años).
+    // Solo se permite crear (al soft-delete) y leer/restaurar.
     match /deleted_invoices/{docId} {
       allow read: if isAuth();
-      allow write: if isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if false;
     }
     match /deleted_abonos/{docId} {
       allow read: if isAuth();
-      allow write: if isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if false;
     }
     match /deleted_users/{docId} {
       allow read: if isAdmin();

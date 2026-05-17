@@ -3903,6 +3903,13 @@ window.runPublicTicketsBackfill = async function() {
     window.permanentDeleteTrash = async function(type, docId) {
         var labels = { tickets: 'albaran', invoices: 'factura', abonos: 'abono', users: 'cliente' };
         var cols = { tickets: 'deleted_tickets', invoices: 'deleted_invoices', abonos: 'deleted_abonos', users: 'deleted_users' };
+
+        // LEGAL: facturas y abonos NO se pueden borrar permanentemente (conservación 4-6 años RD 1619/2012 + Código Comercio)
+        if (type === 'invoices' || type === 'abonos') {
+            alert('🚫 NO PERMITIDO\n\nLas ' + (type === 'invoices' ? 'facturas' : 'notas de abono') + ' emitidas no se pueden eliminar definitivamente por requisito legal (conservación 4-6 años AEAT + Código Comercio).\n\nSi has marcado por error → usa "Restaurar" para devolverla a la colección activa.\nSi necesitas anularla → emite una factura rectificativa (abono).');
+            return;
+        }
+
         if (!confirm('ELIMINAR DEFINITIVAMENTE este ' + labels[type] + '?\n\nEsta accion NO se puede deshacer.')) return;
         try {
             // Si es usuario, limpiar subcollecciones espejadas también
@@ -3928,11 +3935,22 @@ window.runPublicTicketsBackfill = async function() {
     window.permanentDeleteTicket = function(docId) { permanentDeleteTrash('tickets', docId); };
 
     // --- EMPTY ALL TRASH ---
+    // LEGAL: solo se vacían albaranes. Facturas y abonos en papelera se
+    // CONSERVAN por requisito fiscal (RD 1619/2012 + Código Comercio: 4-6 años).
     window.emptyTrash = async function() {
-        var total = _trashTickets.length + _trashInvoices.length + _trashAbonos.length;
-        if (total === 0) { alert('La papelera ya esta vacia.'); return; }
+        if (_trashTickets.length === 0 && _trashInvoices.length === 0 && _trashAbonos.length === 0) {
+            alert('La papelera ya esta vacia.'); return;
+        }
+        var lockedNote = '';
+        if (_trashInvoices.length > 0 || _trashAbonos.length > 0) {
+            lockedNote = '\n\n🔒 Por ley de conservación (4-6 años) NO se eliminan:\n- ' + _trashInvoices.length + ' facturas (quedan en papelera)\n- ' + _trashAbonos.length + ' abonos (quedan en papelera)';
+        }
+        if (_trashTickets.length === 0) {
+            alert('🔒 No hay albaranes para eliminar.' + lockedNote);
+            return;
+        }
 
-        var confirmText = prompt('VACIAR PAPELERA\n\nSe eliminaran DEFINITIVAMENTE:\n- ' + _trashTickets.length + ' albaranes\n- ' + _trashInvoices.length + ' facturas\n- ' + _trashAbonos.length + ' abonos\n\nEscribe VACIAR para confirmar:');
+        var confirmText = prompt('VACIAR PAPELERA (solo albaranes)\n\nSe eliminaran DEFINITIVAMENTE:\n- ' + _trashTickets.length + ' albaranes' + lockedNote + '\n\nEscribe VACIAR para confirmar:');
         if (confirmText !== 'VACIAR') { alert('Operacion cancelada.'); return; }
 
         var listEl = document.getElementById('trash-list');
@@ -3940,20 +3958,14 @@ window.runPublicTicketsBackfill = async function() {
 
         var deleted = 0;
         var errors = 0;
-        var allItems = [
-            { items: _trashTickets, col: 'deleted_tickets' },
-            { items: _trashInvoices, col: 'deleted_invoices' },
-            { items: _trashAbonos, col: 'deleted_abonos' }
-        ];
-        for (var g = 0; g < allItems.length; g++) {
-            for (var i = 0; i < allItems[g].items.length; i++) {
-                try {
-                    await db.collection(allItems[g].col).doc(allItems[g].items[i].docId).delete();
-                    deleted++;
-                } catch(e) { errors++; }
-                if (deleted % 20 === 0 && listEl) {
-                    listEl.innerHTML = '<div style="padding:30px; text-align:center; color:#FF3B30;">Vaciando... ' + deleted + '/' + total + '</div>';
-                }
+        var total = _trashTickets.length;
+        for (var i = 0; i < _trashTickets.length; i++) {
+            try {
+                await db.collection('deleted_tickets').doc(_trashTickets[i].docId).delete();
+                deleted++;
+            } catch(e) { errors++; }
+            if (deleted % 20 === 0 && listEl) {
+                listEl.innerHTML = '<div style="padding:30px; text-align:center; color:#FF3B30;">Vaciando... ' + deleted + '/' + total + '</div>';
             }
         }
 
@@ -8238,6 +8250,12 @@ window.runPublicTicketsBackfill = async function() {
             };
 
             window.fullAppReset = async () => {
+                // BLOQUEO LEGAL: facturas y abonos deben conservarse 4-6 años (RD 1619/2012 + Cód. Comercio).
+                // Esta acción "reset total" es incompatible con esa obligación.
+                alert('🔒 ACCIÓN BLOQUEADA POR REQUISITO LEGAL\n\nNo se permite "Reset Total" porque borraría facturas y abonos emitidos,\nincumpliendo la obligación de conservación 4-6 años (RD 1619/2012 y Código de Comercio).\n\nSi necesitas re-empezar desde cero, debes:\n  1. Crear un nuevo proyecto Firebase (entorno de staging)\n  2. O abrir un nuevo ejercicio fiscal con series propias\n\nContacta soporte si necesitas migrar a un entorno limpio.');
+                return;
+
+                /* CÓDIGO ANTIGUO bloqueado por ley
                 const p1 = confirm("🚨 RESET TOTAL DE LA APLICACIÓN 🚨\n\nEsto borrará:\n- TODOS los Clientes (excepto tú)\n- TODAS las Tarifas\n- TODOS los Albaranes y Facturas\n- TODA la configuración\n\n¿Estás SEGURO?");
                 if (!p1) return;
 
@@ -8273,6 +8291,7 @@ window.runPublicTicketsBackfill = async function() {
                 } finally {
                     hideLoading();
                 }
+                */ // ── FIN bloqueo legal fullAppReset ──
             };
 
             // Función para reparar la base de datos (Admin Privs & Indexes)
