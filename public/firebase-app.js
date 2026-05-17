@@ -3566,14 +3566,24 @@ if (clientPickerInput) {
 
         // ----------------------------------------------------
         // 1) DIRECTORIO NOVAPACK REAL (Firestore) — PRIORIDAD ALTA
-        //    Aquí los clientes SIEMPRE tienen NIF si está cumplimentado en su ficha.
+        //    Si coincide por nombre con uno de la agenda → ENRIQUECE en vez
+        //    de descartar (copia NIF/teléfono/etc. faltantes a la entrada local).
         // ----------------------------------------------------
         try {
             await _loadNovapackGlobalDirectory();
             const nvResults = _searchNovapackGlobal(q, 8);
             nvResults.forEach(nv => {
-                const existsLocally = matches.some(m => (m.name || '').toLowerCase() === (nv.name || '').toLowerCase());
-                if (!existsLocally) {
+                const existing = matches.find(m => (m.name || '').toLowerCase() === (nv.name || '').toLowerCase());
+                if (existing) {
+                    // ENRIQUECER: rellenar campos vacíos con datos del NOVAPACK
+                    if (!existing.nif && nv.nif)            existing.nif = nv.nif;
+                    if (!existing.cp && nv.cp)              existing.cp = nv.cp;
+                    if (!existing.localidad && nv.localidad) existing.localidad = nv.localidad;
+                    if (!existing.idNum && nv.idNum)        existing.idNum = nv.idNum;
+                    if (!existing.docId && nv.docId)        existing.docId = nv.docId;
+                    existing._enrichedFrom = 'novapack';   // audit
+                    existing.isNovapack = true;            // badge verde para indicar match con NOVAPACK
+                } else {
                     matches.push({
                         name: nv.name || '',
                         phone: '',
@@ -3587,7 +3597,7 @@ if (clientPickerInput) {
                         idNum: nv.idNum || '',
                         docId: nv.docId || '',
                         isGlobal: true,
-                        isNovapack: true   // distintivo visual
+                        isNovapack: true
                     });
                 }
             });
@@ -3595,14 +3605,23 @@ if (clientPickerInput) {
 
         // ----------------------------------------------------
         // 2) DIRECTORIO GESCO (fantasma, JSON estático antiguo) — FALLBACK
-        //    Muchas entradas sin NIF — solo se usa si no aparece nada arriba.
+        //    Mismo principio: si coincide con uno ya en matches, enriquecer
+        //    SOLO los campos que sigan vacíos (no pisar NOVAPACK).
         // ----------------------------------------------------
         if (typeof window.searchPhantomDirectory === 'function') {
             const phantomResults = window.searchPhantomDirectory(q);
             phantomResults.forEach(pc => {
-                // Verificar que no sea un duplicado exacto por Nombre (ni en NOVAPACK ni en agenda)
-                const existsLocally = matches.some(m => (m.name || '').toLowerCase() === (pc.name || '').toLowerCase());
-                if (!existsLocally) {
+                const existing = matches.find(m => (m.name || '').toLowerCase() === (pc.name || '').toLowerCase());
+                if (existing) {
+                    if (!existing.nif && pc.nif)            existing.nif = pc.nif;
+                    if (!existing.phone && pc.senderPhone)  existing.phone = pc.senderPhone;
+                    if (!existing.cp && pc.cp)              existing.cp = pc.cp;
+                    if (!existing.localidad && pc.localidad) existing.localidad = pc.localidad;
+                    if (!existing.address && pc.street)     existing.address = pc.street;
+                    if (!existing.street && pc.street)      existing.street = pc.street;
+                    if (!existing.province && pc.province)  existing.province = pc.province;
+                    if (!existing._enrichedFrom) existing._enrichedFrom = 'gesco';
+                } else {
                     matches.push({
                         name: pc.name || '',
                         phone: pc.senderPhone || '',
