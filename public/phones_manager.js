@@ -30,6 +30,9 @@
                             <button onclick="if(typeof window._directoriesRebuildAll==='function') window._directoriesRebuildAll(); else if(typeof window._routeDirectoryRebuildAll==='function') window._routeDirectoryRebuildAll(); else alert('Recarga la página.');" title="Reconstruye los directorios públicos: por ruta (búsqueda de remitente) + global de clientes (búsqueda de destinatario porte debido). Sin datos sensibles." style="background:#2196F3; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
                                 <span class="material-symbols-outlined" style="font-size:16px;">contacts</span> Reconstruir directorios (rutas + global)
                             </button>
+                            <button onclick="if(typeof window.contactsMigrationDryRun==='function') window.contactsMigrationDryRun(); else alert('Recarga la página.');" title="Unifica Gesco (~6315) + NOVAPACK (/users) en una sola colección /contacts. Gesco manda en idNum, NOVAPACK enriquece con NIF/email/etc. Muestra preview antes de aplicar." style="background:#FF9800; border:none; color:#000; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">merge</span> Unificar Gesco + NOVAPACK → /contacts
+                            </button>
                             <button onclick="openPhoneModal()" style="background:#FF9800; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
                                 <span class="material-symbols-outlined" style="font-size:16px;">add</span> Nueva Ruta
                             </button>

@@ -122,6 +122,14 @@ service cloud.firestore {
       }
     }
 
+    // ─── CONTACTS — directorio unificado público (Gesco + NOVAPACK) ───
+    // Solo campos publicos (nombre, NIF, dirección, teléfono).
+    // Sin contraseñas/emails/IBANs/datos sensibles.
+    match /contacts/{contactId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
     // ─── BLACKLIST (auth read, admin write) ───
     match /deleted_erp_ids/{docId} {
       allow read: if isAuth();
