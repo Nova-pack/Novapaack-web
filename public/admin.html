@@ -2322,6 +2322,12 @@
                     <span id="toolbar-driver-incident-count">0 INCIDENCIAS</span>
                 </button>
 
+                <!-- PRE-ALBARANES PENDIENTES BUTTON -->
+                <button id="toolbar-btn-prealbaranes" onclick="if(typeof erpOpenTab==='function') erpOpenTab('prealbaranes');" style="display:none; background:linear-gradient(135deg, #E53935, #B71C1C); border:1px solid #E53935; box-shadow:0 0 10px rgba(229,57,53,0.5); color:white; padding:4px 12px; font-size:0.85rem; cursor:pointer; border-radius:3px; align-items:center; gap:6px; font-weight:bold; animation:pulse 2s infinite;" title="Pre-albaranes pendientes de completar (24h)">
+                    <span class="material-symbols-outlined" style="font-size:1.1rem">pending_actions</span>
+                    <span id="toolbar-prealbaranes-count">0 PRE-ALB</span>
+                </button>
+
                 <!-- FACTURAS dropdown -->
                 <div class="adv-dropdown">
                     <button class="adv-dropdown-btn"><span class="material-symbols-outlined">assignment</span> Facturas ▾</button>
@@ -3114,6 +3120,8 @@ window.runPublicTicketsBackfill = async function() {
 <!-- Tab wrapper: Pending Deletes -->
 <div id="erp-tab-pending-deletes" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
 <div id="erp-tab-driver-incidents" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:20px;"></div>
+
+<div id="erp-tab-prealbaranes" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:20px;"></div>
 
 <!-- Tab wrapper: Users -->
 <div id="erp-tab-users" style="display:none; flex:1; overflow-y:auto; background:#0a0a0a; color:#d4d4d4; padding:30px;"></div>
@@ -16154,6 +16162,239 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                 }
             };
 
+            // =========================================================
+            // PRE-ALBARANES PENDIENTES — vista dedicada con cuenta atrás
+            // =========================================================
+            let prealbaranesUnsub = null;
+            let prealbaranesData = [];
+            window.prealbaranesFilter = 'all';  // all | overdue | today | urgent
+            let prealbaranesCountdownTimer = null;
+
+            // Listener en background para actualizar el contador del toolbar
+            function initPrealbaranesListener() {
+                if (prealbaranesUnsub) prealbaranesUnsub();
+                prealbaranesUnsub = db.collection('tickets')
+                    .where('status', '==', 'pending_client_completion')
+                    .onSnapshot(snap => {
+                        prealbaranesData = [];
+                        snap.forEach(d => prealbaranesData.push({ docId: d.id, ...d.data() }));
+                        const btn = document.getElementById('toolbar-btn-prealbaranes');
+                        const txt = document.getElementById('toolbar-prealbaranes-count');
+                        if (prealbaranesData.length > 0) {
+                            if (btn) btn.style.display = 'flex';
+                            if (txt) txt.textContent = prealbaranesData.length + ' PRE-ALB';
+                        } else {
+                            if (btn) btn.style.display = 'none';
+                        }
+                        // Refresca vista si está abierta
+                        if (document.getElementById('erp-tab-prealbaranes') &&
+                            document.getElementById('erp-tab-prealbaranes').style.display !== 'none' &&
+                            typeof window._renderPrealbaranes === 'function') {
+                            window._renderPrealbaranes();
+                        }
+                    }, err => console.warn('[pre-alb] listener:', err));
+            }
+            // Arranca el listener inmediatamente (no espera a abrir la tab)
+            if (typeof db !== 'undefined') {
+                setTimeout(initPrealbaranesListener, 2000);
+            }
+
+            function _fmtCountdown(deadline) {
+                if (!deadline) return { text: '—', color: '#888', state: 'unknown' };
+                const dl = (typeof deadline.toDate === 'function') ? deadline.toDate() : new Date(deadline);
+                const diffMs = dl.getTime() - Date.now();
+                if (diffMs <= 0) {
+                    const overdueH = Math.floor(-diffMs / 3600000);
+                    return { text: '⚠️ VENCIDO -' + overdueH + 'h', color: '#9C27B0', state: 'overdue' };
+                }
+                const h = Math.floor(diffMs / 3600000);
+                const m = Math.floor((diffMs % 3600000) / 60000);
+                let color = '#4CAF50';  // verde
+                if (h < 1) color = '#FF3B30';      // rojo <1h
+                else if (h < 12) color = '#FF9800'; // naranja <12h
+                return { text: h + 'h ' + m + 'min', color, state: h < 1 ? 'urgent' : (h < 12 ? 'warning' : 'ok') };
+            }
+
+            window.loadPrealbaranesView = async function() {
+                const container = document.getElementById('erp-tab-prealbaranes');
+                if (!container) return;
+                if (!prealbaranesUnsub) initPrealbaranesListener();
+                window._renderPrealbaranes();
+                // Refresco automático cada 30s para actualizar countdowns
+                if (prealbaranesCountdownTimer) clearInterval(prealbaranesCountdownTimer);
+                prealbaranesCountdownTimer = setInterval(function() {
+                    if (document.getElementById('erp-tab-prealbaranes') &&
+                        document.getElementById('erp-tab-prealbaranes').style.display !== 'none') {
+                        window._renderPrealbaranes();
+                    } else {
+                        clearInterval(prealbaranesCountdownTimer);
+                        prealbaranesCountdownTimer = null;
+                    }
+                }, 30000);
+            };
+
+            window._renderPrealbaranes = function() {
+                const container = document.getElementById('erp-tab-prealbaranes');
+                if (!container) return;
+
+                // Filtrar
+                let items = prealbaranesData.slice();
+                const now = Date.now();
+                if (window.prealbaranesFilter === 'overdue') {
+                    items = items.filter(t => {
+                        const dl = t.impugnationDeadline;
+                        if (!dl) return false;
+                        return ((typeof dl.toDate==='function' ? dl.toDate() : new Date(dl)).getTime() < now);
+                    });
+                } else if (window.prealbaranesFilter === 'today') {
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate()+1);
+                    items = items.filter(t => {
+                        const ca = t.createdAt;
+                        if (!ca) return false;
+                        const d = (typeof ca.toDate==='function' ? ca.toDate() : new Date(ca));
+                        return d >= today && d < tomorrow;
+                    });
+                } else if (window.prealbaranesFilter === 'urgent') {
+                    items = items.filter(t => {
+                        const dl = t.impugnationDeadline;
+                        if (!dl) return false;
+                        const ms = (typeof dl.toDate==='function' ? dl.toDate() : new Date(dl)).getTime() - now;
+                        return ms > 0 && ms < 3600000;  // <1h
+                    });
+                }
+
+                // Sort: vencidos primero, luego por deadline ascendente
+                items.sort((a, b) => {
+                    const aMs = a.impugnationDeadline ? (typeof a.impugnationDeadline.toDate==='function' ? a.impugnationDeadline.toDate() : new Date(a.impugnationDeadline)).getTime() : 9e15;
+                    const bMs = b.impugnationDeadline ? (typeof b.impugnationDeadline.toDate==='function' ? b.impugnationDeadline.toDate() : new Date(b.impugnationDeadline)).getTime() : 9e15;
+                    return aMs - bMs;
+                });
+
+                // Stats por bucket
+                const stats = { total: prealbaranesData.length, overdue: 0, urgent: 0, warning: 0, ok: 0 };
+                prealbaranesData.forEach(t => {
+                    const c = _fmtCountdown(t.impugnationDeadline);
+                    if (stats[c.state] !== undefined) stats[c.state]++;
+                });
+
+                let html = '<div style="max-width:1400px; margin:0 auto;">';
+                html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">';
+                html += '<div><h2 style="margin:0; color:#E53935; font-size:1.2rem; display:flex; align-items:center; gap:8px;"><span class="material-symbols-outlined">pending_actions</span> Pre-albaranes pendientes de completar</h2>';
+                html += '<p style="margin:4px 0 0; color:#888; font-size:0.78rem;">Albaranes creados por el repartidor en recogidas sin albarán. El cliente tiene 24h para completarlos o impugnar.</p></div>';
+                html += '<button onclick="window._renderPrealbaranes()" style="background:#1e3a5f; border:1px solid #2d5a8e; color:#5dade2; padding:6px 14px; border-radius:4px; cursor:pointer; font-size:0.78rem; font-weight:700;"><span class="material-symbols-outlined" style="font-size:0.9rem; vertical-align:middle;">refresh</span> Refrescar</button>';
+                html += '</div>';
+
+                // Stats cards
+                html += '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px;">';
+                const filters = [
+                    { key: 'all',     label: 'Todos',     count: stats.total,   color: '#5DADE2', bg: 'rgba(93,173,226,0.1)' },
+                    { key: 'overdue', label: '⚠ Vencidos', count: stats.overdue, color: '#9C27B0', bg: 'rgba(156,39,176,0.15)' },
+                    { key: 'urgent',  label: '🔥 <1h',     count: stats.urgent,  color: '#FF3B30', bg: 'rgba(255,59,48,0.15)' },
+                    { key: 'today',   label: '📅 Hoy',     count: -1,            color: '#FF9800', bg: 'rgba(255,152,0,0.1)' }
+                ];
+                filters.forEach(f => {
+                    const isActive = window.prealbaranesFilter === f.key;
+                    const countLabel = f.count >= 0 ? ('<span style="font-size:1.4rem; font-weight:900;">' + f.count + '</span>') : '';
+                    html += '<div onclick="window.prealbaranesFilter=\'' + f.key + '\'; window._renderPrealbaranes();" style="flex:1; min-width:140px; cursor:pointer; padding:10px 14px; background:' + f.bg + '; border:' + (isActive ? '2px solid ' + f.color : '1px solid ' + f.color + '40') + '; border-radius:8px; text-align:center; transition:all 0.15s;">';
+                    html += countLabel;
+                    html += '<div style="font-size:0.72rem; color:' + f.color + '; font-weight:700; text-transform:uppercase; letter-spacing:1px; margin-top:2px;">' + f.label + '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+
+                if (!items.length) {
+                    html += '<div style="text-align:center; padding:60px 20px; color:#666; background:rgba(255,255,255,0.02); border-radius:10px;">';
+                    html += '<span class="material-symbols-outlined" style="font-size:3.5rem; opacity:0.3; display:block; margin-bottom:8px;">check_circle</span>';
+                    html += 'No hay pre-albaranes ' + (prealbaranesFilter === 'all' ? 'pendientes' : 'que coincidan con el filtro') + '.</div>';
+                    html += '</div>';
+                    container.innerHTML = html;
+                    return;
+                }
+
+                // Cards
+                html += '<div style="display:grid; gap:10px;">';
+                items.forEach(t => {
+                    const cd = _fmtCountdown(t.impugnationDeadline);
+                    const photoThumb = t.pickupPhoto
+                        ? '<img src="' + escapeHtml(t.pickupPhoto) + '" onclick="window.open(\'' + escapeHtml(t.pickupPhoto) + '\', \'_blank\')" style="width:60px; height:60px; object-fit:cover; border-radius:6px; cursor:pointer; border:1px solid #444;">'
+                        : '<div style="width:60px; height:60px; background:#222; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#555; font-size:1.5rem;">📷</div>';
+
+                    const createdAt = t.createdAt && typeof t.createdAt.toDate === 'function' ? t.createdAt.toDate() : null;
+                    const createdStr = createdAt ? (createdAt.toLocaleDateString('es-ES') + ' ' + createdAt.toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})) : '—';
+                    const porteLabel = t.paymentType || (t.shippingType === 'Debidos' ? 'DEBIDO' : 'PAGADO');
+                    const destShort = t.receiver ? ' → ' + escapeHtml(t.receiver) : ' → <em style="color:#777;">sin destinatario</em>';
+
+                    html += '<div style="background:linear-gradient(135deg, rgba(229,57,53,0.05), rgba(229,57,53,0.02)); border:1px solid rgba(229,57,53,0.3); border-left:4px solid ' + cd.color + '; border-radius:8px; padding:14px;">';
+                    html += '<div style="display:flex; gap:14px; align-items:flex-start;">';
+                    html += photoThumb;
+                    html += '<div style="flex:1; min-width:0;">';
+                    html += '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; gap:10px;">';
+                    html += '<div style="flex:1; min-width:0;"><span style="color:#FFD700; font-weight:900; font-size:0.95rem;">' + escapeHtml(t.id || t.docId) + '</span>';
+                    html += ' <span style="color:#aaa; font-size:0.72rem; margin-left:8px;">' + createdStr + '</span></div>';
+                    html += '<div style="background:' + cd.color + '; color:' + (cd.state === 'overdue' || cd.state === 'urgent' ? '#fff' : '#000') + '; padding:3px 10px; border-radius:12px; font-weight:900; font-size:0.78rem; white-space:nowrap;">' + cd.text + '</div>';
+                    html += '</div>';
+                    html += '<div style="font-size:0.85rem; color:#ddd; margin-bottom:3px;"><strong>' + escapeHtml(t.sender || t.clientName || '—') + '</strong>' + destShort + '</div>';
+                    html += '<div style="font-size:0.72rem; color:#888; margin-bottom:8px;">📦 ' + (t.pickupBultos || 0) + ' bulto(s) · Porte ' + porteLabel + ' · Repartidor: ' + escapeHtml(t.pickupBy || '—') + (t.pickupRoute ? ' · Ruta: ' + escapeHtml(t.pickupRoute) : '') + (t.pickupNote ? '<br>📝 ' + escapeHtml(t.pickupNote) : '') + '</div>';
+                    html += '<div style="display:flex; gap:6px; flex-wrap:wrap;">';
+                    html += '<button onclick="prealbaranValidate(\'' + t.docId + '\')" style="background:#4CAF50; border:0; color:#fff; padding:5px 12px; border-radius:4px; font-size:0.72rem; font-weight:700; cursor:pointer;">✓ Validar tal cual</button>';
+                    html += '<button onclick="prealbaranOpenEditor(\'' + t.docId + '\')" style="background:#2196F3; border:0; color:#fff; padding:5px 12px; border-radius:4px; font-size:0.72rem; font-weight:700; cursor:pointer;">✏️ Completar datos</button>';
+                    html += '<button onclick="prealbaranCancel(\'' + t.docId + '\')" style="background:#9C27B0; border:0; color:#fff; padding:5px 12px; border-radius:4px; font-size:0.72rem; font-weight:700; cursor:pointer;">🚫 Anular</button>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                html += '</div>';
+                container.innerHTML = html;
+            }
+
+            window.prealbaranValidate = async function(docId) {
+                if (!confirm('VALIDAR este pre-albarán tal cual\n\nQuedará marcado como Pendiente (de entrega) con los datos actuales del repartidor.\n\n¿Continuar?')) return;
+                try {
+                    await db.collection('tickets').doc(docId).update({
+                        status: 'Pendiente',
+                        pendingClientCompletion: false,
+                        validatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        validatedBy: 'admin'
+                    });
+                    alert('✓ Pre-albarán validado.');
+                } catch(e) { alert('Error: ' + e.message); }
+            };
+
+            window.prealbaranOpenEditor = async function(docId) {
+                // Abre el editor del ticket en otra tab para que admin complete datos
+                const snap = await db.collection('tickets').doc(docId).get();
+                if (!snap.exists) { alert('No se encontró el pre-albarán'); return; }
+                // Usar el flujo de edición existente del admin
+                if (typeof window.openTicketEditorAdmin === 'function') {
+                    window.openTicketEditorAdmin(docId);
+                } else {
+                    alert('Para completar datos: abre el albarán desde "Albaranes Central" o desde la app cliente.');
+                }
+            };
+
+            window.prealbaranCancel = async function(docId) {
+                const reason = prompt('Motivo de anulación (queda registrado):', '');
+                if (reason === null) return;
+                if (!confirm('ANULAR este pre-albarán\n\nEl ticket pasará a la 🗑️ Papelera (restaurable).\n\n¿Continuar?')) return;
+                try {
+                    const snap = await db.collection('tickets').doc(docId).get();
+                    if (!snap.exists) return;
+                    const data = snap.data();
+                    await db.collection('deleted_tickets').doc(docId).set(Object.assign({}, data, {
+                        _deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        _deletedBy: 'admin',
+                        _deleteReason: reason || 'Anulación de pre-albarán',
+                        _deleteSource: 'prealbaran_cancel',
+                        _originalDocId: docId
+                    }));
+                    await db.collection('tickets').doc(docId).delete();
+                    alert('🗑️ Pre-albarán enviado a papelera.');
+                } catch(e) { alert('Error: ' + e.message); }
+            };
+
             async function loadPendingDeletions() {
                 const tbody = document.getElementById('pending-deletions-body');
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px;">Buscando solicitudes...</td></tr>';
@@ -19595,7 +19836,7 @@ window.importTarifas50 = async () => {
 <script src="monthly_billing_flow.js?v=20260514_flat"></script>
 <script src="comunicaciones.js?v=20260404"></script>
 <script src="nif_enrichment.js?v=20260404"></script>
-<script src="erp_tabs.js?v=20260514_autoload"></script>
+<script src="erp_tabs.js?v=20260516_prealb"></script>
 <script src="anti_extravio.js?v=20260504"></script>
 <script src="public_tickets_sync.js?v=20260504"></script>
 <script src="analytics.js?v=20260504"></script>

@@ -20,7 +20,7 @@
         'adv-providers-workspace', 'adv-manual-tickets-workspace', 'adv-scanner-workspace',
         'erp-tab-inicio',
         'erp-tab-debidos', 'erp-tab-rutas', 'erp-tab-phones', 'erp-tab-config',
-        'erp-tab-maintenance', 'erp-tab-pod', 'erp-tab-pending-deletes', 'erp-tab-driver-incidents', 'erp-tab-users',
+        'erp-tab-maintenance', 'erp-tab-pod', 'erp-tab-pending-deletes', 'erp-tab-driver-incidents', 'erp-tab-prealbaranes', 'erp-tab-users',
         'erp-tab-ticket-search', 'erp-tab-ficha-cliente', 'erp-tab-albaranes-central', 'erp-tab-mailbox',
         'erp-tab-facturas-central', 'erp-tab-route-details', 'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment',
         'erp-tab-trash',
@@ -55,6 +55,7 @@
         'pod':             { wsId: 'erp-tab-pod',                title: 'Justificantes POD', icon: 'task',               closeable: true },
         'pending-deletes': { wsId: 'erp-tab-pending-deletes',    title: 'Anulaciones',       icon: 'notification_important', closeable: true },
         'driver-incidents': { wsId: 'erp-tab-driver-incidents',  title: 'Incidencias Reparto', icon: 'report_problem',     closeable: true },
+        'prealbaranes':    { wsId: 'erp-tab-prealbaranes',       title: 'Pre-albaranes 24h',  icon: 'pending_actions',    closeable: true },
         'users':           { wsId: 'erp-tab-users',              title: 'Gestión Clientes',  icon: 'group',              closeable: true },
         'ticket-search':   { wsId: 'erp-tab-ticket-search',      title: 'Buscar Albaranes',  icon: 'search',             closeable: true },
         'ficha-cliente':       { wsId: 'erp-tab-ficha-cliente',      title: 'Ficha Cliente',       icon: 'person',             closeable: true },
@@ -338,6 +339,9 @@
                 break;
             case 'driver-incidents':
                 if (typeof window.loadDriverIncidents === 'function') window.loadDriverIncidents();
+                break;
+            case 'prealbaranes':
+                if (typeof window.loadPrealbaranesView === 'function') window.loadPrealbaranesView();
                 break;
             case 'contabilidad':
                 if (typeof window.toggleContabilidad === 'function') window.toggleContabilidad();
