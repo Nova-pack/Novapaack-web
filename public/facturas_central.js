@@ -493,6 +493,7 @@
                     <button type="button" onclick="window._facPrintInvoice('${inv.docId}')" style="background:#333; border:1px solid #555; color:#ccc; padding:2px 6px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Imprimir">🖨</button>
                     ${!inv.paid && !isAb ? `<button type="button" onclick="window._facMarkPaid('${inv.docId}')" style="background:#1b5e20; border:1px solid #4CAF50; color:#4CAF50; padding:2px 6px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Marcar Cobrada">💳</button>` : ''}
                     ${!isAb ? `<button type="button" onclick="window._facOpenAbonoModal('${inv.docId}')" style="background:#4a148c; border:1px solid #9C27B0; color:#CE93D8; padding:2px 6px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Generar Abono">↩</button>` : ''}
+                    ${!isAb && !inv.paid && !inv.isIncobrableMarcadaPor ? `<button type="button" onclick="window.contaMarkAsIncobrable('${inv.docId}')" style="background:#3e1a1a; border:1px solid #F44336; color:#FF6E6E; padding:2px 6px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px;" title="Marcar incobrable (art. 80.4 LIVA — genera rectificativa)">⚠</button>` : ''}
                 </td>
             </tr>`;
         });

@@ -558,6 +558,7 @@
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             const invoiceDate = new Date();
             const failures = [];  // clientes saltados (sin NIF, etc.) — Sprint 2 §2.3
+            let _quarterMismatches = 0;  // facturas con devengo y emisión en trimestres distintos — Sprint 3 §5.4
 
             for (let i = 0; i < clientIds.length; i++) {
                 const cid = clientIds[i];
@@ -597,6 +598,13 @@
 
                 const irpfRate = parseFloat(client.irpf) || 0;
 
+                // AVISO TRIMESTRE (Sprint 3 §5.4): si la factura va a salir en un
+                // trimestre distinto del trimestre del devengo, avisamos UNA VEZ
+                // por sesión para que admin sepa que el IVA puede ir al trimestre
+                // equivocado. (El cálculo correcto del IVA usa fechaDevengo en el
+                // 303 — esto es un aviso preventivo.)
+                // (la comprobación se hace UNA sola vez por sesión de facturación)
+
                 // VALIDACIÓN NIF (Sprint 2 — hallazgo §2.3)
                 // Factura sin NIF cliente es FORMALMENTE INVÁLIDA (RD 1619/2012 art. 6.1.d).
                 // No deducible para el cliente + sanción para emisor si AEAT lo detecta.
@@ -628,6 +636,11 @@
                     });
                     if (maxTs > 0) fechaDevengo = new Date(maxTs);
                 } catch(_) { /* keep invoiceDate */ }
+                // Detectar cambio de trimestre devengo↔expedición (Sprint 3 §5.4)
+                if (Math.floor(fechaDevengo.getMonth()/3) !== Math.floor(invoiceDate.getMonth()/3) ||
+                    fechaDevengo.getFullYear() !== invoiceDate.getFullYear()) {
+                    _quarterMismatches++;
+                }
 
                 const invoiceData = {
                     number: nextInvNumber,
@@ -677,6 +690,10 @@
             if (failures.length > 0) {
                 const txt = failures.map(f => `  • ${f.name} → ${f.reason}`).join('\n');
                 alert('⚠️ ' + failures.length + ' cliente(s) NO se facturaron:\n\n' + txt + '\n\nCompleta sus datos fiscales y vuelve a ejecutar la facturación.');
+            }
+            // Aviso de cambio de trimestre devengo↔expedición (Sprint 3 §5.4)
+            if (_quarterMismatches > 0) {
+                alert('ℹ️ ' + _quarterMismatches + ' factura(s) tienen FECHA DE DEVENGO en un trimestre distinto a la fecha de expedición.\n\nEsto es habitual si facturas en los primeros días del mes los albaranes del mes anterior. El sistema usará fechaDevengo para los modelos AEAT (303/390), no fecha de expedición.\n\nSi quieres que estas facturas se imputen al trimestre de expedición, edita su fechaDevengo a mano.');
             }
 
             // Done — go to SEPA step
