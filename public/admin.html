@@ -19050,7 +19050,14 @@ window.importTarifas50 = async () => {
             let h = '';
             if (isGlobal) {
                 const gIdx = window._globalClientsForImport.length;
-                window._globalClientsForImport.push({name:c.name||'',nif:c.nif||'',phone:c.phone||'',city:c.city||'',street:c.street||'',cp:c.cp||''});
+                // Pasamos c.id ('CONTACT_xxx' o 'GLOBAL_xxx') para poder enlazar
+                // de vuelta a /contacts tras importar (marcar novapackUid).
+                window._globalClientsForImport.push({
+                    sourceId: c.id || '',
+                    name: c.name || '', nif: c.nif || '', phone: c.phone || '',
+                    city: c.city || '', street: c.street || '', cp: c.cp || '',
+                    idNumGesco: c.idNum || ''
+                });
                 h += '<button onclick="advImportGlobalClient(' + gIdx + ')" style="background:#FF9800; border:none; color:#fff; padding:3px 10px; font-size:0.7rem; cursor:pointer; border-radius:3px; margin:1px; font-weight:bold;" title="Importar a mi agenda">📥 Importar</button>';
                 return h;
             }
@@ -19341,7 +19348,7 @@ window.importTarifas50 = async () => {
                 clientData = input;
             }
 
-            const confirmMsg = '¿Importar "' + (clientData.name || 'Sin Nombre') + '" a tu agenda de clientes local?\n\nSe le asignará un número de cliente correlativo automáticamente.';
+            const confirmMsg = '¿Importar "' + (clientData.name || 'Sin Nombre') + '" a tu agenda de clientes local?\n\nSe le asignará un número de cliente correlativo automáticamente.\nEl contacto se marcará como cliente NOVAPACK y dejará de aparecer en la lista de globales.';
             if (!confirm(confirmMsg)) return;
 
             if (typeof showLoading === 'function') showLoading();
@@ -19376,6 +19383,7 @@ window.importTarifas50 = async () => {
                 cp: clientData.cp || '',
                 senderAddress: senderAddress,
                 active: true,
+                gescoIdNum: clientData.idNumGesco || '',  // referencia al idNum original Gesco
                 createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                 createdBy: window.adminIdentity || 'Admin',
                 importedFrom: 'global_directory'
@@ -19386,11 +19394,41 @@ window.importTarifas50 = async () => {
             // 4. Update local cache
             if (window.userMap) window.userMap[docRef.id] = userData;
 
+            // 5. ENLAZAR /contacts ← /users — para que el global desaparezca de la
+            //    lista de "Importables" tras un refresh.
+            //    sourceId puede venir como 'CONTACT_{docId}' (Fase 2 unificada) o
+            //    'GLOBAL_{nif|idNum|rand}' (fallback antiguo PhantomDirectory).
+            //    Solo el 'CONTACT_*' tiene un docId real en /contacts; el GLOBAL_* es
+            //    in-memory y se filtra a nivel de cache.
+            let contactLinked = false;
+            try {
+                const sid = clientData.sourceId || '';
+                if (sid.indexOf('CONTACT_') === 0) {
+                    const contactDocId = sid.substring('CONTACT_'.length);
+                    await db.collection('contacts').doc(contactDocId).set({
+                        novapackUid: docRef.id,
+                        source: 'novapack_imported',
+                        _linkedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        _linkedBy: (typeof currentUser !== 'undefined' && currentUser && currentUser.uid) ? currentUser.uid : 'admin',
+                        _linkReason: 'import_from_global_directory'
+                    }, { merge: true });
+                    contactLinked = true;
+                }
+            } catch(linkErr) {
+                console.warn('[advImportGlobalClient] no se pudo enlazar /contacts:', linkErr);
+            }
+
+            // Invalidar cache para que la próxima carga vea el novapackUid del contacto
+            window._advClientsCache = null;
+
             if (typeof hideLoading === 'function') hideLoading();
 
-            alert('✅ Cliente importado con éxito.\n\nNombre: ' + userData.name + '\nNº Cliente: ' + newIdNum);
+            const linkMsg = contactLinked
+                ? '\n\n✓ El contacto global ha quedado enlazado a este cliente y desaparecerá de la lista de globales tras recargar.'
+                : '\n\n⚠ El contacto no se enlazó automáticamente (origen legacy). Tras recargar puede seguir apareciendo en globales — bórralo a mano si lo necesitas.';
+            alert('✅ Cliente importado con éxito.\n\nNombre: ' + userData.name + '\nNº Cliente: ' + newIdNum + linkMsg);
 
-            // 5. Refresh client list
+            // 6. Refresh client list (recarga real desde Firestore para ver el cambio)
             if (typeof window.advLoadClients === 'function') window.advLoadClients();
 
         } catch(e) {
