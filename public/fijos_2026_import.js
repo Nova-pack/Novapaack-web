@@ -87,11 +87,16 @@
             const ex = Object.entries(entry.extras).map(([k, v]) => k + ': ' + (typeof v === 'number' ? _money(v) : v)).join(' · ');
             parts.push('Extras: ' + ex);
         }
-        if (entry.kind === 'normal') parts.push('Tarifa normal (no se modifica precio)');
+        if (entry.kind === 'normal') parts.push('Tarifa normal');
         if (entry.kind === 'normal_with_suffix') parts.push('Tarifa normal + sufijo albarán: ' + entry.albaranSuffix.join(', '));
         if (entry.kind === 'normal_plus_special') {
             const ex = Object.entries(entry.specials).map(([k, v]) => k + ': ' + _money(v)).join(' · ');
             parts.push('Tarifa normal + especiales: ' + ex);
+        }
+        if (entry.preferredInvoiceFormat === 'per_branch') {
+            parts.push('<span style="color:#5DADE2; font-weight:700;">⭐ Facturar SIEMPRE POR SUCURSAL (F2)</span>');
+        } else if (entry.preferredInvoiceFormat === 'consolidated') {
+            parts.push('<span style="color:#FF6600; font-weight:700;">⭐ Facturar SIEMPRE CONSOLIDADO (F1)</span>');
         }
         return parts.join(' · ') || '—';
     }
@@ -139,6 +144,10 @@
         // Estados manuales
         if (entry.status) {
             p.tariffStatus = entry.status;
+        }
+        // Formato preferido de factura (consolidated | per_branch)
+        if (entry.preferredInvoiceFormat) {
+            p.preferredInvoiceFormat = entry.preferredInvoiceFormat;
         }
         return p;
     }
@@ -204,7 +213,14 @@
 
     /** Aplica los cambios en Firestore */
     async function _applyAll() {
-        const matches = _matchCache.filter(r => r.match && r.entry.kind !== 'normal');
+        // Aplica si: tiene match + (no es kind=normal OR tiene preferredInvoiceFormat OR tiene albaranSuffix)
+        const matches = _matchCache.filter(r => {
+            if (!r.match) return false;
+            if (r.entry.kind !== 'normal') return true;
+            if (r.entry.preferredInvoiceFormat) return true;
+            if (r.entry.albaranSuffix) return true;
+            return false;
+        });
         if (matches.length === 0) {
             alert('No hay nada que aplicar (todas las entradas son "normal" o no tienen match).');
             return;

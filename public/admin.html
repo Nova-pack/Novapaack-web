@@ -18523,6 +18523,7 @@ window.importTarifas50 = async () => {
                 <p style="color:#aaa; font-size:0.8rem; margin-top:5px;">Buscar, editar y gestionar clientes sin salir de Facturación.</p>
             </div>
             <div style="display:flex; gap:8px;">
+                <button onclick="if(typeof window.openFijos2026Importer==='function') window.openFijos2026Importer(); else alert('Importador FIJOS-2026 no disponible (recarga la página con Ctrl+F5).');" style="background:linear-gradient(135deg,#FF9800,#FF6F00); border:none; color:#000; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px; font-weight:900;" title="Aplica las tarifas especiales del documento FIJOS-2026.docx">📋 FIJOS-2026</button>
                 <button onclick="if(typeof window.advOpenClientModal==='function') window.advOpenClientModal('new');" style="background:#FF9800; border:none; color:#fff; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px; font-weight:bold;">➕ Nuevo Cliente</button>
                 <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('inicio');" style="background:#333; border:1px solid #555; color:#ccc; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px;">◀ Volver</button>
             </div>
@@ -20584,7 +20585,7 @@ window.importTarifas50 = async () => {
 <script src="pricing_engine.js?v=20260514_provinces"></script>
 <script src="tariff_editor.js?v=20260514_sync"></script>
 <script src="contacts_migration.js?v=20260516_v1"></script>
-<script src="fijos_2026_import.js?v=20260519_v1"></script>
+<script src="fijos_2026_import.js?v=20260519_v2"></script>
 
 </body>
 </html>

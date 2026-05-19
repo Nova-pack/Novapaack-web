@@ -112,8 +112,8 @@
       "note": "PAQ 8,50 €"
     },
     {
-      "idNums": ["DAVASA"],
-      "name": "DAVASA (varios)",
+      "idNums": ["1664", "1665", "1666"],
+      "name": "DAVASA AUTOMOCION (3 sucursales — Málaga, Sevilla, Granada)",
       "kind": "per_package_prov_inter",
       "rates": {
         "paquete_interprovincial": 9.00,
@@ -121,7 +121,15 @@
         "bulto_interprovincial": 14.00,
         "bulto_provincial": 13.00
       },
-      "note": "PAQ 9,00 INT / 8,00 PROV · BULTOS 14,00 INT / 13,00 PROV"
+      "preferredInvoiceFormat": "per_branch",
+      "note": "PAQ 9,00 INT / 8,00 PROV · BULTOS 14,00 INT / 13,00 PROV · MISMO NIF B05550330 todas las sucursales · UNA factura POR SUCURSAL (Formato 2)"
+    },
+    {
+      "idNums": ["1726"],
+      "name": "TRIVIUM AGRONOMIA Y MAQUINARIA",
+      "kind": "normal",
+      "preferredInvoiceFormat": "per_branch",
+      "note": "Tarifa normal · MISMO NIF B44776052 todas las sucursales · UNA factura POR SUCURSAL (Formato 2)"
     },
     { "idNums": ["1642"], "name": "CRISAUTO", "kind": "normal", "note": "Tarifa normal" },
     {

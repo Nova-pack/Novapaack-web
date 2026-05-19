@@ -412,6 +412,8 @@
         const now = new Date();
         const defaultMonth = now.getMonth() + 1;
         const defaultYear = now.getFullYear();
+        const isPerBranchPreferred = parent.preferredInvoiceFormat === 'per_branch';
+        const isConsolidatedPreferred = parent.preferredInvoiceFormat === 'consolidated';
 
         const modal = document.createElement('div');
         modal.id = 'mb-format-select';
@@ -419,7 +421,12 @@
         modal.innerHTML = ''
             + '<div style="background:#1e1e1e; border:1px solid #444; border-radius:12px; padding:24px; max-width:640px; width:100%; color:#d4d4d4;">'
             + '<h3 style="margin:0 0 6px; color:#FF6600; font-size:1.05rem;">📊 Facturar mes — ' + _esc(parent.name || parentId) + '</h3>'
-            + '<p style="margin:0 0 18px; font-size:0.8rem; color:#888;">NIF compartido: ' + _esc(parent.nif || '—') + '. Elige periodo y formato.</p>'
+            + '<p style="margin:0 0 8px; font-size:0.8rem; color:#888;">NIF compartido: ' + _esc(parent.nif || '—') + '. Elige periodo y formato.</p>'
+            + (isPerBranchPreferred
+                ? '<div style="margin:0 0 14px; padding:8px 12px; background:rgba(93,173,226,0.12); border:1px solid #5DADE2; border-radius:6px; font-size:0.75rem; color:#5DADE2; font-weight:700;">⭐ Este cliente está configurado para facturar SIEMPRE POR SUCURSAL (Formato 2). El botón recomendado aparece resaltado.</div>'
+                : (isConsolidatedPreferred
+                    ? '<div style="margin:0 0 14px; padding:8px 12px; background:rgba(255,102,0,0.12); border:1px solid #FF6600; border-radius:6px; font-size:0.75rem; color:#FF6600; font-weight:700;">⭐ Este cliente está configurado para facturar SIEMPRE CONSOLIDADO (Formato 1).</div>'
+                    : ''))
 
             + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">'
             + '  <div><label style="font-size:0.7rem; color:#aaa;">Mes</label><select id="fs-month" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:5px;">'
@@ -430,18 +437,23 @@
             + '</div>'
 
             + '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">'
-            + '  <div onclick="document.getElementById(\'fs-f1\').click();" style="background:rgba(255,102,0,0.05); border:2px solid rgba(255,102,0,0.3); border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s;" onmouseover="this.style.borderColor=\'#FF6600\'" onmouseout="this.style.borderColor=\'rgba(255,102,0,0.3)\'">'
+            + '  <div onclick="document.getElementById(\'fs-f1\').click();" style="background:rgba(255,102,0,' + (isConsolidatedPreferred ? '0.18' : '0.05') + '); border:' + (isConsolidatedPreferred ? '3' : '2') + 'px solid ' + (isConsolidatedPreferred ? '#FF6600' : 'rgba(255,102,0,0.3)') + '; border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s; position:relative;" onmouseover="this.style.borderColor=\'#FF6600\'" onmouseout="this.style.borderColor=\'' + (isConsolidatedPreferred ? '#FF6600' : 'rgba(255,102,0,0.3)') + '\'">'
+            + (isConsolidatedPreferred ? '<div style="position:absolute; top:-10px; right:8px; background:#FF6600; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:900; letter-spacing:1px;">⭐ RECOMENDADO</div>' : '')
             + '    <div style="font-size:1.1rem; margin-bottom:6px;">📄</div>'
             + '    <div style="font-weight:700; color:#FF6600; font-size:0.92rem; margin-bottom:4px;">Formato 1 — Consolidada</div>'
             + '    <div style="font-size:0.72rem; color:#aaa; line-height:1.4;">Una sola factura. Tarifa plana del padre. Bloque informativo con % volumen por sucursal.</div>'
             + '    <button id="fs-f1" type="button" style="margin-top:10px; background:#FF6600; border:0; color:#fff; padding:6px 14px; border-radius:5px; font-weight:700; cursor:pointer; font-size:0.78rem; width:100%;">Vista previa</button>'
             + '  </div>'
-            + '  <div onclick="document.getElementById(\'fs-f2\').click();" style="background:rgba(93,173,226,0.05); border:2px solid rgba(93,173,226,0.3); border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s;" onmouseover="this.style.borderColor=\'#5DADE2\'" onmouseout="this.style.borderColor=\'rgba(93,173,226,0.3)\'">'
+            + '  <div onclick="document.getElementById(\'fs-f2\').click();" style="background:rgba(93,173,226,' + (isPerBranchPreferred ? '0.18' : '0.05') + '); border:' + (isPerBranchPreferred ? '3' : '2') + 'px solid ' + (isPerBranchPreferred ? '#5DADE2' : 'rgba(93,173,226,0.3)') + '; border-radius:10px; padding:16px; cursor:pointer; transition:all 0.2s; position:relative;" onmouseover="this.style.borderColor=\'#5DADE2\'" onmouseout="this.style.borderColor=\'' + (isPerBranchPreferred ? '#5DADE2' : 'rgba(93,173,226,0.3)') + '\'">'
+            + (isPerBranchPreferred ? '<div style="position:absolute; top:-10px; right:8px; background:#5DADE2; color:#000; padding:2px 8px; border-radius:10px; font-size:0.65rem; font-weight:900; letter-spacing:1px;">⭐ RECOMENDADO</div>' : '')
             + '    <div style="font-size:1.1rem; margin-bottom:6px;">📑</div>'
             + '    <div style="font-weight:700; color:#5DADE2; font-size:0.92rem; margin-bottom:4px;">Formato 2 — Por sucursal</div>'
             + '    <div style="font-size:0.72rem; color:#aaa; line-height:1.4;">Una factura por sede con actividad. Mismo NIF en todas. Importes según consumo real (no tarifa plana).</div>'
             + '    <button id="fs-f2" type="button" style="margin-top:10px; background:#5DADE2; border:0; color:#000; padding:6px 14px; border-radius:5px; font-weight:700; cursor:pointer; font-size:0.78rem; width:100%;">Vista previa</button>'
             + '  </div>'
+            + '</div>'
+            + '<div style="margin-top:14px; padding:8px 12px; background:rgba(255,255,255,0.03); border:1px dashed #444; border-radius:6px; font-size:0.72rem; color:#aaa;">'
+            + '  💡 Para fijar siempre uno de los dos formatos para este cliente, edita la ficha y marca <b>Formato preferido</b>.'
             + '</div>'
 
             + '<div style="margin-top:18px; text-align:right;">'
