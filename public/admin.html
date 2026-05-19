@@ -8519,7 +8519,7 @@ window.runPublicTicketsBackfill = async function() {
                     if (typeof populateInvoiceClientSelect === 'function') populateInvoiceClientSelect();
                     if (typeof loadUsers === 'function') loadUsers('current');
                     pendingUserUIUpdate = null;
-                }, 800); // 800ms debounce
+                }, 150); // 150ms debounce — antes 800ms (sentía 'tarda en reflejarse')
             }
 
             async function fetchAllUsersMap() {
@@ -8586,16 +8586,21 @@ window.runPublicTicketsBackfill = async function() {
                         usersPage--;
                     }
 
-                    // 2. Fetch ALL users once and paginate in memory to safely filter out clones without breaking page limits
-                    // Ensure local cache is populated
+                    // 2. Fetch ALL users — depende del listener onSnapshot (fetchAllUsersMap)
+                    //    para mantener el userMap fresco. Solo hace fetch one-shot inicial
+                    //    si el listener todavía no ha tenido tiempo de poblarlo.
+                    //    El primer 'first' hace fetch inmediato para evitar parpadeo,
+                    //    las re-cargas posteriores usan el cache ya vivo.
                     if (Object.keys(userMap).length < 2) {
                         const allUsersSnap = await db.collection('users').limit(5000).get();
-                        allUsersSnap.forEach(doc => { 
-                            const d = { ...doc.data(), id: doc.id }; // Enforce strict DB path ID
-                            userMap[d.id] = d; 
-                            if (d.authUid) userMap[d.authUid] = d; 
+                        allUsersSnap.forEach(doc => {
+                            const d = { ...doc.data(), id: doc.id };
+                            userMap[d.id] = d;
+                            if (d.authUid) userMap[d.authUid] = d;
                         });
                     }
+                    // Tras esta línea, el listener fetchAllUsersMap mantiene userMap vivo
+                    // sin necesidad de re-fetches one-shot.
 
                     // Extract all valid profiles by intelligently grouping duplicates
                     let groupedUsers = {};
@@ -12840,7 +12845,7 @@ window.runPublicTicketsBackfill = async function() {
                     };
                     await db.collection('config').doc('fiscal').set(data);
                     invCompanyData = data;
-                    alert('✅ Datos fiscales guardados.' + (creditorId ? '\n\nCreditor Identifier validado MOD-97 ✓' : ''));
+                    showToast('Datos fiscales guardados' + (creditorId ? ' · Creditor ID validado MOD-97' : ''), 'success');
                 };
             }
 
@@ -14989,7 +14994,7 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                 showLoading();
                 try {
                     await db.collection('users').doc(currentAdminTargetUid).collection('companies').doc(compId).set(data, { merge: true });
-                    alert("✅ Sede guardada correctamente.");
+                    showToast('Sede guardada correctamente', 'success');
                     document.getElementById('company-form-area').style.display = 'none';
                     loadCompaniesTable(currentAdminTargetUid);
                 } catch (e) {
@@ -15123,10 +15128,10 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                 try {
                     if (editId) {
                         await db.collection('users').doc(currentAdminTargetUid).collection('destinations').doc(editId).set(destData, { merge: true });
-                        alert("✅ Destinatario actualizado.");
+                        showToast('Destinatario actualizado', 'success');
                     } else {
                         await db.collection('users').doc(currentAdminTargetUid).collection('destinations').add(destData);
-                        alert("✅ Destinatario añadido a la agenda.");
+                        showToast('Destinatario añadido a la agenda', 'success');
                     }
                     resetAdminDestForm();
                     loadAdminDestinationsList(currentAdminTargetUid);
@@ -17891,11 +17896,11 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                     
                     if (id) {
                         await db.collection('billing_companies').doc(id).update(data);
-                        alert("✅ Filial modificada con éxito.");
+                        showToast('Filial modificada con éxito', 'success');
                     } else {
                         data.createdAt = firebase.firestore.FieldValue.serverTimestamp();
                         await db.collection('billing_companies').add(data);
-                        alert("✅ Filial creada con éxito.");
+                        showToast('Filial creada con éxito', 'success');
                     }
                     
                     document.getElementById('modal-billing-company').style.display='none';
@@ -18276,6 +18281,50 @@ window.hideLoading = function() {
     var el = document.getElementById('loading-overlay');
     if (el) el.style.display = 'none';
 };
+
+// ─── TOAST NO-BLOQUEANTE ─────────────────────────────────────────────────
+// Sustituye a alert() para mensajes informativos de éxito/error donde NO
+// quieres bloquear el repaint con un diálogo modal. La UI puede pintar el
+// cambio inmediatamente (cache invalidations, re-renders) sin esperar a
+// que el admin pulse OK.
+//   showToast(msg)                      → info azul, 3.5s
+//   showToast(msg, 'success')           → verde
+//   showToast(msg, 'error', 6000)       → rojo, 6s
+//   showToast(msg, 'warning')           → naranja
+// Múltiples toasts se apilan verticalmente top-right.
+(function() {
+    var _toastContainer = null;
+    function _ensureContainer() {
+        if (_toastContainer && document.body.contains(_toastContainer)) return _toastContainer;
+        _toastContainer = document.createElement('div');
+        _toastContainer.id = 'admin-toast-container';
+        _toastContainer.style.cssText = 'position:fixed; top:14px; right:14px; z-index:99999; display:flex; flex-direction:column; gap:8px; pointer-events:none; max-width:380px;';
+        document.body.appendChild(_toastContainer);
+        return _toastContainer;
+    }
+    window.showToast = function(message, kind, durationMs) {
+        kind = kind || 'info';
+        durationMs = durationMs || (kind === 'error' ? 6000 : 3500);
+        var colors = {
+            info:    { bg: '#1e3a5f', border: '#2196F3', text: '#5DADE2', icon: 'ℹ' },
+            success: { bg: '#1B5E20', border: '#4CAF50', text: '#A5D6A7', icon: '✓' },
+            warning: { bg: '#3E2723', border: '#FF9800', text: '#FFCC80', icon: '⚠' },
+            error:   { bg: '#3E0F0F', border: '#E53935', text: '#FF8A80', icon: '✗' }
+        };
+        var c = colors[kind] || colors.info;
+        var el = document.createElement('div');
+        el.style.cssText = 'pointer-events:auto; background:' + c.bg + '; border-left:4px solid ' + c.border + '; color:' + c.text + '; padding:10px 14px; border-radius:6px; font-family:Inter,Arial,sans-serif; font-size:0.85rem; box-shadow:0 4px 16px rgba(0,0,0,0.4); display:flex; align-items:flex-start; gap:10px; transform:translateX(120%); transition:transform 0.2s ease, opacity 0.3s; opacity:0;';
+        el.innerHTML = '<span style="font-size:1.1rem; font-weight:900; line-height:1.2;">' + c.icon + '</span><div style="flex:1; line-height:1.35; white-space:pre-line;">' + String(message || '').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div><span onclick="this.parentElement.remove()" style="cursor:pointer; opacity:0.6; font-size:1.1rem; line-height:1;">×</span>';
+        _ensureContainer().appendChild(el);
+        requestAnimationFrame(function() { el.style.transform = 'translateX(0)'; el.style.opacity = '1'; });
+        setTimeout(function() {
+            el.style.transform = 'translateX(120%)';
+            el.style.opacity = '0';
+            setTimeout(function() { try { el.remove(); } catch(_) {} }, 300);
+        }, durationMs);
+        return el;
+    };
+})();
 window.openTicketReassignModal = async (docId) => {
     document.getElementById('reassign-doc-id').value = docId;
     const doc = await db.collection('tickets').doc(docId).get();
@@ -18478,7 +18527,7 @@ window.saveFullTicketEdit = async () => {
 
         await db.collection('tickets').doc(docId).update(updates);
         document.getElementById('modal-ticket-full-edit').style.display = 'none';
-        alert('✅ Albarán actualizado correctamente.');
+        showToast('Albarán actualizado', 'success');
 
         // Refresh search results if available
         if (typeof window.advPerformTicketSearch === 'function') {
@@ -19886,11 +19935,11 @@ window.importTarifas50 = async () => {
         try {
             if (editId) {
                 await db.collection('providers').doc(editId).update(data);
-                alert('✅ Proveedor actualizado.');
+                showToast('Proveedor actualizado', 'success');
             } else {
                 data.createdAt = firebase.firestore.FieldValue.serverTimestamp();
                 await db.collection('providers').add(data);
-                alert('✅ Proveedor creado.');
+                showToast('Proveedor creado', 'success');
             }
             window.advResetProvForm();
             window.advLoadProviders();
@@ -19919,7 +19968,7 @@ window.importTarifas50 = async () => {
         if (!confirm('¿Eliminar este proveedor?')) return;
         try {
             await db.collection('providers').doc(provId).delete();
-            alert('✅ Proveedor eliminado.');
+            showToast('Proveedor eliminado', 'success');
             window.advLoadProviders();
         } catch(e) { alert('Error: ' + e.message); }
     };
@@ -20251,7 +20300,7 @@ window.importTarifas50 = async () => {
                 document.getElementById('adv-client-modal').style.display = 'none';
                 if (typeof window.advLoadClients === 'function') window.advLoadClients();
                 if (typeof window.loadUsers === 'function') window.loadUsers();
-                alert('✅ Cliente actualizado correctamente.\n\nEmail guardado: ' + userData.email);
+                showToast('Cliente actualizado · ' + userData.email, 'success');
                 return;
             }
 
