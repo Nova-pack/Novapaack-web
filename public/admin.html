@@ -4912,8 +4912,9 @@ window.runPublicTicketsBackfill = async function() {
                     <div class="form-group"><label>ID Acreedor SEPA (Sufijo legado)</label><input type="text" id="fiscal-sepa-id" placeholder="Ej: 000"></div>
                     <div class="form-group" style="grid-column:1/-1;">
                         <label style="color:#FF9800; font-weight:700;">🏦 Identificador de Acreedor SEPA (Creditor Identifier)</label>
-                        <input type="text" id="fiscal-creditor-id" placeholder="Ej: ES12000B12345678" style="text-transform:uppercase; font-family:monospace; letter-spacing:1px;">
-                        <small style="display:block; color:#888; font-size:0.7rem; margin-top:4px;">Lo asigna tu banco. Estructura: ES + 2 dígitos check + 3 dígitos suffix + NIF (9 chars). Obligatorio para generar remesas SEPA.</small>
+                        <input type="text" id="fiscal-creditor-id" placeholder="Ej: ES12000B12345678" maxlength="16" style="text-transform:uppercase; font-family:monospace; letter-spacing:1px;">
+                        <div id="fiscal-creditor-id-status" style="font-size:0.78rem; margin-top:6px; min-height:18px; font-family:monospace;"></div>
+                        <small style="display:block; color:#888; font-size:0.7rem; margin-top:4px;">Lo asigna tu banco. Estructura: <b>ES</b> + <b>2 dígitos check</b> + <b>3 dígitos suffix</b> (normalmente 000) + <b>NIF</b> (9 chars). Obligatorio para generar remesas SEPA. <a href="#" onclick="window._fiscalCreditorHelp(event)" style="color:#FF9800;">¿Dónde lo encuentro?</a></small>
                     </div>
                     <div class="form-group"><label>Tipo de IVA por Defecto (%)</label><input type="number" id="fiscal-iva" value="21"></div>
                     <div class="form-group"><label>Retención IRPF (%) - (Transportistas)</label><input type="number" id="fiscal-irpf" value="0"></div>
@@ -12365,13 +12366,138 @@ window.runPublicTicketsBackfill = async function() {
                     if (_cidEl) _cidEl.value = invCompanyData.creditorId || '';
                     document.getElementById('fiscal-iva').value = invCompanyData.iva || 21;
                     document.getElementById('fiscal-irpf').value = invCompanyData.irpf || 0;
+                    // Trigger validation render after load
+                    if (typeof window._validateCreditorId === 'function') window._validateCreditorId();
                 }
             }
+
+            // ── VALIDACIÓN LIVE — Identificador de Acreedor SEPA (algoritmo MOD-97) ──
+            // Formato oficial: <ES><CC><SSS><NIF>  donde
+            //   ES   = código país (2 letras)
+            //   CC   = 2 dígitos check
+            //   SSS  = 3 caracteres alfanuméricos (suffix, normalmente 000)
+            //   NIF  = identificador nacional (hasta 9 chars)
+            //
+            // Validación MOD-97: tomamos <NIF> + <ES> + <CC> (EXCLUYENDO el suffix),
+            // convertimos letras a números (A=10, B=11, ..., Z=35) y comprobamos
+            // que el número entero resultante mod 97 === 1
+            window._validateCreditorId = function() {
+                const input = document.getElementById('fiscal-creditor-id');
+                const status = document.getElementById('fiscal-creditor-id-status');
+                if (!input || !status) return;
+                const raw = (input.value || '').toUpperCase().replace(/\s+/g, '');
+                input.value = raw;
+
+                if (!raw) {
+                    status.innerHTML = '<span style="color:#777;">— vacío —</span>';
+                    input.style.borderColor = '';
+                    return;
+                }
+
+                // Estructura básica
+                const m = raw.match(/^([A-Z]{2})(\d{2})([A-Z0-9]{3})([A-Z0-9]+)$/);
+                if (!m) {
+                    status.innerHTML = '<span style="background:#E53935; color:#fff; padding:2px 8px; border-radius:10px; font-weight:700;">✗ Formato inválido</span> <span style="color:#FF8A80;">Debe ser PAÍS(2) + CHECK(2) + SUFFIX(3) + NIF</span>';
+                    input.style.borderColor = '#E53935';
+                    return;
+                }
+                const [, country, check, suffix, nationalId] = m;
+                if (country !== 'ES') {
+                    status.innerHTML = '<span style="background:#FF9800; color:#000; padding:2px 8px; border-radius:10px; font-weight:700;">⚠ País ≠ ES</span> <span style="color:#FFCC80;">Para España debe empezar por ES</span>';
+                    input.style.borderColor = '#FF9800';
+                    return;
+                }
+
+                // MOD-97 con NIF + país + check (excluyendo suffix)
+                const toCheck = nationalId + country + check;
+                let numStr = '';
+                for (const ch of toCheck) {
+                    if (/[0-9]/.test(ch)) numStr += ch;
+                    else numStr += String(ch.charCodeAt(0) - 'A'.charCodeAt(0) + 10);
+                }
+                // BigInt mod 97 (string puede pasar de 2^53)
+                let bigMod = 0n;
+                try { bigMod = BigInt(numStr) % 97n; } catch (e) { bigMod = -1n; }
+
+                // Compara NIF con el del CIF guardado (si lo hay)
+                const cifInput = document.getElementById('fiscal-cif');
+                const cif = cifInput ? cifInput.value.trim().toUpperCase() : '';
+
+                if (bigMod === 1n) {
+                    let extra = '';
+                    if (cif && cif !== nationalId) {
+                        extra = ' <span style="color:#FF9800;">⚠ El NIF (' + escapeHtml(nationalId) + ') no coincide con el CIF de la empresa (' + escapeHtml(cif) + ')</span>';
+                    }
+                    status.innerHTML = '<span style="background:#1B5E20; color:#A5D6A7; padding:2px 8px; border-radius:10px; font-weight:700;">✓ MOD-97 OK</span> <span style="color:#A5D6A7;">país=ES · check=' + check + ' · suffix=' + suffix + ' · NIF=' + escapeHtml(nationalId) + '</span>' + extra;
+                    input.style.borderColor = '#4CAF50';
+                } else {
+                    status.innerHTML = '<span style="background:#E53935; color:#fff; padding:2px 8px; border-radius:10px; font-weight:700;">✗ Check digits incorrectos</span> <span style="color:#FF8A80;">Revisa los 2 dígitos después de ES (' + check + ')</span>';
+                    input.style.borderColor = '#E53935';
+                }
+            };
+
+            // Engancha listener al input
+            (function() {
+                const _cid = document.getElementById('fiscal-creditor-id');
+                if (_cid) {
+                    _cid.addEventListener('input', window._validateCreditorId);
+                    _cid.addEventListener('blur',  window._validateCreditorId);
+                }
+            })();
+
+            // ── Ayuda: dónde encontrar el Creditor Identifier ──
+            window._fiscalCreditorHelp = function(ev) {
+                if (ev && ev.preventDefault) ev.preventDefault();
+                alert(
+                    '🏦 ¿De dónde sale el Identificador de Acreedor SEPA?\n\n' +
+                    'Lo asigna el BANCO (no se genera, no se autocalcula).\n\n' +
+                    'CÓMO OBTENERLO:\n' +
+                    '  1. Entra en tu banca electrónica (BBVA, Santander, CaixaBank, etc.)\n' +
+                    '  2. Sección "Recibos / Cobros / SEPA / Adeudos directos"\n' +
+                    '  3. Allí aparece como "ID de Acreedor", "Creditor Identifier" o "Suffix SEPA"\n' +
+                    '  4. Si no lo encuentras → LLAMA a tu gestor del banco y pídelo.\n' +
+                    '     Si NOVAPACK nunca ha emitido remesas SEPA, hay que pedir alta\n' +
+                    '     del servicio (suele ser gratis o 1-2€/mes según tarifa).\n\n' +
+                    'ESTRUCTURA típica española:\n' +
+                    '  ES  +  XX  +  YYY  +  ZZZZZZZZZ\n' +
+                    '  ▲      ▲      ▲       ▲\n' +
+                    '  país   check  suffix  NIF\n' +
+                    '  (2)    (2)    (3)     (9)\n\n' +
+                    'Ejemplo: ES12000B12345678\n\n' +
+                    'Tras pegarlo, te diré aquí mismo si está bien (MOD-97 OK ✓) o si hay un dígito mal.'
+                );
+            };
 
             const btnSaveFiscal = document.getElementById('btn-save-fiscal');
             if (btnSaveFiscal) {
                 btnSaveFiscal.onclick = async () => {
                     const _cidEl = document.getElementById('fiscal-creditor-id');
+                    const creditorId = _cidEl ? _cidEl.value.trim().toUpperCase() : '';
+
+                    // Si hay valor, validar MOD-97. Si está vacío, permitir (campo opcional
+                    // hasta que se quiera generar la primera remesa SEPA).
+                    if (creditorId) {
+                        const m = creditorId.match(/^([A-Z]{2})(\d{2})([A-Z0-9]{3})([A-Z0-9]+)$/);
+                        if (!m) {
+                            alert('❌ El Identificador de Acreedor SEPA tiene un formato inválido.\n\nDebe ser ES + 2 dígitos check + 3 chars suffix + NIF.\nEjemplo: ES12000B12345678\n\nDeja el campo vacío si todavía no tienes uno asignado por el banco.');
+                            _cidEl.focus();
+                            return;
+                        }
+                        const [, country, check, , nationalId] = m;
+                        const toCheck = nationalId + country + check;
+                        let numStr = '';
+                        for (const ch of toCheck) {
+                            if (/[0-9]/.test(ch)) numStr += ch;
+                            else numStr += String(ch.charCodeAt(0) - 'A'.charCodeAt(0) + 10);
+                        }
+                        let bigMod = -1n;
+                        try { bigMod = BigInt(numStr) % 97n; } catch(_) {}
+                        if (bigMod !== 1n) {
+                            const cont = confirm('⚠️ El check digit del Creditor Identifier NO valida (MOD-97 ≠ 1).\n\nEsto significa que tiene una errata. Si lo guardas, la próxima remesa SEPA fallará al validar contra el banco.\n\n¿Guardar de todas formas?\n(Cancela para revisarlo)');
+                            if (!cont) { _cidEl.focus(); return; }
+                        }
+                    }
+
                     const data = {
                         name: document.getElementById('fiscal-name').value.trim(),
                         cif: document.getElementById('fiscal-cif').value.trim(),
@@ -12379,14 +12505,14 @@ window.runPublicTicketsBackfill = async function() {
                         email: document.getElementById('fiscal-email').value.trim(),
                         bank: document.getElementById('fiscal-bank').value.trim(),
                         sepaId: document.getElementById('fiscal-sepa-id').value.trim(),
-                        creditorId: _cidEl ? _cidEl.value.trim().toUpperCase() : '',
+                        creditorId: creditorId,
                         iva: parseFloat(document.getElementById('fiscal-iva').value) || 0,
                         irpf: parseFloat(document.getElementById('fiscal-irpf').value) || 0,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     };
                     await db.collection('config').doc('fiscal').set(data);
                     invCompanyData = data;
-                    alert('✅ Datos fiscales guardados.');
+                    alert('✅ Datos fiscales guardados.' + (creditorId ? '\n\nCreditor Identifier validado MOD-97 ✓' : ''));
                 };
             }
 
