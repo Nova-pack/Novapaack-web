@@ -3861,45 +3861,163 @@ window.runPublicTicketsBackfill = async function() {
     };
 
     // --- RESTORE USER (cliente eliminado) ---
-    window.restoreUser = async function(docId) {
-        if (!confirm('¿Restaurar este cliente?\n\nVuelve la ficha del cliente y sus sedes/destinations a la colección activa.\n\nLos albaranes y facturas asociados están en sus respectivas pestañas — restáuralos por separado si los necesitas.')) return;
-        try {
-            var snap = await db.collection('deleted_users').doc(docId).get();
-            if (!snap.exists) { alert('No se encontró el cliente en la papelera.'); return; }
-            var data = snap.data();
-            var originalDocId = data._originalDocId || docId;
-            // Limpieza de metadata interna antes de re-escribir
-            delete data._deletedAt; delete data._deletedBy; delete data._deleteReason;
-            delete data._deleteSource; delete data._originalDocId; delete data._cascadeCounts;
+    // ─── Busca descendientes de un cliente borrado dentro de /deleted_users ───
+    // BFS recursivo. Match por parentClientId == docId del padre o == idNum.
+    window._findDeletedDescendants = async function(parentOriginalDocId, parentIdNum) {
+        const visited = new Set();
+        const queue = [{ docId: parentOriginalDocId, idNum: parentIdNum || '' }];
+        const result = []; // [{ deletedDocId, originalDocId, data }]
+        const seenDeleted = new Set();
 
-            // 1) Restaurar el doc del cliente
-            await db.collection('users').doc(originalDocId).set(data);
+        while (queue.length) {
+            const cur = queue.shift();
+            const key = cur.docId + '|' + cur.idNum;
+            if (visited.has(key)) continue;
+            visited.add(key);
 
-            // 2) Restaurar subcollecciones espejadas (companies, destinations)
-            var subRestored = { companies: 0, destinations: 0 };
-            for (var subName of ['companies', 'destinations']) {
+            const candidates = new Map(); // deletedDocId → docSnap
+            // Match por docId
+            try {
+                const s1 = await db.collection('deleted_users').where('parentClientId', '==', cur.docId).get();
+                s1.forEach(d => candidates.set(d.id, d));
+            } catch(_) {}
+            // Match por idNum
+            if (cur.idNum) {
                 try {
-                    var subSnap = await db.collection('deleted_users').doc(docId).collection(subName).get();
-                    if (!subSnap.empty) {
-                        var batch = db.batch();
-                        subSnap.forEach(function(sd) {
-                            batch.set(db.collection('users').doc(originalDocId).collection(subName).doc(sd.id), sd.data());
-                            batch.delete(sd.ref);
-                        });
-                        await batch.commit();
-                        subRestored[subName] = subSnap.size;
-                    }
-                } catch(subErr) { console.warn('[restoreUser] sub ' + subName + ' fail:', subErr); }
+                    const s2 = await db.collection('deleted_users').where('parentClientId', '==', cur.idNum).get();
+                    s2.forEach(d => { if (!candidates.has(d.id)) candidates.set(d.id, d); });
+                } catch(_) {}
             }
 
-            // 3) Eliminar el doc espejo
-            await db.collection('deleted_users').doc(docId).delete();
+            candidates.forEach((d, deletedDocId) => {
+                if (seenDeleted.has(deletedDocId)) return;
+                seenDeleted.add(deletedDocId);
+                const cdata = d.data();
+                const origId = cdata._originalDocId || deletedDocId;
+                result.push({ deletedDocId, originalDocId: origId, data: cdata });
+                queue.push({ docId: origId, idNum: String(cdata.idNum || '') });
+            });
+        }
+        return result;
+    };
 
-            alert('Cliente "' + (data.name || data.companyName || originalDocId) + '" restaurado.\n\nSedes recuperadas: ' + subRestored.companies + '\nDestinations recuperadas: ' + subRestored.destinations + '\n\nPara recuperar sus albaranes y facturas, ve a las pestañas correspondientes.');
+    // ─── Restaurar UN cliente borrado (sin prompts) ─────────────────────────
+    // Helper interno reutilizado por restoreUser y la cascada
+    window._restoreUserSilent = async function(deletedDocId) {
+        const snap = await db.collection('deleted_users').doc(deletedDocId).get();
+        if (!snap.exists) throw new Error('No existe deleted_users/' + deletedDocId);
+        const data = Object.assign({}, snap.data());
+        const originalDocId = data._originalDocId || deletedDocId;
+        const name = data.name || data.companyName || originalDocId;
+
+        // Limpia metadata
+        delete data._deletedAt; delete data._deletedBy; delete data._deleteReason;
+        delete data._deleteSource; delete data._originalDocId; delete data._cascadeCounts;
+
+        await db.collection('users').doc(originalDocId).set(data);
+
+        const subRestored = { companies: 0, destinations: 0 };
+        for (const subName of ['companies', 'destinations']) {
+            try {
+                const subSnap = await db.collection('deleted_users').doc(deletedDocId).collection(subName).get();
+                if (!subSnap.empty) {
+                    let batch = db.batch();
+                    let ops = 0;
+                    for (const sd of subSnap.docs) {
+                        batch.set(db.collection('users').doc(originalDocId).collection(subName).doc(sd.id), sd.data());
+                        batch.delete(sd.ref);
+                        ops += 2;
+                        if (ops >= 400) { await batch.commit(); batch = db.batch(); ops = 0; }
+                    }
+                    if (ops) await batch.commit();
+                    subRestored[subName] = subSnap.size;
+                }
+            } catch(subErr) { console.warn('[restore] sub ' + subName + ' fail:', subErr); }
+        }
+
+        await db.collection('deleted_users').doc(deletedDocId).delete();
+        return { originalDocId, name, companies: subRestored.companies, destinations: subRestored.destinations };
+    };
+
+    window.restoreUser = async function(docId) {
+        try {
+            // 1) Leer datos del cliente en papelera
+            const snap = await db.collection('deleted_users').doc(docId).get();
+            if (!snap.exists) { alert('No se encontró el cliente en la papelera.'); return; }
+            const parentData = snap.data();
+            const parentOriginalDocId = parentData._originalDocId || docId;
+            const parentName = parentData.name || parentData.companyName || parentOriginalDocId;
+            const parentIdNum = String(parentData.idNum || '');
+
+            // 2) Buscar sucursales que también estén en papelera
+            let descendants = [];
+            try {
+                descendants = await window._findDeletedDescendants(parentOriginalDocId, parentIdNum);
+            } catch(e) { console.warn('[restoreUser] descendant lookup fail', e); }
+
+            // 3) Confirmar con resumen de cascada
+            let msg = '♻️ RESTAURAR cliente "' + parentName + '"\n\n';
+            msg += 'Vuelve la ficha + sedes + destinations a la colección activa.';
+            if (descendants.length) {
+                msg += '\n\n🔗 SUCURSALES también en papelera que se restaurarán en cascada (' + descendants.length + '):\n';
+                const names = descendants.map(d => d.data.name || d.data.companyName || d.originalDocId);
+                msg += names.slice(0, 10).map(n => '  • ' + n).join('\n');
+                if (names.length > 10) msg += '\n  …y ' + (names.length - 10) + ' más';
+                msg += '\n\nSi prefieres restaurar solo el padre y dejar las sucursales en papelera, cancela y restáuralas una a una manualmente.';
+            }
+            msg += '\n\nLos albaranes y facturas asociados están en sus pestañas — restáuralos aparte si los necesitas.';
+            msg += '\n\n¿Restaurar todo?';
+            if (!confirm(msg)) return;
+
+            if (typeof showLoading === 'function') showLoading();
+
+            const stats = { ok: 0, fail: 0, companies: 0, destinations: 0, errors: [] };
+
+            // 4) Restaurar PADRE primero (las queries de hijos por parentClientId
+            //    referencian al padre — si el padre no está, daría igual, pero por
+            //    consistencia restauramos top-down)
+            try {
+                const r = await window._restoreUserSilent(docId);
+                stats.ok++;
+                stats.companies += r.companies;
+                stats.destinations += r.destinations;
+            } catch (e) {
+                stats.fail++;
+                stats.errors.push(parentName + ': ' + e.message);
+            }
+
+            // 5) Restaurar descendientes (BFS ya devuelve árbol completo)
+            for (const d of descendants) {
+                try {
+                    const r = await window._restoreUserSilent(d.deletedDocId);
+                    stats.ok++;
+                    stats.companies += r.companies;
+                    stats.destinations += r.destinations;
+                } catch (e) {
+                    stats.fail++;
+                    stats.errors.push((d.data.name || d.originalDocId) + ': ' + e.message);
+                }
+            }
+
+            if (typeof hideLoading === 'function') hideLoading();
+
+            let result = '✅ Restaurado "' + parentName + '"';
+            if (descendants.length) result += ' + ' + descendants.length + ' sucursal(es) en cascada';
+            result += '.\n\nDetalle:\n';
+            result += '  • ' + stats.ok + ' fichas restauradas\n';
+            result += '  • ' + stats.companies + ' sedes recuperadas\n';
+            result += '  • ' + stats.destinations + ' destinations recuperadas';
+            if (stats.fail) result += '\n\n⚠ Fallos: ' + stats.fail + '\n' + stats.errors.slice(0, 6).join('\n');
+            result += '\n\nLos albaranes y facturas asociados están en sus pestañas — restáuralos uno a uno si los necesitas.';
+            alert(result);
+
             loadTrashBin();
-            // refrescar el listado de clientes si está visible
             if (typeof loadUsers === 'function') { try { loadUsers('first'); } catch(_) {} }
-        } catch(err) { alert('Error al restaurar cliente: ' + err.message); }
+            if (typeof window.advLoadClients === 'function') { try { window._advClientsCache = null; window.advLoadClients(); } catch(_) {} }
+        } catch(err) {
+            if (typeof hideLoading === 'function') hideLoading();
+            alert('Error al restaurar cliente: ' + err.message);
+        }
     };
 
     // --- PERMANENT DELETE (generic) ---
