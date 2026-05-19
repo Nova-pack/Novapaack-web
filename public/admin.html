@@ -9499,6 +9499,112 @@ window.runPublicTicketsBackfill = async function() {
                 }
             };
 
+            // ─── CASCADE SILENCIOSO (para borrado en lote sin prompts) ──────────
+            // Mismo cascade que window.deleteUser pero sin confirm/prompt/alert.
+            // Devuelve un objeto {tickets, invoices, companies, destinations,
+            // contactsCleaned, name} si todo OK, o lanza error.
+            window._deleteUserCascadeSilent = async function(id, reason) {
+                const uData = (window.userMap && window.userMap[id]) ? window.userMap[id] : null;
+                if (!uData) {
+                    // Fallback: lee de Firestore si no está en cache
+                    const snap = await db.collection('users').doc(id).get();
+                    if (!snap.exists) throw new Error('cliente no encontrado: ' + id);
+                    Object.assign({}, snap.data());
+                }
+                const data = uData || {};
+                let batch = db.batch();
+                let operationsCount = 0;
+                const commitBatchIfNeeded = async () => {
+                    if (operationsCount >= 400) { await batch.commit(); batch = db.batch(); operationsCount = 0; }
+                };
+                const targetIdNum = String(data.idNum || '');
+                const deleteMeta = {
+                    _deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    _deletedBy: (typeof currentUser !== 'undefined' && currentUser && currentUser.uid) ? currentUser.uid : 'admin',
+                    _deleteReason: reason || '',
+                    _deleteSource: 'bulk_cascade_user_delete:' + id
+                };
+                let countedTickets = 0, countedInvoices = 0, countedCompanies = 0, countedDestinations = 0;
+                // 1. tickets
+                const qUID = await db.collection('tickets').where('uid', '==', id).get();
+                const ticketIdsSeen = new Set();
+                for (const doc of qUID.docs) {
+                    ticketIdsSeen.add(doc.id);
+                    batch.set(db.collection('deleted_tickets').doc(doc.id), Object.assign({}, doc.data(), deleteMeta, { _originalDocId: doc.id })); operationsCount++;
+                    batch.delete(doc.ref); operationsCount++;
+                    countedTickets++;
+                    await commitBatchIfNeeded();
+                }
+                if (targetIdNum && targetIdNum !== 'undefined') {
+                    const qNum = await db.collection('tickets').where('clientIdNum', '==', targetIdNum).get();
+                    for (const doc of qNum.docs) {
+                        if (ticketIdsSeen.has(doc.id)) continue;
+                        batch.set(db.collection('deleted_tickets').doc(doc.id), Object.assign({}, doc.data(), deleteMeta, { _originalDocId: doc.id })); operationsCount++;
+                        batch.delete(doc.ref); operationsCount++;
+                        countedTickets++;
+                        await commitBatchIfNeeded();
+                    }
+                }
+                // 2. invoices
+                const invUID = await db.collection('invoices').where('uid', '==', id).get();
+                const invSeen = new Set();
+                for (const doc of invUID.docs) {
+                    invSeen.add(doc.id);
+                    batch.set(db.collection('deleted_invoices').doc(doc.id), Object.assign({}, doc.data(), deleteMeta, { _originalDocId: doc.id })); operationsCount++;
+                    batch.delete(doc.ref); operationsCount++;
+                    countedInvoices++;
+                    await commitBatchIfNeeded();
+                }
+                if (targetIdNum && targetIdNum !== 'undefined') {
+                    const invNum = await db.collection('invoices').where('clientIdNum', '==', targetIdNum).get();
+                    for (const doc of invNum.docs) {
+                        if (invSeen.has(doc.id)) continue;
+                        batch.set(db.collection('deleted_invoices').doc(doc.id), Object.assign({}, doc.data(), deleteMeta, { _originalDocId: doc.id })); operationsCount++;
+                        batch.delete(doc.ref); operationsCount++;
+                        countedInvoices++;
+                        await commitBatchIfNeeded();
+                    }
+                }
+                // 3. companies
+                const compSnap = await db.collection('users').doc(id).collection('companies').get();
+                for (const doc of compSnap.docs) {
+                    batch.set(db.collection('deleted_users').doc(id).collection('companies').doc(doc.id), doc.data()); operationsCount++;
+                    batch.delete(doc.ref); operationsCount++;
+                    countedCompanies++;
+                    await commitBatchIfNeeded();
+                }
+                // 3b. destinations
+                try {
+                    const destSnap = await db.collection('users').doc(id).collection('destinations').get();
+                    for (const doc of destSnap.docs) {
+                        batch.set(db.collection('deleted_users').doc(id).collection('destinations').doc(doc.id), doc.data()); operationsCount++;
+                        batch.delete(doc.ref); operationsCount++;
+                        countedDestinations++;
+                        await commitBatchIfNeeded();
+                    }
+                } catch(_) {}
+                // 4. user
+                const cascadeCounts = { tickets: countedTickets, invoices: countedInvoices, companies: countedCompanies, destinations: countedDestinations };
+                batch.set(db.collection('deleted_users').doc(id), Object.assign({}, data, deleteMeta, { _originalDocId: id, _cascadeCounts: cascadeCounts })); operationsCount++;
+                batch.delete(db.collection('users').doc(id)); operationsCount++;
+                await batch.commit();
+                // 5. contacts cleanup
+                let contactsCleaned = 0;
+                try {
+                    const cSnap = await db.collection('contacts').where('novapackUid', '==', id).get();
+                    if (!cSnap.empty) {
+                        let cBatch = db.batch();
+                        cSnap.forEach(cDoc => {
+                            if (cDoc.id.indexOf('np_') === 0) cBatch.delete(cDoc.ref);
+                            else cBatch.update(cDoc.ref, { novapackUid: '', source: 'gesco', _unlinkedAt: firebase.firestore.FieldValue.serverTimestamp(), _unlinkedReason: 'novapack_user_deleted' });
+                            contactsCleaned++;
+                        });
+                        await cBatch.commit();
+                    }
+                } catch(cErr) { console.warn('[bulk-delete] contacts cleanup fail for', id, cErr.message); }
+                return { name: data.name || '(sin nombre)', tickets: countedTickets, invoices: countedInvoices, companies: countedCompanies, destinations: countedDestinations, contactsCleaned: contactsCleaned };
+            };
+
 
             // Reports Logic
 
@@ -18522,7 +18628,8 @@ window.importTarifas50 = async () => {
                 <h1 style="color:#fff; margin:0; font-size:1.2rem;">👥 Gestión de Clientes · Facturación PRO</h1>
                 <p style="color:#aaa; font-size:0.8rem; margin-top:5px;">Buscar, editar y gestionar clientes sin salir de Facturación.</p>
             </div>
-            <div style="display:flex; gap:8px;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button id="adv-bulk-delete-btn" onclick="window.advBulkDeleteSelected()" style="display:none; background:#E53935; border:none; color:#fff; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px; font-weight:900;" title="Enviar todos los seleccionados a la papelera (con cascada)">🗑️ ELIMINAR SELECCIONADOS <span id="adv-bulk-delete-count" style="background:rgba(0,0,0,0.3); padding:1px 6px; border-radius:8px; margin-left:4px;">0</span></button>
                 <button onclick="if(typeof window.openFijos2026Importer==='function') window.openFijos2026Importer(); else alert('Importador FIJOS-2026 no disponible (recarga la página con Ctrl+F5).');" style="background:linear-gradient(135deg,#FF9800,#FF6F00); border:none; color:#000; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px; font-weight:900;" title="Aplica las tarifas especiales del documento FIJOS-2026.docx">📋 FIJOS-2026</button>
                 <button onclick="if(typeof window.advOpenClientModal==='function') window.advOpenClientModal('new');" style="background:#FF9800; border:none; color:#fff; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px; font-weight:bold;">➕ Nuevo Cliente</button>
                 <button onclick="if(typeof window.erpOpenTab==='function') window.erpOpenTab('inicio');" style="background:#333; border:1px solid #555; color:#ccc; padding:6px 14px; font-size:0.8rem; cursor:pointer; border-radius:4px;">◀ Volver</button>
@@ -18764,6 +18871,13 @@ window.importTarifas50 = async () => {
 
             let html = '<tr' + trAttrs + ' onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + hoverBg + '\'">';
 
+            // Checkbox column (only for real users; globals don't get one since they aren't in /users)
+            if (isGlobal) {
+                html += '<td style="padding:6px 4px; text-align:center; color:#FF9800;" title="Cliente global — no se elimina (se importa)">🌍</td>';
+            } else {
+                html += '<td style="padding:6px 4px; text-align:center;"><input type="checkbox" class="adv-mgmt-row-check" data-uid="' + c.id + '" data-name="' + (c.name||'').replace(/"/g,'&quot;') + '" onclick="window.advUpdateBulkBar()" style="cursor:pointer; transform:scale(1.1);"></td>';
+            }
+
             // Nº column with toggle if parent
             let numCell = '';
             if (isGlobal) {
@@ -18815,6 +18929,7 @@ window.importTarifas50 = async () => {
         let html = '<div style="overflow-y:auto; max-height:calc(100vh - 280px);">';
         html += '<table style="width:100%; border-collapse:collapse; font-size:0.8rem;">';
         html += '<thead style="position:sticky; top:0; z-index:1;"><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">';
+        html += '<th style="padding:8px 4px; text-align:center; width:32px;"><input type="checkbox" id="adv-mgmt-select-all" onclick="window.advToggleAllSelected(this)" title="Seleccionar todos los visibles" style="cursor:pointer; transform:scale(1.15);"></th>';
         html += '<th style="padding:8px 6px; text-align:left;">Nº</th>';
         html += '<th style="padding:8px 6px; text-align:left;">Nombre</th>';
         html += '<th style="padding:8px 6px; text-align:left;">Email</th>';
@@ -18832,7 +18947,7 @@ window.importTarifas50 = async () => {
         });
         // Huérfanos: sucursales cuyo padre no se encontró
         if (orphans.length) {
-            html += '<tr><td colspan="7" style="padding:6px 8px; background:#3a2a2a; color:#FF9F0A; font-size:0.7rem;">⚠️ Sucursales con padre no encontrado (revisar parentClientId):</td></tr>';
+            html += '<tr><td colspan="8" style="padding:6px 8px; background:#3a2a2a; color:#FF9F0A; font-size:0.7rem;">⚠️ Sucursales con padre no encontrado (revisar parentClientId):</td></tr>';
             orphans.forEach(c => html += renderRow(c, {}));
         }
         // Globales al final
@@ -18852,6 +18967,118 @@ window.importTarifas50 = async () => {
                 this.textContent = open ? '▸' : '▾';
             });
         });
+
+        // Reset bulk-bar state al re-renderizar
+        const _bulkBtn = document.getElementById('adv-bulk-delete-btn');
+        const _bulkCount = document.getElementById('adv-bulk-delete-count');
+        if (_bulkBtn) _bulkBtn.style.display = 'none';
+        if (_bulkCount) _bulkCount.textContent = '0';
+        const _selAll = document.getElementById('adv-mgmt-select-all');
+        if (_selAll) _selAll.checked = false;
+    };
+
+    // ─── BULK SELECT / DELETE ───────────────────────────────────
+    window.advUpdateBulkBar = function() {
+        const checks = document.querySelectorAll('.adv-mgmt-row-check:checked');
+        const btn = document.getElementById('adv-bulk-delete-btn');
+        const count = document.getElementById('adv-bulk-delete-count');
+        if (!btn || !count) return;
+        count.textContent = checks.length;
+        btn.style.display = checks.length > 0 ? 'inline-flex' : 'none';
+    };
+
+    window.advToggleAllSelected = function(masterCb) {
+        const checked = !!masterCb.checked;
+        document.querySelectorAll('.adv-mgmt-row-check').forEach(cb => {
+            // Solo afecta a las filas visibles (sucursales colapsadas no se tocan)
+            const tr = cb.closest('tr');
+            if (tr && tr.offsetParent === null) return;
+            cb.checked = checked;
+        });
+        window.advUpdateBulkBar();
+    };
+
+    window.advBulkDeleteSelected = async function() {
+        const checks = Array.from(document.querySelectorAll('.adv-mgmt-row-check:checked'));
+        if (!checks.length) { alert('No hay clientes seleccionados.'); return; }
+
+        // Recoge {uid, name} de cada seleccionado
+        const targets = checks.map(cb => ({
+            uid: cb.getAttribute('data-uid'),
+            name: cb.getAttribute('data-name') || '(sin nombre)'
+        }));
+
+        // Detectar sucursales que pertenecen a clientes seleccionados — aviso explícito
+        const childrenWarnings = [];
+        targets.forEach(t => {
+            (window._advClientsCache || []).forEach(c => {
+                if (c.parentClientId === t.uid && !targets.find(x => x.uid === c.id)) {
+                    childrenWarnings.push('  • ' + (c.name || '?') + ' (sucursal de ' + t.name + ')');
+                }
+            });
+        });
+
+        let confirmMsg = '🗑️ ELIMINAR ' + targets.length + ' CLIENTE' + (targets.length > 1 ? 'S' : '') + ' (a la PAPELERA con cascada)\n\n';
+        confirmMsg += targets.slice(0, 12).map(t => '  • ' + t.name).join('\n');
+        if (targets.length > 12) confirmMsg += '\n  …y ' + (targets.length - 12) + ' más';
+        confirmMsg += '\n\nSe enviará a /deleted_users + albaranes a /deleted_tickets + facturas a /deleted_invoices.';
+        confirmMsg += '\nRecuperable durante 30 días desde 🗑️ Papelera.\n\n';
+        if (childrenWarnings.length) {
+            confirmMsg += '⚠️ NOTA: estas sucursales NO se eliminan automáticamente (sus padres sí):\n' + childrenWarnings.slice(0, 6).join('\n');
+            if (childrenWarnings.length > 6) confirmMsg += '\n  …y ' + (childrenWarnings.length - 6) + ' más';
+            confirmMsg += '\nQuedarán como huérfanas hasta que las elimines o reasignes.\n\n';
+        }
+        confirmMsg += '¿Continuar?';
+
+        if (!confirm(confirmMsg)) return;
+
+        const code = prompt('Para confirmar el borrado en lote escribe "BORRAR ' + targets.length + '":');
+        if (code !== 'BORRAR ' + targets.length) {
+            alert('Cancelado. NO se ha eliminado nada.');
+            return;
+        }
+
+        const reason = prompt('Motivo del borrado en lote (opcional, para auditoría):', '') || '';
+
+        if (typeof showLoading === 'function') showLoading();
+
+        const stats = { ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0, errors: [] };
+
+        for (let i = 0; i < targets.length; i++) {
+            const t = targets[i];
+            try {
+                const r = await window._deleteUserCascadeSilent(t.uid, reason || 'bulk_delete');
+                stats.ok++;
+                stats.tickets   += r.tickets || 0;
+                stats.invoices  += r.invoices || 0;
+                stats.companies += r.companies || 0;
+                stats.contacts  += r.contactsCleaned || 0;
+            } catch (e) {
+                stats.fail++;
+                stats.errors.push(t.name + ': ' + e.message);
+                console.error('[bulk-delete] fail', t, e);
+            }
+        }
+
+        // Invalidar cache y recargar
+        try { if (typeof window.invalidateContactsCache === 'function') window.invalidateContactsCache(); } catch(_) {}
+        window._advClientsCache = null;
+
+        if (typeof hideLoading === 'function') hideLoading();
+
+        let msg = '✅ Bulk delete completado.\n\n';
+        msg += '  Éxitos: ' + stats.ok + '\n';
+        if (stats.fail) msg += '  Fallos: ' + stats.fail + '\n';
+        msg += '\nEn cascada:\n';
+        msg += '  • ' + stats.tickets + ' albaranes\n';
+        msg += '  • ' + stats.invoices + ' facturas\n';
+        msg += '  • ' + stats.companies + ' sedes\n';
+        msg += '  • ' + stats.contacts + ' contactos limpiados\n';
+        msg += '\nTodo restaurable desde 🗑️ Papelera.';
+        if (stats.errors.length) msg += '\n\nFallos:\n' + stats.errors.slice(0, 8).join('\n');
+        alert(msg);
+
+        if (typeof window.advLoadClients === 'function') window.advLoadClients();
     };
 
     // Import a global client into the local users collection
