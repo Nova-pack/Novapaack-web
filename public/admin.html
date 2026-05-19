@@ -9325,15 +9325,52 @@ window.runPublicTicketsBackfill = async function() {
                 const uData = userMap[id];
                 if (!uData) { alert("Error: Datos del cliente no encontrados en el sistema."); return; }
 
-                const confirm1 = confirm(`⚠️ ALERTA: Vas a eliminar al cliente "${uData.name}".\n\nSe enviará a la 🗑️ PAPELERA junto con sus albaranes, facturas y sedes (todo recuperable durante 30 días o hasta vaciar la papelera).\n\n¿Continuar?`);
+                // Detectar sucursales (cascada)
+                let descendants = [];
+                try {
+                    if (typeof window._findAllDescendants === 'function') {
+                        descendants = await window._findAllDescendants(id);
+                    }
+                } catch(_) {}
+                const childNames = descendants.map(uid => (userMap[uid] && userMap[uid].name) ? userMap[uid].name : '(sin nombre)');
+
+                let alertMsg = `⚠️ ALERTA: Vas a eliminar al cliente "${uData.name}".\n\nSe enviará a la 🗑️ PAPELERA junto con sus albaranes, facturas y sedes (todo recuperable durante 30 días o hasta vaciar la papelera).`;
+                if (descendants.length) {
+                    alertMsg += `\n\n🔗 SUCURSALES que se borrarán en cascada (${descendants.length}):\n`;
+                    alertMsg += childNames.slice(0, 10).map(n => '  • ' + n).join('\n');
+                    if (childNames.length > 10) alertMsg += '\n  …y ' + (childNames.length - 10) + ' más';
+                }
+                alertMsg += `\n\n¿Continuar?`;
+                const confirm1 = confirm(alertMsg);
                 if (!confirm1) return;
 
-                const code = prompt(`Para confirmar el envío a papelera escribe "BORRAR".\n\n(Puedes restaurarlo después desde la 🗑️ Papelera en la barra superior).`);
-                if (code !== 'BORRAR') {
+                const total = 1 + descendants.length;
+                const codeExpected = descendants.length ? ('BORRAR ' + total) : 'BORRAR';
+                const codeMsg = descendants.length
+                    ? `Hay ${descendants.length} sucursal(es). Para confirmar el borrado en cascada escribe "${codeExpected}":`
+                    : `Para confirmar el envío a papelera escribe "BORRAR".\n\n(Puedes restaurarlo después desde la 🗑️ Papelera en la barra superior).`;
+                const code = prompt(codeMsg);
+                if (code !== codeExpected) {
                     alert("Cancelado. El cliente NO ha sido eliminado.");
                     return;
                 }
                 const reason = prompt('Motivo del borrado (opcional, para auditoría):', '') || '';
+
+                // Si hay sucursales, hacer cascada vía silent helper antes del cascade principal
+                if (descendants.length && typeof window._deleteUserCascadeSilent === 'function') {
+                    showLoading();
+                    try {
+                        for (const childUid of descendants) {
+                            try {
+                                await window._deleteUserCascadeSilent(childUid, reason + ' [cascada de ' + uData.name + ']');
+                            } catch (e) {
+                                console.warn('[deleteUser] cascada hijo fail', childUid, e);
+                            }
+                        }
+                    } finally {
+                        hideLoading();
+                    }
+                }
 
                 showLoading();
                 try {
@@ -9499,10 +9536,74 @@ window.runPublicTicketsBackfill = async function() {
                 }
             };
 
+            // ─── BÚSQUEDA DE SUCURSALES (children) ──────────────────────────────
+            // Devuelve los uids de TODAS las sucursales (recursivo) que cuelgan
+            // de un parentUid. Match por parentClientId == parentUid (docId) o
+            // == idNum del padre. Recorre el árbol entero por si una sucursal
+            // tiene a su vez sub-sucursales.
+            window._findAllDescendants = async function(parentUid) {
+                const visited = new Set();
+                const queue = [parentUid];
+                const result = [];
+
+                // Pre-fetch idNum del padre para el match secundario
+                const idNumMap = new Map(); // uid → idNum
+                try {
+                    const parentSnap = await db.collection('users').doc(parentUid).get();
+                    if (parentSnap.exists) {
+                        const pIdNum = String(parentSnap.data().idNum || '');
+                        if (pIdNum) idNumMap.set(parentUid, pIdNum);
+                    }
+                } catch(_) {}
+
+                while (queue.length) {
+                    const cur = queue.shift();
+                    if (visited.has(cur)) continue;
+                    visited.add(cur);
+
+                    const curIdNum = idNumMap.get(cur) || '';
+                    const childUids = new Set();
+
+                    // Match por docId
+                    try {
+                        const s1 = await db.collection('users').where('parentClientId', '==', cur).get();
+                        s1.forEach(d => {
+                            childUids.add(d.id);
+                            const cIdNum = String(d.data().idNum || '');
+                            if (cIdNum) idNumMap.set(d.id, cIdNum);
+                        });
+                    } catch(_) {}
+                    // Match por idNum del padre (legacy)
+                    if (curIdNum) {
+                        try {
+                            const s2 = await db.collection('users').where('parentClientId', '==', curIdNum).get();
+                            s2.forEach(d => {
+                                if (!childUids.has(d.id)) {
+                                    childUids.add(d.id);
+                                    const cIdNum = String(d.data().idNum || '');
+                                    if (cIdNum) idNumMap.set(d.id, cIdNum);
+                                }
+                            });
+                        } catch(_) {}
+                    }
+
+                    childUids.forEach(uid => {
+                        if (!visited.has(uid)) {
+                            result.push(uid);
+                            queue.push(uid);
+                        }
+                    });
+                }
+                return result;
+            };
+
             // ─── CASCADE SILENCIOSO (para borrado en lote sin prompts) ──────────
             // Mismo cascade que window.deleteUser pero sin confirm/prompt/alert.
             // Devuelve un objeto {tickets, invoices, companies, destinations,
             // contactsCleaned, name} si todo OK, o lanza error.
+            // NOTA: este cascade procesa UN solo cliente. La cascada a hijos
+            // se hace en el caller (bulk handler) para que el aviso al admin
+            // muestre el total exacto antes de borrar.
             window._deleteUserCascadeSilent = async function(id, reason) {
                 const uData = (window.userMap && window.userMap[id]) ? window.userMap[id] : null;
                 if (!uData) {
@@ -19002,38 +19103,61 @@ window.importTarifas50 = async () => {
         const checks = Array.from(document.querySelectorAll('.adv-mgmt-row-check:checked'));
         if (!checks.length) { alert('No hay clientes seleccionados.'); return; }
 
-        // Recoge {uid, name} de cada seleccionado
-        const targets = checks.map(cb => ({
+        // Recoge {uid, name} de cada seleccionado (los marcados explícitamente por admin)
+        const selected = checks.map(cb => ({
             uid: cb.getAttribute('data-uid'),
             name: cb.getAttribute('data-name') || '(sin nombre)'
         }));
+        const selectedUids = new Set(selected.map(s => s.uid));
 
-        // Detectar sucursales que pertenecen a clientes seleccionados — aviso explícito
-        const childrenWarnings = [];
-        targets.forEach(t => {
-            (window._advClientsCache || []).forEach(c => {
-                if (c.parentClientId === t.uid && !targets.find(x => x.uid === c.id)) {
-                    childrenWarnings.push('  • ' + (c.name || '?') + ' (sucursal de ' + t.name + ')');
+        if (typeof showLoading === 'function') showLoading();
+
+        // ── CASCADA DE SUCURSALES ──
+        // Por cada cliente seleccionado, buscar descendientes (recursivo) y
+        // añadirlos a la lista de targets si no estaban ya marcados.
+        const cascadedChildren = []; // [{uid, name, parentName}]
+        for (const s of selected) {
+            try {
+                const descendants = await window._findAllDescendants(s.uid);
+                for (const childUid of descendants) {
+                    if (selectedUids.has(childUid)) continue; // ya estaba marcado
+                    selectedUids.add(childUid);
+                    let childName = '(sin nombre)';
+                    if (window.userMap && window.userMap[childUid]) {
+                        childName = window.userMap[childUid].name || childName;
+                    } else if (window._advClientsCache) {
+                        const cached = window._advClientsCache.find(c => c.id === childUid);
+                        if (cached) childName = cached.name || childName;
+                    }
+                    cascadedChildren.push({ uid: childUid, name: childName, parentName: s.name });
                 }
-            });
-        });
-
-        let confirmMsg = '🗑️ ELIMINAR ' + targets.length + ' CLIENTE' + (targets.length > 1 ? 'S' : '') + ' (a la PAPELERA con cascada)\n\n';
-        confirmMsg += targets.slice(0, 12).map(t => '  • ' + t.name).join('\n');
-        if (targets.length > 12) confirmMsg += '\n  …y ' + (targets.length - 12) + ' más';
-        confirmMsg += '\n\nSe enviará a /deleted_users + albaranes a /deleted_tickets + facturas a /deleted_invoices.';
-        confirmMsg += '\nRecuperable durante 30 días desde 🗑️ Papelera.\n\n';
-        if (childrenWarnings.length) {
-            confirmMsg += '⚠️ NOTA: estas sucursales NO se eliminan automáticamente (sus padres sí):\n' + childrenWarnings.slice(0, 6).join('\n');
-            if (childrenWarnings.length > 6) confirmMsg += '\n  …y ' + (childrenWarnings.length - 6) + ' más';
-            confirmMsg += '\nQuedarán como huérfanas hasta que las elimines o reasignes.\n\n';
+            } catch (e) { console.warn('[bulk-delete] descendant lookup fail', s.uid, e); }
         }
-        confirmMsg += '¿Continuar?';
+
+        if (typeof hideLoading === 'function') hideLoading();
+
+        const allTargets = selected.concat(cascadedChildren);
+        const totalCount = allTargets.length;
+
+        let confirmMsg = '🗑️ ELIMINAR ' + totalCount + ' CLIENTE' + (totalCount > 1 ? 'S' : '') + ' (a la PAPELERA con cascada)\n\n';
+        confirmMsg += '✓ Seleccionados directamente (' + selected.length + '):\n';
+        confirmMsg += selected.slice(0, 10).map(t => '  • ' + t.name).join('\n');
+        if (selected.length > 10) confirmMsg += '\n  …y ' + (selected.length - 10) + ' más';
+
+        if (cascadedChildren.length) {
+            confirmMsg += '\n\n🔗 Sucursales que se borran en cascada (' + cascadedChildren.length + '):\n';
+            confirmMsg += cascadedChildren.slice(0, 10).map(c => '  • ' + c.name + ' (sucursal de ' + c.parentName + ')').join('\n');
+            if (cascadedChildren.length > 10) confirmMsg += '\n  …y ' + (cascadedChildren.length - 10) + ' más';
+        }
+
+        confirmMsg += '\n\nSe enviará todo a /deleted_users + albaranes a /deleted_tickets + facturas a /deleted_invoices.';
+        confirmMsg += '\nRecuperable durante 30 días desde 🗑️ Papelera.';
+        confirmMsg += '\n\n¿Continuar?';
 
         if (!confirm(confirmMsg)) return;
 
-        const code = prompt('Para confirmar el borrado en lote escribe "BORRAR ' + targets.length + '":');
-        if (code !== 'BORRAR ' + targets.length) {
+        const code = prompt('Para confirmar el borrado en lote escribe "BORRAR ' + totalCount + '":');
+        if (code !== 'BORRAR ' + totalCount) {
             alert('Cancelado. NO se ha eliminado nada.');
             return;
         }
@@ -19042,12 +19166,17 @@ window.importTarifas50 = async () => {
 
         if (typeof showLoading === 'function') showLoading();
 
-        const stats = { ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0, errors: [] };
+        const stats = { ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0, cascaded: cascadedChildren.length, errors: [] };
 
-        for (let i = 0; i < targets.length; i++) {
-            const t = targets[i];
+        // CRÍTICO: borrar primero los HIJOS, luego los padres, para no romper
+        // queries intermedias que dependan de parentClientId.
+        // Ordena el array: hijos primero (los que tienen parentName en cascadedChildren), padres después.
+        const orderedTargets = cascadedChildren.concat(selected);
+
+        for (let i = 0; i < orderedTargets.length; i++) {
+            const t = orderedTargets[i];
             try {
-                const r = await window._deleteUserCascadeSilent(t.uid, reason || 'bulk_delete');
+                const r = await window._deleteUserCascadeSilent(t.uid, (reason || 'bulk_delete') + (t.parentName ? ' [cascada de ' + t.parentName + ']' : ''));
                 stats.ok++;
                 stats.tickets   += r.tickets || 0;
                 stats.invoices  += r.invoices || 0;
@@ -19060,7 +19189,6 @@ window.importTarifas50 = async () => {
             }
         }
 
-        // Invalidar cache y recargar
         try { if (typeof window.invalidateContactsCache === 'function') window.invalidateContactsCache(); } catch(_) {}
         window._advClientsCache = null;
 
@@ -19069,7 +19197,8 @@ window.importTarifas50 = async () => {
         let msg = '✅ Bulk delete completado.\n\n';
         msg += '  Éxitos: ' + stats.ok + '\n';
         if (stats.fail) msg += '  Fallos: ' + stats.fail + '\n';
-        msg += '\nEn cascada:\n';
+        if (stats.cascaded) msg += '  Sucursales cascadeadas: ' + stats.cascaded + '\n';
+        msg += '\nEn cascada total:\n';
         msg += '  • ' + stats.tickets + ' albaranes\n';
         msg += '  • ' + stats.invoices + ' facturas\n';
         msg += '  • ' + stats.companies + ' sedes\n';
@@ -19264,14 +19393,72 @@ window.importTarifas50 = async () => {
     
     // Delete client
     window.advDeleteClient = async function(clientId, clientName) {
-        if (!confirm('¿Estás seguro de eliminar al cliente "' + clientName + '"?\n\nEsta acción no se puede deshacer.')) return;
+        // Detectar sucursales (cascada)
+        let descendants = [];
         try {
-            await db.collection('users').doc(clientId).delete();
-            alert('✅ Cliente eliminado.');
-            window.advLoadClients();
-        } catch(e) {
-            alert('Error al eliminar: ' + e.message);
+            if (typeof window._findAllDescendants === 'function') {
+                descendants = await window._findAllDescendants(clientId);
+            }
+        } catch(_) {}
+
+        // Resolver nombres de los hijos para mostrar
+        const childNames = descendants.map(uid => {
+            if (window.userMap && window.userMap[uid]) return window.userMap[uid].name || '(sin nombre)';
+            if (window._advClientsCache) {
+                const c = window._advClientsCache.find(x => x.id === uid);
+                if (c) return c.name || '(sin nombre)';
+            }
+            return '(sin nombre)';
+        });
+
+        let msg = '🗑️ ELIMINAR cliente "' + clientName + '"\n\n';
+        msg += 'Se enviará a 🗑️ Papelera junto con sus albaranes, facturas y sedes (todo recuperable durante 30 días).';
+        if (descendants.length) {
+            msg += '\n\n🔗 SUCURSALES que se borrarán en cascada (' + descendants.length + '):\n';
+            msg += childNames.slice(0, 10).map(n => '  • ' + n).join('\n');
+            if (childNames.length > 10) msg += '\n  …y ' + (childNames.length - 10) + ' más';
         }
+        msg += '\n\n¿Continuar?';
+
+        if (!confirm(msg)) return;
+
+        const total = 1 + descendants.length;
+        if (descendants.length > 0) {
+            const code = prompt('Hay ' + descendants.length + ' sucursal(es). Para confirmar escribe "BORRAR ' + total + '":');
+            if (code !== 'BORRAR ' + total) { alert('Cancelado.'); return; }
+        }
+
+        const reason = prompt('Motivo (opcional):', '') || '';
+
+        if (typeof showLoading === 'function') showLoading();
+
+        const stats = { ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0, errors: [] };
+        // Borrar primero los hijos
+        const orderedUids = descendants.concat([clientId]);
+        for (const uid of orderedUids) {
+            try {
+                const r = await window._deleteUserCascadeSilent(uid, reason || 'manual_delete');
+                stats.ok++;
+                stats.tickets   += r.tickets || 0;
+                stats.invoices  += r.invoices || 0;
+                stats.companies += r.companies || 0;
+                stats.contacts  += r.contactsCleaned || 0;
+            } catch (e) {
+                stats.fail++;
+                stats.errors.push(uid + ': ' + e.message);
+            }
+        }
+
+        try { if (typeof window.invalidateContactsCache === 'function') window.invalidateContactsCache(); } catch(_) {}
+        window._advClientsCache = null;
+
+        if (typeof hideLoading === 'function') hideLoading();
+
+        let result = '✅ Cliente "' + clientName + '" eliminado' + (descendants.length ? ' junto con ' + descendants.length + ' sucursal(es)' : '') + '.\n\nEn cascada:\n  • ' + stats.tickets + ' albaranes\n  • ' + stats.invoices + ' facturas\n  • ' + stats.companies + ' sedes\n  • ' + stats.contacts + ' contactos limpiados';
+        if (stats.fail) result += '\n\n⚠ Fallos: ' + stats.fail + '\n' + stats.errors.slice(0, 6).join('\n');
+        alert(result);
+
+        window.advLoadClients();
     };
     
     // Quick action: select client and go back to invoice form
