@@ -677,28 +677,32 @@
         </div>
     </div>
 
-    <!-- ===== COOPER PHOTO MODAL ===== -->
+    <!-- ===== COOPER PHOTO MODAL (multi-foto) ===== -->
     <div class="modal-overlay" id="cooper-modal">
-        <div class="modal-sheet" style="max-width:420px;">
+        <div class="modal-sheet" style="max-width:460px;">
             <div class="modal-handle"></div>
             <h3 id="cooper-modal-title" class="modal-title" style="color:#FF9800;"></h3>
-            <p class="modal-subtitle">Haz una foto al albaran de Cooper</p>
+            <p class="modal-subtitle">Puedes hacer varias fotos (un albarán o varios bultos) y mandarlas todas a la vez.</p>
             <input type="file" id="cooper-photo-input" accept="image/*" capture="environment" style="display:none;">
             <div style="display:flex; flex-direction:column; gap:12px;">
+                <!-- Strip de miniaturas -->
+                <div id="cooper-photo-strip" style="display:none; flex-wrap:wrap; gap:6px; padding:8px; background:rgba(0,0,0,0.25); border:1px dashed var(--border); border-radius:10px; min-height:80px;"></div>
+                <span id="cooper-photo-status" style="font-size:0.82rem; color:var(--text-dim); text-align:center; font-weight:700;">Sin fotos · Pulsa <b>AÑADIR FOTO</b></span>
+
                 <button class="btn btn-primary btn-lg" id="btn-cooper-camera">
-                    <span class="material-symbols-outlined">camera_alt</span> ABRIR CAMARA
+                    <span class="material-symbols-outlined">add_a_photo</span> <span id="btn-cooper-camera-label">AÑADIR FOTO</span>
                 </button>
-                <img id="cooper-photo-preview" style="display:none; width:100%; border-radius:8px; border:2px solid var(--border); max-height:300px; object-fit:contain;">
-                <span id="cooper-photo-status" style="font-size:0.8rem; color:var(--text-dim); text-align:center;">Sin foto</span>
+
                 <div class="form-group" style="margin:0;">
-                    <label class="form-label"><span class="material-symbols-outlined">edit_note</span> Nota <span class="form-label-optional">(opcional)</span></label>
-                    <input type="text" id="cooper-note" class="form-control" placeholder="Ej: 2 bultos, P-4521..." maxlength="200" style="font-size:0.9rem;">
+                    <label class="form-label"><span class="material-symbols-outlined">edit_note</span> Nota <span class="form-label-optional">(opcional · se aplica a todas)</span></label>
+                    <input type="text" id="cooper-note" class="form-control" placeholder="Ej: 3 bultos, P-4521..." maxlength="200" style="font-size:0.9rem;">
                 </div>
-                <button class="btn btn-danger btn-lg" id="btn-cooper-delete-photo" style="display:none;">
-                    <span class="material-symbols-outlined">delete</span> ELIMINAR FOTO
+
+                <button class="btn btn-danger btn-lg" id="btn-cooper-clear" style="display:none;">
+                    <span class="material-symbols-outlined">delete_sweep</span> VACIAR TODO
                 </button>
                 <button class="btn btn-success btn-lg" id="btn-cooper-send" style="display:none;">
-                    <span class="material-symbols-outlined">upload</span> ENVIAR FOTO
+                    <span class="material-symbols-outlined">upload</span> <span id="btn-cooper-send-label">ENVIAR</span>
                 </button>
                 <button class="btn btn-ghost" id="btn-cooper-cancel">CANCELAR</button>
             </div>

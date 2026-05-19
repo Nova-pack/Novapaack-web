@@ -3394,9 +3394,65 @@ function initApp() {
     })();
 
     // ============================================================
-    //  COOPER PHOTO — Recogidas & Entregas
+    //  COOPER PHOTO — Recogidas & Entregas (multi-foto)
     // ============================================================
     var _cooperType = null; // 'recogida' or 'entrega'
+    var _cooperQueue = [];  // [{ id, file, dataUrl }]
+    var _cooperUid = 0;
+
+    function _cooperRefreshUI() {
+        var strip   = document.getElementById('cooper-photo-strip');
+        var status  = document.getElementById('cooper-photo-status');
+        var sendBtn = document.getElementById('btn-cooper-send');
+        var clrBtn  = document.getElementById('btn-cooper-clear');
+        var camBtn  = document.getElementById('btn-cooper-camera');
+        var camLab  = document.getElementById('btn-cooper-camera-label');
+        var sendLab = document.getElementById('btn-cooper-send-label');
+
+        if (!strip) return;
+
+        if (_cooperQueue.length === 0) {
+            strip.style.display = 'none';
+            strip.innerHTML = '';
+            if (status) status.innerHTML = 'Sin fotos &middot; Pulsa <b>AÑADIR FOTO</b>';
+            if (sendBtn) sendBtn.style.display = 'none';
+            if (clrBtn) clrBtn.style.display = 'none';
+            if (camLab) camLab.textContent = 'AÑADIR FOTO';
+            if (camBtn) camBtn.innerHTML = '<span class="material-symbols-outlined">add_a_photo</span> <span id="btn-cooper-camera-label">AÑADIR FOTO</span>';
+            return;
+        }
+
+        // Render strip
+        strip.style.display = 'flex';
+        strip.innerHTML = _cooperQueue.map(function(p, idx) {
+            return '' +
+                '<div style="position:relative; width:74px; height:74px; border-radius:8px; overflow:hidden; border:2px solid #FF9800; background:#000;">' +
+                    '<img src="' + p.dataUrl + '" style="width:100%; height:100%; object-fit:cover; display:block;">' +
+                    '<div style="position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); color:#fff; font-size:0.65rem; font-weight:900; text-align:center; padding:1px 0;">#' + (idx + 1) + '</div>' +
+                    '<button onclick="_cooperRemovePhoto(' + p.id + ')" type="button" style="position:absolute; top:-4px; right:-4px; width:22px; height:22px; border-radius:50%; border:0; background:#E53935; color:#fff; font-weight:900; font-size:0.85rem; line-height:1; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.6);">×</button>' +
+                '</div>';
+        }).join('');
+
+        if (status) status.innerHTML = '<b style="color:#FF9800;">' + _cooperQueue.length + ' foto' + (_cooperQueue.length > 1 ? 's' : '') + '</b> en cola';
+        if (sendBtn) sendBtn.style.display = 'flex';
+        if (sendLab) sendLab.textContent = 'ENVIAR ' + _cooperQueue.length + ' FOTO' + (_cooperQueue.length > 1 ? 'S' : '');
+        if (clrBtn) clrBtn.style.display = 'flex';
+        if (camLab) camLab.textContent = '+ OTRA FOTO';
+    }
+
+    window._cooperRemovePhoto = function(id) {
+        _cooperQueue = _cooperQueue.filter(function(p) { return p.id !== id; });
+        _cooperRefreshUI();
+    };
+
+    function _cooperResetModal() {
+        _cooperQueue = [];
+        var inp = document.getElementById('cooper-photo-input');
+        if (inp) inp.value = '';
+        var noteEl = document.getElementById('cooper-note');
+        if (noteEl) noteEl.value = '';
+        _cooperRefreshUI();
+    }
 
     window.openCooperPhoto = function(type) {
         _cooperType = type;
@@ -3410,61 +3466,52 @@ function initApp() {
             title.innerHTML = '<span class="material-symbols-outlined" style="font-size:1.3rem;">upload</span> ENTREGA COOPER';
             title.style.color = '#4CAF50';
         }
-        // Reset
-        document.getElementById('cooper-photo-preview').style.display = 'none';
-        document.getElementById('cooper-photo-preview').src = '';
-        document.getElementById('cooper-photo-input').value = '';
-        document.getElementById('cooper-photo-status').textContent = 'Sin foto';
-        document.getElementById('btn-cooper-send').style.display = 'none';
-        document.getElementById('btn-cooper-delete-photo').style.display = 'none';
-        var noteEl = document.getElementById('cooper-note');
-        if (noteEl) noteEl.value = '';
+        _cooperResetModal();
         modal.classList.add('active');
     };
 
-    // Camera button
+    // Camera button → abre cámara nativa (siempre, para acumular fotos)
     document.getElementById('btn-cooper-camera').addEventListener('click', function() {
         document.getElementById('cooper-photo-input').click();
     });
 
-    // Photo selected
+    // Photo selected → añadir a la cola y limpiar input para permitir otra captura
     document.getElementById('cooper-photo-input').addEventListener('change', function(e) {
-        var f = e.target.files[0];
-        if (f) {
-            var reader = new FileReader();
-            reader.onload = function(ev) {
-                document.getElementById('cooper-photo-preview').src = ev.target.result;
-                document.getElementById('cooper-photo-preview').style.display = 'block';
-                document.getElementById('cooper-photo-status').textContent = 'Foto lista';
-                document.getElementById('btn-cooper-send').style.display = 'block';
-                document.getElementById('btn-cooper-delete-photo').style.display = 'block';
-                document.getElementById('btn-cooper-camera').innerHTML = '<span class="material-symbols-outlined">refresh</span> REPETIR FOTO';
-            };
-            reader.readAsDataURL(f);
-        }
+        var f = e.target.files && e.target.files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+            _cooperQueue.push({
+                id: ++_cooperUid,
+                file: f,
+                dataUrl: ev.target.result
+            });
+            _cooperRefreshUI();
+            // Limpia el input para que un siguiente disparo de la misma foto vuelva a triggerear 'change'
+            document.getElementById('cooper-photo-input').value = '';
+        };
+        reader.readAsDataURL(f);
     });
 
-    // Delete selected photo (re-take)
-    document.getElementById('btn-cooper-delete-photo').addEventListener('click', function() {
-        document.getElementById('cooper-photo-input').value = '';
-        document.getElementById('cooper-photo-preview').src = '';
-        document.getElementById('cooper-photo-preview').style.display = 'none';
-        document.getElementById('cooper-photo-status').textContent = 'Sin foto';
-        document.getElementById('btn-cooper-send').style.display = 'none';
-        document.getElementById('btn-cooper-delete-photo').style.display = 'none';
-        document.getElementById('btn-cooper-camera').innerHTML = '<span class="material-symbols-outlined">camera_alt</span> ABRIR CAMARA';
+    // Vaciar todo
+    document.getElementById('btn-cooper-clear').addEventListener('click', function() {
+        if (_cooperQueue.length === 0) return;
+        if (!confirm('¿Vaciar las ' + _cooperQueue.length + ' foto(s) en cola?')) return;
+        _cooperQueue = [];
+        _cooperRefreshUI();
     });
 
     // Cancel
     document.getElementById('btn-cooper-cancel').addEventListener('click', function() {
+        if (_cooperQueue.length > 0 && !confirm('Hay ' + _cooperQueue.length + ' foto(s) sin enviar. ¿Descartar?')) return;
         document.getElementById('cooper-modal').classList.remove('active');
         _cooperType = null;
+        _cooperQueue = [];
     });
 
-    // Send photo
+    // Send ALL photos in queue
     document.getElementById('btn-cooper-send').addEventListener('click', async function() {
-        var photoFile = document.getElementById('cooper-photo-input').files[0];
-        if (!photoFile) { showToast('Haz una foto primero', 'error'); return; }
+        if (_cooperQueue.length === 0) { showToast('Haz al menos una foto', 'error'); return; }
 
         if (!navigator.onLine) {
             sendNotification('Sin conexión', 'No hay conexión a internet. Inténtalo cuando recuperes la señal.', 'warning');
@@ -3472,45 +3519,82 @@ function initApp() {
         }
 
         var sendBtn = document.getElementById('btn-cooper-send');
+        var sendLab = document.getElementById('btn-cooper-send-label');
         sendBtn.disabled = true;
-        sendBtn.textContent = 'Comprimiendo...';
+
+        var noteVal = (document.getElementById('cooper-note') ? document.getElementById('cooper-note').value : '').trim();
+        var groupTs = Date.now();
+        var groupId = 'g' + groupTs + '_' + Math.random().toString(36).slice(2, 8);
+        var total = _cooperQueue.length;
+        var uploaded = 0, failed = 0;
 
         try {
-            photoFile = await compressImage(photoFile);
-            sendBtn.textContent = 'Subiendo...';
-            var ts = Date.now();
-            var storagePath = 'cooper/' + _cooperType + '/' + ts + '.jpg';
-            var photoRef = storage.ref(storagePath);
-            await photoRef.put(photoFile, { contentType: photoFile.type });
-            var photoURL = await photoRef.getDownloadURL();
+            for (var i = 0; i < _cooperQueue.length; i++) {
+                var item = _cooperQueue[i];
+                if (sendLab) sendLab.textContent = 'SUBIENDO ' + (i + 1) + '/' + total + '…';
+                try {
+                    var compressed = await compressImage(item.file);
+                    var ts = Date.now() + i; // unique
+                    var storagePath = 'cooper/' + _cooperType + '/' + groupId + '/' + ts + '.jpg';
+                    var photoRef = storage.ref(storagePath);
+                    await photoRef.put(compressed, { contentType: compressed.type });
+                    var photoURL = await photoRef.getDownloadURL();
 
-            // Save record to Firestore
-            var noteVal = (document.getElementById('cooper-note') ? document.getElementById('cooper-note').value : '').trim();
-            await db.collection('cooper_photos').add({
-                type: _cooperType,
-                photoURL: photoURL,
-                storagePath: storagePath,
-                note: noteVal,
-                route: currentRouteLabel || 'Sin ruta',
-                driverName: currentDriverName || 'Desconocido',
-                driverPhone: currentDriverPhone || '',
-                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                timestamp: ts
-            });
+                    await db.collection('cooper_photos').add({
+                        type: _cooperType,
+                        photoURL: photoURL,
+                        storagePath: storagePath,
+                        note: noteVal,
+                        route: currentRouteLabel || 'Sin ruta',
+                        driverName: currentDriverName || 'Desconocido',
+                        driverPhone: currentDriverPhone || '',
+                        groupId: groupId,
+                        groupIndex: i + 1,
+                        groupTotal: total,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        timestamp: ts
+                    });
+                    uploaded++;
+                } catch (errItem) {
+                    console.error('[Cooper] foto fail:', errItem);
+                    failed++;
+                }
+            }
 
-            showToast((_cooperType === 'recogida' ? 'Recogida' : 'Entrega') + ' Cooper registrada', 'success');
-            document.getElementById('cooper-modal').classList.remove('active');
-            _cooperType = null;
-            // Refresh counters and log
+            if (uploaded > 0) {
+                var verb = (_cooperType === 'recogida' ? 'Recogida' : 'Entrega');
+                if (failed === 0) {
+                    showToast(verb + ' Cooper: ' + uploaded + ' foto(s) enviada(s) ✅', 'success');
+                } else {
+                    showToast(verb + ': ' + uploaded + ' OK · ' + failed + ' fallaron', 'warning', 5000);
+                }
+                try { navigator.vibrate && navigator.vibrate([60, 30, 60]); } catch(_) {}
+            } else {
+                showToast('No se pudo enviar ninguna foto', 'error');
+            }
+
+            // Cierra el modal solo si todo fue OK; si hubo fallos, mantén la cola para reintentar
+            if (failed === 0) {
+                document.getElementById('cooper-modal').classList.remove('active');
+                _cooperType = null;
+                _cooperQueue = [];
+                _cooperRefreshUI();
+            } else {
+                // Quita las que se subieron OK del inicio para que el reintento solo procese las que fallaron
+                _cooperQueue = _cooperQueue.slice(uploaded);
+                _cooperRefreshUI();
+            }
+
             cooperUpdateCounters();
-            if (document.getElementById('cooper-log-panel').style.display !== 'none') {
+            var logPanel = document.getElementById('cooper-log-panel');
+            if (logPanel && logPanel.style.display !== 'none') {
                 loadCooperLog();
             }
         } catch(err) {
             showToast('Error: ' + err.message, 'error');
         } finally {
             sendBtn.disabled = false;
-            sendBtn.textContent = 'ENVIAR FOTO';
+            _cooperRefreshUI();
         }
     });
 
