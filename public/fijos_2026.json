@@ -1,0 +1,177 @@
+{
+  "version": "2026-05-19",
+  "source": "FIJOS-2026.docx",
+  "notes": "Tarifas especiales NOVAPACK 2026. Valores 60/553/1469 confirmados por admin 2026-05-19.",
+  "entries": [
+    {
+      "idNums": ["1469"],
+      "name": "AZUR GLOBAL BUSINESS",
+      "kind": "per_package",
+      "rates": { "paquete": 4.00, "bateria": 3.50 },
+      "instructions": "Pasar 1 a 1",
+      "note": "PAQ 4,00 € · BAT 3,50 € · Pasar 1 a 1"
+    },
+    {
+      "idNums": ["167", "168", "545"],
+      "name": "T. SCORA SUR (cd/sv)",
+      "kind": "per_package",
+      "rates": { "paquete": 8.00, "volumen": 12.00 },
+      "instructions": "Pasar 1 a 1",
+      "note": "PAQ 8,00 € · VOLUMEN 12,00 € · Pasar 1 a 1"
+    },
+    {
+      "idNums": ["1681", "1696"],
+      "name": "RECALVI",
+      "kind": "per_package",
+      "rates": { "paquete_base": 8.50, "paquete_adicional": 6.00, "bateria": 6.00 },
+      "note": "Primer paquete 8,50 € · adicional 6,00 € · BAT 6,00 € · S y especial paq."
+    },
+    {
+      "idNums": ["106"],
+      "name": "LUIS MOLEON",
+      "kind": "flat_plus_extras",
+      "flatAmount": 1650.00,
+      "extras": { "volumen": 10.00, "palet": 12.00 },
+      "destino": "GRANADA",
+      "note": "PTE 1.650 € (factura a Granada) + VOLUMEN 10,00 € + PALET 12,00 €. Próximo año 1.900 €"
+    },
+    {
+      "idNums": ["1459"],
+      "name": "TRANSMIFREN (CD/MAL)",
+      "kind": "flat_plus_routes",
+      "flatAmount": 1300.00,
+      "routes": {
+        "CD-MAL": "1300 base",
+        "CD-GR": 8.00,
+        "CD-SV": 8.00,
+        "SV-": 11.00
+      },
+      "note": "1.300 € Córdoba ↔ Málaga · Córdoba a GR/SV 8,00 € · Sevilla tarifa normal 11,00 €. NO HAY .S"
+    },
+    {
+      "idNums": ["1596"],
+      "name": "GEIMEX",
+      "kind": "flat",
+      "flatAmount": 2800.00,
+      "note": "PTE 2.800,00 € · S/.S"
+    },
+    {
+      "idNums": ["60"],
+      "name": "COVEY (Concentr. y Venta Ind. Vehículos)",
+      "kind": "flat_plus_extras",
+      "flatAmount": 2200.00,
+      "extras": { "bi_200l": 50.00 },
+      "note": "PTE 2.200,00 € + BI-200L 50,00 € · CONFIRMADO ADMIN 2026-05-19"
+    },
+    {
+      "idNums": ["553"],
+      "name": "ECOALBORAN",
+      "kind": "flat_plus_extras",
+      "flatAmount": 600.00,
+      "extras": { "bi_200l": 50.00 },
+      "note": "PTE 600,00 € + BI-200L 50,00 € · CONFIRMADO ADMIN 2026-05-19"
+    },
+    {
+      "idNums": ["1499"],
+      "name": "AVESA",
+      "kind": "normal_plus_special",
+      "specials": { "sobre_5000": 70.00 },
+      "note": "Tarifa normal + Sobre de 5.000 € aprox: 70 €"
+    },
+    { "idNums": ["1003"], "name": "FLAMAR",   "kind": "normal", "note": "Tarifa normal" },
+    { "idNums": ["1011"], "name": "CAYMA",    "kind": "normal", "note": "Tarifa normal" },
+    {
+      "idNums": ["1536"],
+      "name": "EURO RECAMBIOS DEL CAMION",
+      "kind": "per_package_weight",
+      "rates": { "paquete": 9.50, "bulto": 14.00, "kg_80": 5.00, "kg_100": 45.00, "kg_200": 70.00 },
+      "note": "PAQ 9,50 € · BULTOS 14,00 € · 80 kg 5,00 · 100 kg 45,00 · 200 kg 70,00 €"
+    },
+    { "idNums": ["1076"], "name": "RADSA",    "kind": "normal", "note": "Tarifa normal" },
+    {
+      "idNums": ["1578"],
+      "name": "CONCESUR",
+      "kind": "per_package",
+      "rates": { "paquete": 9.00, "bulto": 14.00, "luna": 14.00 },
+      "noPaymentDue": true,
+      "note": "PAQ 9,00 € · BULTO 14,00 € (LUNA = BULTO) · P.A. NO"
+    },
+    {
+      "idNums": ["1646"],
+      "name": "CUSTOM WHEELS (Utrecht)",
+      "kind": "per_package",
+      "rates": { "paquete": 10.50, "bulto": 14.00 },
+      "noPaymentDue": true,
+      "note": "PAQ 10,50 € · BULTOS 14,00 € · P.A. NO"
+    },
+    {
+      "idNums": ["1654"],
+      "name": "ANDRES CABRERO",
+      "kind": "per_package",
+      "rates": { "paquete": 8.50 },
+      "note": "PAQ 8,50 €"
+    },
+    {
+      "idNums": ["DAVASA"],
+      "name": "DAVASA (varios)",
+      "kind": "per_package_prov_inter",
+      "rates": {
+        "paquete_interprovincial": 9.00,
+        "paquete_provincial": 8.00,
+        "bulto_interprovincial": 14.00,
+        "bulto_provincial": 13.00
+      },
+      "note": "PAQ 9,00 INT / 8,00 PROV · BULTOS 14,00 INT / 13,00 PROV"
+    },
+    { "idNums": ["1642"], "name": "CRISAUTO", "kind": "normal", "note": "Tarifa normal" },
+    {
+      "idNums": ["1735"],
+      "name": "J. MANUEL (MUNDOLLANTA)",
+      "kind": "per_unit",
+      "rates": { "llanta": 11.50 },
+      "cr_rule": { "base": 10.00, "if_above_700": "2% del importe" },
+      "note": "11,50 € por llanta · CR 10 € pero si CR + 700 = 2 % del importe"
+    },
+    { "idNums": ["573", "312"], "name": "JUMASA", "kind": "normal", "note": "Tarifa normal" },
+    {
+      "idNums": ["1042"],
+      "name": "ANDALUZA (Sofía)",
+      "kind": "per_package_sofia",
+      "rates": { "S": 6.00, "F": 8.50, "G": 9.00, "C": 13.00 },
+      "validUntil": "2025-03-31",
+      "note": "Sofía · S 6,00 / N y T / F 8,5 / 9 / 8,5 / C 13,00 (50 % rotura) hasta marzo 25"
+    },
+    {
+      "idNums": ["1652"],
+      "name": "ALVIASA (Sofía)",
+      "kind": "per_package",
+      "rates": { "luna": 7.00, "furgo": 8.00, "camion": 10.00, "sobre": 5.00 },
+      "rotura": "Dev. máx 150 € no se cobra",
+      "instructions": "Pasar 1 a 1",
+      "note": "LUNA 7,00 · FURGO 8,00 · CAMION 10,00 · SOBRE 5,00 · Rotura dev. máx 150 € NO se cobra · Pasar 1 a 1"
+    },
+    {
+      "idNums": ["1019"],
+      "name": "RIMOSA",
+      "kind": "per_package_with_palet",
+      "rates": { "paquete": 9.50, "bulto": 14.00, "bi_200": 40.00, "palet_sin_peso": "DESDE 1-8" },
+      "note": "9,50 € PAQ · BULTOS 14,00 · BI-200 40,00 · PALET s/peso (desde 1-8). .S"
+    },
+    {
+      "idNums": ["1086"],
+      "name": "SANSA",
+      "kind": "flat",
+      "flatAmount": 2000.00,
+      "futureAmount": 2500.00,
+      "status": "PENDIENTE_JUANMA",
+      "note": "PTE 2.000 € (pendiente Juanma hablará semana próxima). Próximo: 2.500 €"
+    },
+    {
+      "idNums": ["305"],
+      "name": "VEINSUR",
+      "kind": "normal_with_suffix",
+      "albaranSuffix": ["S", "M", "G"],
+      "note": "Tarifa normal añadiendo S, M, G al número de albarán"
+    }
+  ]
+}

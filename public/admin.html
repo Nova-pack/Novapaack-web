@@ -5829,6 +5829,9 @@ window.runPublicTicketsBackfill = async function() {
                 <div style="display:flex; gap:10px; flex-wrap: wrap;">
                     <button class="btn btn-outline" onclick="syncAllTicketsIndices()"
                         title="Corregir vinculación de albaranes huérfanos"><span class="material-symbols-outlined">link</span> SINCRO GLOBAL</button>
+                    <button class="btn" style="background:#FF9800; color:#000; border:0; font-weight:700;"
+                        onclick="if(typeof window.openFijos2026Importer==='function') window.openFijos2026Importer(); else alert('Importador no disponible (recarga la página).');"
+                        title="Aplica las tarifas especiales del documento FIJOS-2026.docx a los clientes (flat rate + custom por bulto)">📋 FIJOS-2026</button>
                     <button class="btn btn-primary" id="btn-add-user"
                         onclick="if(window.openNewUserModal) window.openNewUserModal();">+ NUEVO CLIENTE</button>
                     <button class="btn btn-danger" onclick="deleteSelectedClients()"><span class="material-symbols-outlined">delete</span> ELIMINAR SELECCIONADOS</button>
@@ -20581,6 +20584,7 @@ window.importTarifas50 = async () => {
 <script src="pricing_engine.js?v=20260514_provinces"></script>
 <script src="tariff_editor.js?v=20260514_sync"></script>
 <script src="contacts_migration.js?v=20260516_v1"></script>
+<script src="fijos_2026_import.js?v=20260519_v1"></script>
 
 </body>
 </html>
