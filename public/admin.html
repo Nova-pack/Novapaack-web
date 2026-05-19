@@ -7740,8 +7740,8 @@ window.runPublicTicketsBackfill = async function() {
 
             let userMap = {}; window.userMap = userMap;
             let reportsData = [];
-            let tariffsCache = {};
-            let userCompaniesMap = {};
+            let tariffsCache = {}; window.tariffsCache = tariffsCache;
+            let userCompaniesMap = {}; window.userCompaniesMap = userCompaniesMap;
             let adminManPackages = [];
             let adminTicketUID = null;
             let adminTicketCompID = null;
@@ -15142,6 +15142,11 @@ window.printTicketFromAdmin = async (uid, compId, docId) => {
                         await db.collection('users').doc(currentAdminTargetUid).collection('destinations').add(destData);
                         showToast('Destinatario añadido a la agenda', 'success');
                     }
+                    // Invalidar cache de autocomplete del albarán para este cliente
+                    // (el próximo formulario de albarán recargará la lista de destinos)
+                    if (window.adminDestinationsCache && window.adminDestinationsCache[currentAdminTargetUid] !== undefined) {
+                        delete window.adminDestinationsCache[currentAdminTargetUid];
+                    }
                     resetAdminDestForm();
                     loadAdminDestinationsList(currentAdminTargetUid);
                 } catch (e) { alert("Error: " + e.message); }
@@ -18389,8 +18394,34 @@ window._invalidateAllInvoiceCaches = function(invoiceDocId, optionalPatch) {
         if (typeof window._fichaLoadInvoices === 'function') {
             try { window._fichaLoadInvoices(); } catch(_) {}
         }
+        // 5) Listado paginado clásico (view-billing) — re-render página actual
+        //    si la vista está visible
+        var billingView = document.getElementById('view-billing');
+        if (billingView && billingView.style.display !== 'none' && typeof window.loadInvoices === 'function') {
+            try { window.loadInvoices('current'); } catch(_) {}
+        }
     } catch (e) {
         console.warn('[invalidateAllInvoiceCaches] error:', e);
+    }
+};
+
+// ─── INVALIDACIÓN DE CACHES DE TICKETS / ALBARANES ──────────────────
+// Tras grabar/modificar/anular un albarán, refresca todas las vistas:
+// listado admin, ruta, papelera, ficha cliente albaranes.
+window._invalidateAllTicketCaches = function(ticketDocId, optionalPatch) {
+    try {
+        // Listado admin tickets (view-admin-tickets ya usa onSnapshot — se actualiza solo)
+        // pero la ficha cliente puede tener una vista separada
+        if (typeof window._fichaLoadTickets === 'function') {
+            try { window._fichaLoadTickets(); } catch(_) {}
+        }
+        // Vista paginada clásica si existe
+        var ticketsView = document.getElementById('view-admin-tickets');
+        if (ticketsView && ticketsView.style.display !== 'none' && typeof window.loadAdminTickets === 'function') {
+            try { window.loadAdminTickets('current'); } catch(_) {}
+        }
+    } catch (e) {
+        console.warn('[invalidateAllTicketCaches] error:', e);
     }
 };
 

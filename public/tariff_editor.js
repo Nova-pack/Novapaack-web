@@ -72,6 +72,10 @@
         };
         delete payload.id; // no guardar id como field
         await db.collection('tariffs').doc(id).set(payload, { merge: true });
+        // Invalidar cache global de tarifas para forzar refresh en Reports / facturación
+        if (window.tariffsCache) {
+            try { window.tariffsCache = {}; } catch(_) {}
+        }
         return id;
     }
 
