@@ -747,6 +747,25 @@ function initApp() {
             window.matchMedia && window.matchMedia('(display-mode: standalone)').matches ||
             window.navigator.standalone === true;
 
+        // Track de visibilidad: si popstate llega justo después de volver del background
+        // (típico al regresar de la cámara nativa o de otra app), lo ignoramos sin
+        // mostrar el confirm — el usuario no está intentando salir, solo volvió.
+        var _npLastVisibleAt = Date.now();
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') _npLastVisibleAt = Date.now();
+        });
+
+        // Helper: detectar si hay algún modal abierto (Cooper, recogida sin doc, etc.)
+        function _npAnyModalOpen() {
+            // .modal-overlay.active = sheets nuevos · #pickup-no-doc-modal[display:flex] = recogida
+            if (document.querySelector('.modal-overlay.active')) return true;
+            var pnd = document.getElementById('pickup-no-doc-modal');
+            if (pnd && pnd.style.display && pnd.style.display !== 'none') return true;
+            var disc = document.getElementById('discrepancy-modal');
+            if (disc && disc.style.display && disc.style.display !== 'none') return true;
+            return false;
+        }
+
         // --- 1) TRAMPA BOTÓN "ATRÁS" (Android) ---
         // Inyectamos un estado dummy al historial. Cuando el repartidor pulsa
         // "Atrás" se dispara popstate → mostramos confirm. Si dice NO, volvemos
@@ -758,6 +777,25 @@ function initApp() {
             // Si el evento viene de una navegación interna controlada (no anti-close),
             // dejamos pasar — usa window._npAllowExit = true antes de hacer history.back()
             if (window._npAllowExit) { window._npAllowExit = false; return; }
+
+            // Si acabamos de volver del background (cámara nativa, otra app...),
+            // ignoramos el popstate silenciosamente — no es intento de salir
+            if (Date.now() - _npLastVisibleAt < 2000) {
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+                return;
+            }
+
+            // Si hay un modal abierto, primero cierra el modal en lugar de salir
+            if (_npAnyModalOpen()) {
+                // Cierra el primer modal abierto
+                var m = document.querySelector('.modal-overlay.active');
+                if (m) m.classList.remove('active');
+                var pnd = document.getElementById('pickup-no-doc-modal');
+                if (pnd && pnd.style.display === 'flex') pnd.style.display = 'none';
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+                return;
+            }
+
             var ok = confirm(
                 '⚠️ ¿Salir de la app de Reparto?\n\n' +
                 'Vas a perder la sesión y tendrás que volver a entrar.\n\n' +
@@ -834,21 +872,38 @@ function initApp() {
 
             var banner = document.createElement('div');
             banner.id = 'np-install-banner';
+            // z-index 150: por debajo del modal (200) para no tapar botones SEND/CANCEL
+            // Position TOP en lugar de bottom para evitar conflicto con sheets bottom-anchor
             banner.style.cssText =
-                'position:fixed; bottom:12px; left:12px; right:12px; z-index:99999; ' +
+                'position:fixed; top:8px; left:12px; right:12px; z-index:150; ' +
                 'background:linear-gradient(135deg, #FF4D00, #FF9800); color:#fff; ' +
-                'border-radius:14px; padding:12px 14px; font-family:Inter,Arial,sans-serif; ' +
-                'box-shadow:0 8px 24px rgba(0,0,0,0.4); display:flex; align-items:center; ' +
-                'gap:10px; font-size:0.85rem;';
+                'border-radius:14px; padding:10px 12px; font-family:Inter,Arial,sans-serif; ' +
+                'box-shadow:0 4px 16px rgba(0,0,0,0.4); display:flex; align-items:center; ' +
+                'gap:10px; font-size:0.82rem;';
             banner.innerHTML =
-                '<span class="material-symbols-outlined" style="font-size:1.6rem;">install_mobile</span>' +
-                '<div style="flex:1; line-height:1.25;"><b>Instala la app de Reparto</b><br>' +
-                '<span style="opacity:0.9; font-size:0.75rem;">Evita cierres accidentales y arranca más rápido</span></div>' +
+                '<span class="material-symbols-outlined" style="font-size:1.5rem;">install_mobile</span>' +
+                '<div style="flex:1; line-height:1.2;"><b>Instala la app</b><br>' +
+                '<span style="opacity:0.9; font-size:0.7rem;">Evita cierres accidentales</span></div>' +
                 '<button id="np-install-btn" style="background:#fff; color:#FF4D00; border:0; ' +
-                'padding:8px 14px; border-radius:8px; font-weight:900; cursor:pointer; font-size:0.8rem;">INSTALAR</button>' +
+                'padding:6px 12px; border-radius:6px; font-weight:900; cursor:pointer; font-size:0.75rem;">INSTALAR</button>' +
                 '<button id="np-install-skip" aria-label="Cerrar" style="background:transparent; ' +
                 'border:0; color:#fff; font-size:1.2rem; cursor:pointer; padding:4px 6px;">×</button>';
             document.body.appendChild(banner);
+
+            // Auto-ocultar cuando se abra cualquier modal (Cooper, recogida sin doc, etc.)
+            // y re-mostrar cuando se cierre. Observer ligero sobre body para detectar
+            // cambios de clase 'active' en modales.
+            try {
+                var bannerObs = new MutationObserver(function() {
+                    var anyOpen = !!document.querySelector('.modal-overlay.active');
+                    var pnd = document.getElementById('pickup-no-doc-modal');
+                    if (pnd && pnd.style.display && pnd.style.display !== 'none') anyOpen = true;
+                    var disc = document.getElementById('discrepancy-modal');
+                    if (disc && disc.style.display && disc.style.display !== 'none') anyOpen = true;
+                    banner.style.display = anyOpen ? 'none' : 'flex';
+                });
+                bannerObs.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class', 'style'] });
+            } catch(_) {}
 
             document.getElementById('np-install-btn').addEventListener('click', async function() {
                 if (_deferredInstallPrompt) {
