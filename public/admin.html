@@ -9812,6 +9812,15 @@ window.runPublicTicketsBackfill = async function() {
                 batch.set(db.collection('deleted_users').doc(id), Object.assign({}, data, deleteMeta, { _originalDocId: id, _cascadeCounts: cascadeCounts })); operationsCount++;
                 batch.delete(db.collection('users').doc(id)); operationsCount++;
                 await batch.commit();
+
+                // Limpieza in-memory inmediata para que el repaint refleje el borrado
+                // sin esperar al listener onSnapshot
+                if (window.userMap) {
+                    if (window.userMap[id]) delete window.userMap[id];
+                    if (data.authUid && window.userMap[data.authUid]) delete window.userMap[data.authUid];
+                }
+                if (window.userCompaniesMap && window.userCompaniesMap[id]) delete window.userCompaniesMap[id];
+
                 // 5. contacts cleanup
                 let contactsCleaned = 0;
                 try {
@@ -18280,6 +18289,109 @@ window.showLoading = function() {
 window.hideLoading = function() {
     var el = document.getElementById('loading-overlay');
     if (el) el.style.display = 'none';
+};
+
+// ─── INVALIDACIÓN COORDINADA DE CACHES POR CLIENTE ────────────────────
+// Tras cualquier write a /users (save ficha, modal pequeño, cambio en
+// modal alta, edición rápida...), llamar a este helper para que TODAS
+// las vistas que tengan ese cliente cacheado lo refresquen.
+//
+// Uso:
+//   await db.collection('users').doc(uid).update(patch);
+//   window._invalidateAllClientCaches(uid, patch);
+//
+// Si tienes el patch (el diff que aplicaste), se actualiza in-memory
+// SIN releer Firestore — repaint inmediato.
+// Si no, pasa undefined y se marcan caches como stale para forzar
+// refresh en el próximo render.
+window._invalidateAllClientCaches = function(clientId, optionalPatch) {
+    if (!clientId) return;
+    try {
+        // 1) userMap (vista legacy + listener principal)
+        if (window.userMap && window.userMap[clientId]) {
+            if (optionalPatch && typeof optionalPatch === 'object') {
+                Object.assign(window.userMap[clientId], optionalPatch);
+            }
+        }
+        // 2) _advClientsCache (vista Facturación PRO)
+        if (window._advClientsCache && Array.isArray(window._advClientsCache)) {
+            var idx = window._advClientsCache.findIndex(function(c) { return c && c.id === clientId; });
+            if (idx >= 0 && optionalPatch && typeof optionalPatch === 'object') {
+                Object.assign(window._advClientsCache[idx], optionalPatch);
+                // Re-render si la vista está visible
+                var ws = document.getElementById('adv-clients-workspace');
+                if (ws && ws.style.display !== 'none' && typeof window.advRenderClients === 'function') {
+                    if (typeof window.advMgmtFilterClients === 'function') {
+                        window.advMgmtFilterClients();
+                    } else {
+                        window.advRenderClients(window._advClientsCache);
+                    }
+                }
+            }
+        }
+        // 3) contactsCache (directorio unificado)
+        if (typeof window.invalidateContactsCache === 'function') {
+            try { window.invalidateContactsCache(); } catch(_) {}
+        }
+        // 4) Caches secundarios que dependen del cliente
+        if (window.adminDestinationsCache && window.adminDestinationsCache[clientId] !== undefined) {
+            // Marcar como stale — se recargará la próxima vez
+            delete window.adminDestinationsCache[clientId];
+        }
+        if (window.userCompaniesMap && window.userCompaniesMap[clientId] !== undefined && optionalPatch) {
+            // Si el patch toca companies hint, actualizar
+            if (Array.isArray(optionalPatch.companies)) {
+                window.userCompaniesMap[clientId] = optionalPatch.companies.map(function(c) { return c.name; }).join(' ');
+            }
+        }
+        // 5) Refrescar ficha cliente si está abierta y es esta misma
+        if (window._fichaClientData && window._fichaClientData.id === clientId) {
+            if (optionalPatch) Object.assign(window._fichaClientData, optionalPatch);
+            if (typeof window._fichaRender === 'function') {
+                try { window._fichaRender(); } catch(_) {}
+            }
+        }
+    } catch (e) {
+        console.warn('[invalidateAllClientCaches] error:', e);
+    }
+};
+
+// ─── INVALIDACIÓN COORDINADA DE CACHES DE FACTURAS ──────────────────
+// Tras pagar/cobrar/anular/restaurar una factura, propaga a todas las
+// vistas: facturas central, ficha cliente facturas, contabilidad cartera.
+window._invalidateAllInvoiceCaches = function(invoiceDocId, optionalPatch) {
+    try {
+        // 1) Cache central de facturas (facturas_central.js)
+        if (window._facCache && Array.isArray(window._facCache)) {
+            var idx = window._facCache.findIndex(function(f) { return f && (f.docId === invoiceDocId || f.id === invoiceDocId); });
+            if (idx >= 0 && optionalPatch && typeof optionalPatch === 'object') {
+                Object.assign(window._facCache[idx], optionalPatch);
+            }
+            if (typeof window._facRender === 'function') {
+                try { window._facRender(); } catch(_) {}
+            }
+        }
+        // 2) Cache de billing_adv (vista PRO)
+        if (window._advInvoicesCache && Array.isArray(window._advInvoicesCache)) {
+            var idx2 = window._advInvoicesCache.findIndex(function(f) { return f && (f.docId === invoiceDocId || f.id === invoiceDocId); });
+            if (idx2 >= 0 && optionalPatch && typeof optionalPatch === 'object') {
+                Object.assign(window._advInvoicesCache[idx2], optionalPatch);
+            }
+            if (typeof window.advRenderInvoicesList === 'function') {
+                try { window.advRenderInvoicesList(); } catch(_) {}
+            }
+        }
+        // 3) Cartera contable
+        if (typeof window.contaLoadCartera === 'function') {
+            try { window.contaLoadCartera(); } catch(_) {}
+        }
+        // 4) Ficha cliente facturas (si abierta)
+        if (typeof window._fichaLoadInvoices === 'function') {
+            try { window._fichaLoadInvoices(); } catch(_) {}
+        }
+    } catch (e) {
+        console.warn('[invalidateAllInvoiceCaches] error:', e);
+    }
 };
 
 // ─── TOAST NO-BLOQUEANTE ─────────────────────────────────────────────────

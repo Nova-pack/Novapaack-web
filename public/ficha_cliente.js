@@ -2501,6 +2501,15 @@
             }
             _fichaClientData = { ..._fichaClientData, ...updates };
 
+            // Propagar a TODAS las vistas que tengan este cliente cacheado
+            // (Facturación PRO, contactos, etc.) — sin recargar nada
+            if (typeof window._invalidateAllClientCaches === 'function') {
+                try { window._invalidateAllClientCaches(savedId, updates); } catch(_) {}
+                if (savedId !== _fichaClientId) {
+                    try { window._invalidateAllClientCaches(_fichaClientId, updates); } catch(_) {}
+                }
+            }
+
             // Sincronizar directorio de rutas si cambió el tel. de ruta
             // (o si cambiaron CP/localidad/nombre/NIF que aparecen en el directorio).
             try {
@@ -2564,7 +2573,11 @@
                 }
             } catch(rde) { console.warn('[ficha save] dir sync fail:', rde); }
 
-            alert('✅ Ficha de cliente actualizada correctamente.' + (compMainUpdate ? '\n\n📦 Prefijo / nº albarán también guardados.' : ''));
+            if (typeof window.showToast === 'function') {
+                window.showToast('Ficha actualizada' + (compMainUpdate ? ' · prefijo/nº albarán también guardados' : ''), 'success');
+            } else {
+                alert('✅ Ficha de cliente actualizada correctamente.' + (compMainUpdate ? '\n\n📦 Prefijo / nº albarán también guardados.' : ''));
+            }
 
             // Re-render header with updated data
             _fichaRender();

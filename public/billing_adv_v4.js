@@ -874,8 +874,17 @@ if(btnPay) {
         if(!advCurrentInvoiceId) { alert("Primero debes guardar la factura."); return; }
         if(confirm("¿Marcar esta factura como COBRADA?")) {
             try {
-                await db.collection('invoices').doc(advCurrentInvoiceId).update({ paid: true, paidDate: new Date(), ...(typeof getOperatorStamp === 'function' ? getOperatorStamp() : {}) });
-                alert("✅ Factura marcada como cobrada exitosamente.");
+                const paidPatch = { paid: true, paidDate: new Date(), ...(typeof getOperatorStamp === 'function' ? getOperatorStamp() : {}) };
+                await db.collection('invoices').doc(advCurrentInvoiceId).update(paidPatch);
+                // Propagar a TODAS las vistas de facturas: central, cartera, ficha cliente
+                if (typeof window._invalidateAllInvoiceCaches === 'function') {
+                    try { window._invalidateAllInvoiceCaches(advCurrentInvoiceId, paidPatch); } catch(_) {}
+                }
+                if (typeof window.showToast === 'function') {
+                    window.showToast('Factura marcada como cobrada', 'success');
+                } else {
+                    alert("✅ Factura marcada como cobrada exitosamente.");
+                }
                 document.getElementById('btn-adv-pay').style.display = 'none';
             } catch(e) {
                 alert("Error: " + e.message);
