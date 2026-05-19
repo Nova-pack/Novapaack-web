@@ -6682,6 +6682,7 @@ window.runPublicTicketsBackfill = async function() {
                         <div class="form-group">
                             <label style="display:block; color:#aaa; font-size:0.8rem; margin-bottom:5px;">Nº Cliente (ID)</label>
                             <input type="number" id="new-user-id-num" required style="width:100%; padding:10px; background:rgba(0,0,0,0.3); border:1px solid var(--border-glass); color:white; border-radius:8px;">
+                            <div id="new-user-id-num-status" style="font-size:0.72rem; margin-top:4px; min-height:14px;"></div>
                         </div>
                         <div class="form-group">
                             <label style="display:block; color:#aaa; font-size:0.8rem; margin-bottom:5px;">Razón Social / Empresa</label>
@@ -8800,6 +8801,40 @@ window.runPublicTicketsBackfill = async function() {
                                 hideLoading();
                                 return;
                             }
+                        } else {
+                            // ── EDICIÓN: si cambia el idNum, verificar duplicados (excluyendo el propio doc) ──
+                            const oldData = (window.userMap && window.userMap[userId]) ? window.userMap[userId] : {};
+                            const oldIdNum = String(oldData.idNum || '').trim();
+                            const newIdNum = String(idNum).trim();
+                            if (newIdNum && newIdNum !== oldIdNum) {
+                                // Buscar duplicados (como string o número), tolerante a "0123" vs "123"
+                                const dupChecks = [
+                                    db.collection('users').where('idNum', '==', newIdNum).get(),
+                                    db.collection('users').where('idNum', '==', parseInt(newIdNum)).get()
+                                ];
+                                const [snapStr, snapNum] = await Promise.all(dupChecks);
+                                const conflicts = [];
+                                snapStr.forEach(d => { if (d.id !== userId) conflicts.push({ id: d.id, ...d.data() }); });
+                                snapNum.forEach(d => { if (d.id !== userId && !conflicts.find(c => c.id === d.id)) conflicts.push({ id: d.id, ...d.data() }); });
+                                if (conflicts.length > 0) {
+                                    const c = conflicts[0];
+                                    alert(`❌ NO se puede guardar.\n\nEl Nº de cliente #${newIdNum} ya pertenece a:\n  • "${c.name || '—'}"\n  • Email: ${c.email || '—'}\n  • NIF: ${c.nif || '—'}\n\nElige un número diferente o, si quieres fusionar los clientes, hazlo desde la herramienta "Migrar contactos".`);
+                                    hideLoading();
+                                    return;
+                                }
+                                // Aviso: el cambio NO actualiza retroactivamente albaranes/facturas ya emitidos
+                                const cascadeWarn =
+                                    `⚠️ Vas a cambiar el Nº de cliente:\n` +
+                                    `   #${oldIdNum || '—'}  →  #${newIdNum}\n\n` +
+                                    `Esto afectará a:\n` +
+                                    `  ✓ La ficha del cliente (inmediato)\n` +
+                                    `  ✓ Nuevos albaranes y facturas (futuros)\n` +
+                                    `  ✗ Albaranes y facturas YA emitidos seguirán mostrando #${oldIdNum || '—'} (campo clientIdNum)\n` +
+                                    `  ✗ La entrada en /contacts también se sincroniza al guardar la ficha\n\n` +
+                                    `Recomendación: solo cambiar si el cliente nunca ha facturado con este número.\n\n` +
+                                    `¿Continuar?`;
+                                if (!confirm(cascadeWarn)) { hideLoading(); return; }
+                            }
                         }
 
                         // 2. GUARDAR DATOS DEL USUARIO
@@ -9112,7 +9147,7 @@ window.runPublicTicketsBackfill = async function() {
                 if (statusActions) statusActions.innerHTML = '';
                 if (statusInfo) statusInfo.style.display = 'none';
                 if (typeof window._updateAlbaranPreview === 'function') window._updateAlbaranPreview();
-                // Auto-prefix tras teclear el ID
+                // Auto-prefix tras teclear el ID + detector duplicados en tiempo real
                 const idNumInput = document.getElementById('new-user-id-num');
                 if (idNumInput && !idNumInput._autoPrefixWired) {
                     idNumInput._autoPrefixWired = true;
@@ -9123,8 +9158,65 @@ window.runPublicTicketsBackfill = async function() {
                             pfxEl.placeholder = v || 'NP';
                         }
                         if (typeof window._updateAlbaranPreview === 'function') window._updateAlbaranPreview();
+                        // Live duplicate check
+                        if (typeof window._checkIdNumDuplicate === 'function') window._checkIdNumDuplicate();
+                    });
+                    // También al cargar el modal en modo edición
+                    idNumInput.addEventListener('blur', function() {
+                        if (typeof window._checkIdNumDuplicate === 'function') window._checkIdNumDuplicate();
                     });
                 }
+            };
+
+            // ── DETECTOR DE DUPLICADO LIVE (Nº Cliente) ──
+            // Muestra chip rojo/verde/gris bajo el input mientras se teclea.
+            // Lee de userMap (in-memory) para feedback instantáneo sin Firestore.
+            window._checkIdNumDuplicate = function() {
+                const input = document.getElementById('new-user-id-num');
+                const status = document.getElementById('new-user-id-num-status');
+                if (!input || !status) return;
+                const newId = String(input.value || '').trim();
+                const currentUid = document.getElementById('edit-user-uid').value || '';
+                if (!newId) {
+                    status.innerHTML = '<span style="color:#777;">Introduce un número</span>';
+                    input.style.borderColor = 'var(--border-glass)';
+                    return;
+                }
+                // Si en edición y no ha cambiado → OK
+                if (currentUid && window.userMap && window.userMap[currentUid]) {
+                    const oldId = String(window.userMap[currentUid].idNum || '').trim();
+                    if (newId === oldId) {
+                        status.innerHTML = '<span style="color:#888;">Nº actual del cliente</span>';
+                        input.style.borderColor = 'var(--border-glass)';
+                        return;
+                    }
+                }
+                // Buscar duplicado en userMap (excluyendo el propio doc)
+                let dup = null;
+                if (window.userMap) {
+                    for (const [uid, u] of Object.entries(window.userMap)) {
+                        if (uid === currentUid) continue;
+                        const idStr = String(u.idNum || '').trim();
+                        if (idStr === newId || idStr === String(parseInt(newId))) {
+                            dup = { uid, ...u };
+                            break;
+                        }
+                    }
+                }
+                if (dup) {
+                    status.innerHTML = '<span style="background:#E53935; color:#fff; padding:2px 8px; border-radius:10px; font-weight:700;">⚠ Duplicado</span> <span style="color:#FF8A80;">Ya usado por <b>' + escapeHtml(dup.name || '—') + '</b>' + (dup.nif ? ' (NIF ' + escapeHtml(dup.nif) + ')' : '') + '</span>';
+                    input.style.borderColor = '#E53935';
+                } else {
+                    status.innerHTML = '<span style="background:#1B5E20; color:#A5D6A7; padding:2px 8px; border-radius:10px; font-weight:700;">✓ Disponible</span>';
+                    input.style.borderColor = '#4CAF50';
+                }
+            };
+
+            // Engancha también la apertura del modal de edición para refrescar el chip
+            const _origOpenEdit = window.openEditUserModal;
+            window.openEditUserModal = function(uid) {
+                if (typeof _origOpenEdit === 'function') _origOpenEdit(uid);
+                setTimeout(function(){ if (typeof window._checkIdNumDuplicate === 'function') window._checkIdNumDuplicate(); }, 50);
             };
 
             // --- HELPER: Find child users of a parent ---
