@@ -182,6 +182,46 @@
         return parts.join(' · ') || '—';
     }
 
+    /** Texto adicional indicando si se corregirán datos de sucursal */
+    function _describeBranchFix(entry, idNum) {
+        if (!entry.branchFixes || !entry.branchFixes[String(idNum)]) return '';
+        const fix = entry.branchFixes[String(idNum)];
+        const summary = [];
+        if (fix.name) summary.push('nombre');
+        if (fix.street) summary.push('dirección');
+        if (fix.cp) summary.push('CP');
+        if (fix.localidad) summary.push('localidad');
+        if (fix.senderPhone) summary.push('tel');
+        if (fix.email) summary.push('email');
+        if (fix.albaranSuffix) summary.push('sufijo');
+        if (!summary.length) return '';
+        return '<div style="margin-top:4px; padding:3px 6px; background:rgba(33,150,243,0.15); border-left:3px solid #2196F3; border-radius:3px; font-size:0.65rem; color:#90CAF9;">🔧 Corrige datos: ' + summary.join(', ') + '</div>';
+    }
+
+    /** Si la entry tiene branchFixes y la fila es de un idNum con fix, devuelve el sub-payload */
+    function _buildBranchFixPayload(entry, idNum) {
+        if (!entry.branchFixes) return {};
+        const fix = entry.branchFixes[String(idNum)];
+        if (!fix) return {};
+        const out = {};
+        // Campos directos
+        ['name', 'street', 'cp', 'localidad', 'province', 'senderPhone', 'email', 'albaranSuffix'].forEach(k => {
+            if (fix[k] !== undefined && fix[k] !== '') out[k] = fix[k];
+        });
+        // addressExtra → guarda como anotación accesoria
+        if (fix.addressExtra) out.addressExtra = fix.addressExtra;
+        // Recompone address legacy con la nueva data (compatibilidad)
+        const parts = [];
+        if (fix.street) parts.push(fix.street);
+        if (fix.addressExtra) parts.push(fix.addressExtra);
+        if (fix.cp) parts.push('(CP ' + fix.cp + ')');
+        if (fix.localidad) parts.push(fix.localidad);
+        if (parts.length) out.address = parts.join(', ');
+        // albaranSuffix individual sobreescribe el del entry global
+        if (fix.albaranSuffix) out.albaranSuffix = [fix.albaranSuffix];
+        return out;
+    }
+
     /** Construye el update payload para Firestore según el tipo de entry */
     function _buildPayload(entry) {
         const p = {
@@ -289,7 +329,7 @@
             html += '<td style="padding:6px; border:1px solid #2a2a2a; font-weight:700; color:#FFD700;">#' + _esc(row.idNum) + '</td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a;"><b>' + _esc(e.name) + '</b><br><span style="font-size:0.72rem; color:#aaa;">' + _esc(e.note || '') + '</span></td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a; min-width:240px;">' + clientCell + '</td>';
-            html += '<td style="padding:6px; border:1px solid #2a2a2a; font-size:0.72rem;">' + _describeApply(e) + '</td>';
+            html += '<td style="padding:6px; border:1px solid #2a2a2a; font-size:0.72rem;">' + _describeApply(e) + _describeBranchFix(e, row.idNum) + '</td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a;">' + statusCell + '</td>';
             html += '</tr>';
         });
@@ -341,7 +381,9 @@
         // Procesar en lotes secuenciales (no paralelo para evitar saturar)
         for (const row of matches) {
             try {
-                const payload = _buildPayload(row.entry);
+                const basePayload = _buildPayload(row.entry);
+                const branchPayload = _buildBranchFixPayload(row.entry, row.idNum);
+                const payload = Object.assign({}, basePayload, branchPayload);
                 await db.collection('users').doc(row.match.uid).set(payload, { merge: true });
                 // Update in-memory userMap también
                 if (window.userMap && window.userMap[row.match.uid]) {
