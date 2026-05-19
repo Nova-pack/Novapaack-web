@@ -175,65 +175,11 @@
       "note": "PTE 2.000 € (pendiente Juanma hablará semana próxima). Próximo: 2.500 €"
     },
     {
-      "idNums": ["177", "178", "179", "305"],
-      "name": "VEINSUR — Vehículos Industriales del Sur, S.A.U.",
+      "idNums": ["305"],
+      "name": "VEINSUR",
       "kind": "normal_with_suffix",
       "albaranSuffix": ["S", "M", "G"],
-      "preferredInvoiceFormat": "per_branch",
-      "note": "Tarifa normal añadiendo S/M/G/H/A al nº de albarán según delegación · NIF A04128310 todas las sucursales · UNA factura POR SUCURSAL (Formato 2) · Email: veinsur@veinsur.es",
-      "branchFixes": {
-        "177": {
-          "name": "VEINSUR, S.A.U. — Málaga",
-          "street": "C/ Gerald Brenan, 57",
-          "addressExtra": "Pol. Ind. Guadalhorce",
-          "cp": "29004",
-          "localidad": "MÁLAGA",
-          "province": "Málaga",
-          "senderPhone": "952 24 38 96",
-          "email": "veinsur@veinsur.es",
-          "albaranSuffix": "M"
-        },
-        "178": {
-          "name": "VEINSUR, S.A.U. — Granada (Pulianas)",
-          "street": "Autovía Bailén-Motril (A-44), Salida 126",
-          "cp": "18197",
-          "localidad": "PULIANAS",
-          "province": "Granada",
-          "senderPhone": "958 41 16 00",
-          "email": "veinsur@veinsur.es",
-          "albaranSuffix": "G"
-        },
-        "179": {
-          "name": "VEINSUR, S.A.U. — Sevilla (Alcalá de Guadaíra)",
-          "street": "C/ La Red Dos, 30 A",
-          "addressExtra": "Pol. Ind. La Red — Autovía A-92 Sevilla-Málaga, Km 5",
-          "cp": "41500",
-          "localidad": "ALCALÁ DE GUADAÍRA",
-          "province": "Sevilla",
-          "senderPhone": "955 63 20 50",
-          "email": "veinsur@veinsur.es",
-          "albaranSuffix": "S"
-        },
-        "305": {
-          "name": "VEINSUR, S.A.U. — Almería (Huércal de Almería) · SEDE CENTRAL",
-          "street": "C/ Pablo Picasso, 2 Bajo",
-          "addressExtra": "La Cepa",
-          "cp": "04230",
-          "localidad": "HUÉRCAL DE ALMERÍA",
-          "province": "Almería",
-          "senderPhone": "950 21 20 00",
-          "email": "veinsur@veinsur.es",
-          "albaranSuffix": "A"
-        }
-      },
-      "newBranches": [
-        { "name": "VEINSUR — Granada (Maracena)", "street": "Ctra. de Jaén s/n, Zona Industrial Olinda", "cp": "18200", "localidad": "MARACENA", "province": "Granada", "senderPhone": "958 41 16 00" },
-        { "name": "VEINSUR — Granada (Cijuela)", "street": "Camino Láchar s/n", "cp": "18339", "localidad": "CIJUELA", "province": "Granada", "senderPhone": "958 41 11 66" },
-        { "name": "VEINSUR — Almería (Antas)", "street": "Polígono industrial de Antas", "cp": "04628", "localidad": "ANTAS", "province": "Almería", "senderPhone": "950 21 20 00" },
-        { "name": "VEINSUR — Jaén (Guarromán)", "street": "Avda. Linares, 17 B, Pol. Ind. Guadiel", "cp": "23210", "localidad": "GUARROMÁN", "province": "Jaén", "senderPhone": "953 67 82 00" },
-        { "name": "VEINSUR — Córdoba", "street": "(por confirmar en veinsur.es/contact)", "cp": "", "localidad": "CÓRDOBA", "province": "Córdoba", "senderPhone": "957 32 58 77" },
-        { "name": "VEINSUR — Barcelona (Montornès)", "street": "Pol. El Congost s/n", "cp": "08170", "localidad": "MONTORNÈS DEL VALLÈS", "province": "Barcelona", "senderPhone": "" }
-      ]
+      "note": "Tarifa normal añadiendo S, M, G al número de albarán (entrada original del documento FIJOS-2026.docx)"
     }
   ]
 }
