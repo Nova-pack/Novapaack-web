@@ -738,6 +738,152 @@ document.addEventListener('DOMContentLoaded', function() {
 function initApp() {
     var storage = firebase.storage();
 
+    // ============================================================
+    //  ANTI-CIERRE — cuatro candados para que la app no se cierre
+    //  sin querer durante una jornada de reparto
+    // ============================================================
+    (function setupAntiClose() {
+        var isStandalone =
+            window.matchMedia && window.matchMedia('(display-mode: standalone)').matches ||
+            window.navigator.standalone === true;
+
+        // --- 1) TRAMPA BOTÓN "ATRÁS" (Android) ---
+        // Inyectamos un estado dummy al historial. Cuando el repartidor pulsa
+        // "Atrás" se dispara popstate → mostramos confirm. Si dice NO, volvemos
+        // a inyectar el estado para que la próxima pulsación vuelva a preguntar.
+        try {
+            history.pushState({ npAntiClose: true }, '', location.href);
+        } catch(_) {}
+        window.addEventListener('popstate', function(e) {
+            // Si el evento viene de una navegación interna controlada (no anti-close),
+            // dejamos pasar — usa window._npAllowExit = true antes de hacer history.back()
+            if (window._npAllowExit) { window._npAllowExit = false; return; }
+            var ok = confirm(
+                '⚠️ ¿Salir de la app de Reparto?\n\n' +
+                'Vas a perder la sesión y tendrás que volver a entrar.\n\n' +
+                'Pulsa CANCELAR para seguir trabajando.'
+            );
+            if (!ok) {
+                // Re-inyectamos el estado para volver a interceptar el próximo "atrás"
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+            } else {
+                // El usuario confirma salir — dejamos que el siguiente popstate o
+                // close suceda sin más prompts en esta sesión
+                window._npAllowExit = true;
+                history.back();
+            }
+        });
+
+        // --- 2) AVISO AL CERRAR PESTAÑA / RECARGAR (navegador) ---
+        // Solo aplica si NO es PWA standalone (en standalone no hay barra de
+        // navegador donde se pueda cerrar accidentalmente).
+        window.addEventListener('beforeunload', function(e) {
+            if (window._npAllowExit) return; // salida confirmada
+            // Texto custom ya no se muestra en navegadores modernos, pero el
+            // simple hecho de setear returnValue dispara el diálogo nativo
+            e.preventDefault();
+            e.returnValue = '¿Cerrar la app de Reparto? Vas a perder la sesión.';
+            return e.returnValue;
+        });
+
+        // --- 3) WAKE LOCK PERMANENTE (mantén pantalla encendida) ---
+        // Antes solo se pedía con GPS activo. Ahora la pedimos siempre que la
+        // app esté visible, así no se duerme la pantalla aunque el repartidor
+        // tarde en pulsar (importante: solo se concede tras un gesto del
+        // usuario, así que también la volvemos a pedir en cada interacción).
+        var _appWakeLock = null;
+        async function _ensureAppWakeLock() {
+            if (!('wakeLock' in navigator)) return;
+            if (document.visibilityState !== 'visible') return;
+            if (_appWakeLock && !_appWakeLock.released) return;
+            try {
+                _appWakeLock = await navigator.wakeLock.request('screen');
+                _appWakeLock.addEventListener('release', function() {
+                    _appWakeLock = null;
+                });
+                console.log('[anti-close] Wake lock activo — pantalla no se apaga');
+            } catch(e) {
+                console.warn('[anti-close] Wake lock denegado:', e.message);
+            }
+        }
+        _ensureAppWakeLock();
+        // Reacquire on visibility return + on any user gesture (más fiable)
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') _ensureAppWakeLock();
+        });
+        ['click', 'touchstart'].forEach(function(ev) {
+            document.addEventListener(ev, _ensureAppWakeLock, { passive: true, capture: true });
+        });
+
+        // --- 4) BANNER "INSTALAR APP" si no está en PWA ---
+        // Si la app no se ha "Añadido a pantalla de inicio", el riesgo de cierre
+        // accidental es mucho mayor. Mostramos un banner discreto persistente
+        // que recuerda instalar para protegerse contra cierres.
+        var _deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', function(e) {
+            e.preventDefault();
+            _deferredInstallPrompt = e;
+            _showInstallBanner();
+        });
+
+        function _showInstallBanner() {
+            if (isStandalone) return; // Ya instalada
+            if (document.getElementById('np-install-banner')) return;
+            // Respeta el "no me lo recuerdes" del usuario
+            if (localStorage.getItem('npHideInstallBanner') === '1') return;
+
+            var banner = document.createElement('div');
+            banner.id = 'np-install-banner';
+            banner.style.cssText =
+                'position:fixed; bottom:12px; left:12px; right:12px; z-index:99999; ' +
+                'background:linear-gradient(135deg, #FF4D00, #FF9800); color:#fff; ' +
+                'border-radius:14px; padding:12px 14px; font-family:Inter,Arial,sans-serif; ' +
+                'box-shadow:0 8px 24px rgba(0,0,0,0.4); display:flex; align-items:center; ' +
+                'gap:10px; font-size:0.85rem;';
+            banner.innerHTML =
+                '<span class="material-symbols-outlined" style="font-size:1.6rem;">install_mobile</span>' +
+                '<div style="flex:1; line-height:1.25;"><b>Instala la app de Reparto</b><br>' +
+                '<span style="opacity:0.9; font-size:0.75rem;">Evita cierres accidentales y arranca más rápido</span></div>' +
+                '<button id="np-install-btn" style="background:#fff; color:#FF4D00; border:0; ' +
+                'padding:8px 14px; border-radius:8px; font-weight:900; cursor:pointer; font-size:0.8rem;">INSTALAR</button>' +
+                '<button id="np-install-skip" aria-label="Cerrar" style="background:transparent; ' +
+                'border:0; color:#fff; font-size:1.2rem; cursor:pointer; padding:4px 6px;">×</button>';
+            document.body.appendChild(banner);
+
+            document.getElementById('np-install-btn').addEventListener('click', async function() {
+                if (_deferredInstallPrompt) {
+                    _deferredInstallPrompt.prompt();
+                    try { await _deferredInstallPrompt.userChoice; } catch(_) {}
+                    _deferredInstallPrompt = null;
+                    banner.remove();
+                } else {
+                    // iOS no soporta beforeinstallprompt — instruir manual
+                    alert(
+                        'Para instalar la app:\n\n' +
+                        '1. Pulsa el botón "Compartir" del navegador (Safari: cuadrado con flecha arriba)\n' +
+                        '2. Selecciona "Añadir a pantalla de inicio"\n' +
+                        '3. Confirma "Añadir"'
+                    );
+                }
+            });
+            document.getElementById('np-install-skip').addEventListener('click', function() {
+                localStorage.setItem('npHideInstallBanner', '1');
+                banner.remove();
+            });
+        }
+
+        // Si ya está instalada en iOS (no dispara beforeinstallprompt pero tampoco standalone si lo
+        // abrió desde Safari) no mostramos nada. Si tras 3s no ha disparado el evento Y no es
+        // standalone, mostramos el banner igualmente para iOS.
+        setTimeout(function() {
+            if (!isStandalone && !_deferredInstallPrompt) {
+                _showInstallBanner();
+            }
+        }, 3000);
+
+        console.log('[anti-close] candados activos · standalone=' + isStandalone);
+    })();
+
     // --- VAN MODE (modo furgón: botones grandes, alto contraste) ---
     (function() {
         var urlParams = new URLSearchParams(window.location.search);
