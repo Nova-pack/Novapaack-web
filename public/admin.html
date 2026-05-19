@@ -19097,11 +19097,19 @@ window.importTarifas50 = async () => {
 
             let html = '<tr' + trAttrs + ' onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" onmouseout="this.style.background=\'' + hoverBg + '\'">';
 
-            // Checkbox column (only for real users; globals don't get one since they aren't in /users)
+            // Checkbox column — ahora también para globales (borra de /contacts).
+            // data-type='global' indica que es contacto Gesco, no un cliente /users.
+            // Los GLOBAL_* (fallback PhantomDirectory in-memory) NO se pueden borrar
+            // — no tienen doc en /contacts. Sólo CONTACT_* tiene checkbox real.
             if (isGlobal) {
-                html += '<td style="padding:6px 4px; text-align:center; color:#FF9800;" title="Cliente global — no se elimina (se importa)">🌍</td>';
+                var isContactDoc = (c.id || '').indexOf('CONTACT_') === 0;
+                if (isContactDoc) {
+                    html += '<td style="padding:6px 4px; text-align:center;"><input type="checkbox" class="adv-mgmt-row-check" data-uid="' + c.id + '" data-name="' + (c.name||'').replace(/"/g,'&quot;') + '" data-type="global" onclick="window.advUpdateBulkBar()" title="Seleccionar contacto global (se borrará de /contacts)" style="cursor:pointer; transform:scale(1.1); accent-color:#FF9800;"></td>';
+                } else {
+                    html += '<td style="padding:6px 4px; text-align:center; color:#FF9800;" title="Global legacy (PhantomDirectory) — no se puede borrar">🌍</td>';
+                }
             } else {
-                html += '<td style="padding:6px 4px; text-align:center;"><input type="checkbox" class="adv-mgmt-row-check" data-uid="' + c.id + '" data-name="' + (c.name||'').replace(/"/g,'&quot;') + '" onclick="window.advUpdateBulkBar()" style="cursor:pointer; transform:scale(1.1);"></td>';
+                html += '<td style="padding:6px 4px; text-align:center;"><input type="checkbox" class="adv-mgmt-row-check" data-uid="' + c.id + '" data-name="' + (c.name||'').replace(/"/g,'&quot;') + '" data-type="user" onclick="window.advUpdateBulkBar()" style="cursor:pointer; transform:scale(1.1);"></td>';
             }
 
             // Nº column with toggle if parent
@@ -19228,24 +19236,32 @@ window.importTarifas50 = async () => {
         const checks = Array.from(document.querySelectorAll('.adv-mgmt-row-check:checked'));
         if (!checks.length) { alert('No hay clientes seleccionados.'); return; }
 
-        // Recoge {uid, name} de cada seleccionado (los marcados explícitamente por admin)
-        const selected = checks.map(cb => ({
-            uid: cb.getAttribute('data-uid'),
-            name: cb.getAttribute('data-name') || '(sin nombre)'
-        }));
-        const selectedUids = new Set(selected.map(s => s.uid));
+        // Separa selecciones por tipo:
+        //   - 'user'   → cliente en /users (cascada normal a deleted_users)
+        //   - 'global' → contacto Gesco en /contacts (delete + backup a deleted_contacts)
+        const selectedUsers = [];
+        const selectedGlobals = [];
+        checks.forEach(cb => {
+            const type = cb.getAttribute('data-type') || 'user';
+            const item = {
+                uid: cb.getAttribute('data-uid'),
+                name: cb.getAttribute('data-name') || '(sin nombre)'
+            };
+            if (type === 'global') selectedGlobals.push(item);
+            else selectedUsers.push(item);
+        });
+
+        const selectedUids = new Set(selectedUsers.map(s => s.uid));
 
         if (typeof showLoading === 'function') showLoading();
 
-        // ── CASCADA DE SUCURSALES ──
-        // Por cada cliente seleccionado, buscar descendientes (recursivo) y
-        // añadirlos a la lista de targets si no estaban ya marcados.
+        // ── CASCADA DE SUCURSALES (solo para tipo 'user') ──
         const cascadedChildren = []; // [{uid, name, parentName}]
-        for (const s of selected) {
+        for (const s of selectedUsers) {
             try {
                 const descendants = await window._findAllDescendants(s.uid);
                 for (const childUid of descendants) {
-                    if (selectedUids.has(childUid)) continue; // ya estaba marcado
+                    if (selectedUids.has(childUid)) continue;
                     selectedUids.add(childUid);
                     let childName = '(sin nombre)';
                     if (window.userMap && window.userMap[childUid]) {
@@ -19261,22 +19277,36 @@ window.importTarifas50 = async () => {
 
         if (typeof hideLoading === 'function') hideLoading();
 
-        const allTargets = selected.concat(cascadedChildren);
-        const totalCount = allTargets.length;
+        const totalUsers = selectedUsers.length + cascadedChildren.length;
+        const totalGlobals = selectedGlobals.length;
+        const totalCount = totalUsers + totalGlobals;
 
-        let confirmMsg = '🗑️ ELIMINAR ' + totalCount + ' CLIENTE' + (totalCount > 1 ? 'S' : '') + ' (a la PAPELERA con cascada)\n\n';
-        confirmMsg += '✓ Seleccionados directamente (' + selected.length + '):\n';
-        confirmMsg += selected.slice(0, 10).map(t => '  • ' + t.name).join('\n');
-        if (selected.length > 10) confirmMsg += '\n  …y ' + (selected.length - 10) + ' más';
+        let confirmMsg = '🗑️ ELIMINAR ' + totalCount + ' REGISTRO' + (totalCount > 1 ? 'S' : '') + '\n\n';
 
-        if (cascadedChildren.length) {
-            confirmMsg += '\n\n🔗 Sucursales que se borran en cascada (' + cascadedChildren.length + '):\n';
-            confirmMsg += cascadedChildren.slice(0, 10).map(c => '  • ' + c.name + ' (sucursal de ' + c.parentName + ')').join('\n');
-            if (cascadedChildren.length > 10) confirmMsg += '\n  …y ' + (cascadedChildren.length - 10) + ' más';
+        if (selectedUsers.length) {
+            confirmMsg += '✓ Clientes NOVAPACK (' + selectedUsers.length + '):\n';
+            confirmMsg += selectedUsers.slice(0, 8).map(t => '  • ' + t.name).join('\n');
+            if (selectedUsers.length > 8) confirmMsg += '\n  …y ' + (selectedUsers.length - 8) + ' más';
+            confirmMsg += '\n';
         }
 
-        confirmMsg += '\n\nSe enviará todo a /deleted_users + albaranes a /deleted_tickets + facturas a /deleted_invoices.';
-        confirmMsg += '\nRecuperable durante 30 días desde 🗑️ Papelera.';
+        if (cascadedChildren.length) {
+            confirmMsg += '\n🔗 Sucursales cascada (' + cascadedChildren.length + '):\n';
+            confirmMsg += cascadedChildren.slice(0, 8).map(c => '  • ' + c.name + ' (sucursal de ' + c.parentName + ')').join('\n');
+            if (cascadedChildren.length > 8) confirmMsg += '\n  …y ' + (cascadedChildren.length - 8) + ' más';
+            confirmMsg += '\n';
+        }
+
+        if (selectedGlobals.length) {
+            confirmMsg += '\n🌍 Contactos globales (' + selectedGlobals.length + '):\n';
+            confirmMsg += selectedGlobals.slice(0, 8).map(g => '  • ' + g.name).join('\n');
+            if (selectedGlobals.length > 8) confirmMsg += '\n  …y ' + (selectedGlobals.length - 8) + ' más';
+            confirmMsg += '\n';
+        }
+
+        confirmMsg += '\nDestino:';
+        if (totalUsers) confirmMsg += '\n  • Clientes → /deleted_users (+ tickets/facturas/sedes en cascada)';
+        if (totalGlobals) confirmMsg += '\n  • Globales → /deleted_contacts (recuperables 30 días)';
         confirmMsg += '\n\n¿Continuar?';
 
         if (!confirm(confirmMsg)) return;
@@ -19291,15 +19321,14 @@ window.importTarifas50 = async () => {
 
         if (typeof showLoading === 'function') showLoading();
 
-        const stats = { ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0, cascaded: cascadedChildren.length, errors: [] };
+        const stats = {
+            ok: 0, fail: 0, tickets: 0, invoices: 0, companies: 0, contacts: 0,
+            cascaded: cascadedChildren.length, globalsDeleted: 0, errors: []
+        };
 
-        // CRÍTICO: borrar primero los HIJOS, luego los padres, para no romper
-        // queries intermedias que dependan de parentClientId.
-        // Ordena el array: hijos primero (los que tienen parentName en cascadedChildren), padres después.
-        const orderedTargets = cascadedChildren.concat(selected);
-
-        for (let i = 0; i < orderedTargets.length; i++) {
-            const t = orderedTargets[i];
+        // 1) Procesar USERS (hijos primero, padres después)
+        const orderedTargets = cascadedChildren.concat(selectedUsers);
+        for (const t of orderedTargets) {
             try {
                 const r = await window._deleteUserCascadeSilent(t.uid, (reason || 'bulk_delete') + (t.parentName ? ' [cascada de ' + t.parentName + ']' : ''));
                 stats.ok++;
@@ -19310,7 +19339,36 @@ window.importTarifas50 = async () => {
             } catch (e) {
                 stats.fail++;
                 stats.errors.push(t.name + ': ' + e.message);
-                console.error('[bulk-delete] fail', t, e);
+                console.error('[bulk-delete] user fail', t, e);
+            }
+        }
+
+        // 2) Procesar GLOBALES — backup a /deleted_contacts y delete de /contacts
+        const deleteMeta = {
+            _deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            _deletedBy: (typeof currentUser !== 'undefined' && currentUser && currentUser.uid) ? currentUser.uid : 'admin',
+            _deleteReason: reason || 'bulk_delete_global',
+            _deleteSource: 'bulk_delete_global_contact'
+        };
+        for (const g of selectedGlobals) {
+            try {
+                if ((g.uid || '').indexOf('CONTACT_') !== 0) {
+                    throw new Error('No es un /contacts (legacy GLOBAL_* sin doc)');
+                }
+                const contactDocId = g.uid.substring('CONTACT_'.length);
+                const cSnap = await db.collection('contacts').doc(contactDocId).get();
+                if (!cSnap.exists) throw new Error('contacto no existe');
+                const cData = cSnap.data();
+                await db.collection('deleted_contacts').doc(contactDocId).set(
+                    Object.assign({}, cData, deleteMeta, { _originalDocId: contactDocId })
+                );
+                await db.collection('contacts').doc(contactDocId).delete();
+                stats.globalsDeleted++;
+                stats.ok++;
+            } catch (e) {
+                stats.fail++;
+                stats.errors.push('[global] ' + g.name + ': ' + e.message);
+                console.error('[bulk-delete] global fail', g, e);
             }
         }
 
@@ -19323,12 +19381,15 @@ window.importTarifas50 = async () => {
         msg += '  Éxitos: ' + stats.ok + '\n';
         if (stats.fail) msg += '  Fallos: ' + stats.fail + '\n';
         if (stats.cascaded) msg += '  Sucursales cascadeadas: ' + stats.cascaded + '\n';
-        msg += '\nEn cascada total:\n';
-        msg += '  • ' + stats.tickets + ' albaranes\n';
-        msg += '  • ' + stats.invoices + ' facturas\n';
-        msg += '  • ' + stats.companies + ' sedes\n';
-        msg += '  • ' + stats.contacts + ' contactos limpiados\n';
-        msg += '\nTodo restaurable desde 🗑️ Papelera.';
+        if (stats.globalsDeleted) msg += '  Contactos globales borrados: ' + stats.globalsDeleted + '\n';
+        if (totalUsers) {
+            msg += '\nEn cascada (clientes):\n';
+            msg += '  • ' + stats.tickets + ' albaranes\n';
+            msg += '  • ' + stats.invoices + ' facturas\n';
+            msg += '  • ' + stats.companies + ' sedes\n';
+            msg += '  • ' + stats.contacts + ' contactos limpiados\n';
+        }
+        msg += '\nClientes restaurables desde 🗑️ Papelera. Globales en /deleted_contacts (30 días).';
         if (stats.errors.length) msg += '\n\nFallos:\n' + stats.errors.slice(0, 8).join('\n');
         alert(msg);
 
