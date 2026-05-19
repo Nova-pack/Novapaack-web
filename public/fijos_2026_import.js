@@ -43,6 +43,19 @@
         return (Number(n) || 0).toFixed(2).replace('.', ',') + ' €';
     }
 
+    /** Normaliza un nombre para comparar: quita tildes, paréntesis, sufijos S.L./S.A. */
+    function _normName(s) {
+        return String(s || '')
+            .normalize('NFD').replace(/[̀-ͯ]/g, '')      // quita tildes
+            .toLowerCase()
+            .replace(/\([^)]*\)/g, ' ')                              // quita paréntesis
+            .replace(/-+/g, ' ')                                     // guiones a espacios
+            .replace(/\b(s\.?l\.?u?\.?|s\.?a\.?|sl|sa|slu|c\.?b\.?)\b/g, ' ') // sufijos jurídicos
+            .replace(/[^a-z0-9 ]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
     /** Busca cliente por idNum dentro de userMap (in-memory) */
     function _findClient(idNum) {
         if (!window.userMap) return null;
@@ -50,23 +63,91 @@
         for (const [uid, u] of Object.entries(window.userMap)) {
             const candidate = String(u.idNum || '').trim();
             if (candidate === target || candidate === String(parseInt(target))) {
-                return { uid, data: u };
+                return { uid, data: u, matchedBy: 'idNum' };
             }
         }
         return null;
     }
 
-    /** Resuelve cada entry → lista de matches { entry, idNum, match: {uid,data} | null } */
+    /** Fallback: busca cliente por nombre normalizado (substring tras normalizar) */
+    function _findClientByName(searchName) {
+        if (!window.userMap || !searchName) return null;
+        const target = _normName(searchName);
+        if (!target) return null;
+        const targetTokens = target.split(' ').filter(t => t.length >= 3);
+        const candidates = [];
+        for (const [uid, u] of Object.entries(window.userMap)) {
+            const candidate = _normName(u.name);
+            if (!candidate) continue;
+            if (candidate === target) {
+                candidates.push({ uid, data: u, score: 100 });
+                continue;
+            }
+            if (candidate.includes(target) || target.includes(candidate)) {
+                candidates.push({ uid, data: u, score: 80 });
+                continue;
+            }
+            // Match por tokens significativos
+            const hits = targetTokens.filter(t => candidate.includes(t)).length;
+            if (hits >= 2 || (hits === 1 && targetTokens.length === 1)) {
+                candidates.push({ uid, data: u, score: 30 + 10 * hits });
+            }
+        }
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => b.score - a.score);
+        const best = candidates[0];
+        return { uid: best.uid, data: best.data, matchedBy: 'name', score: best.score };
+    }
+
+    /** Resuelve cada entry → lista de matches { entry, idNum, match: {uid,data,matchedBy} | null } */
     function _matchAll(entries) {
         const rows = [];
         entries.forEach(entry => {
             entry.idNums.forEach(idNum => {
-                const m = _findClient(idNum);
+                // 1) Match por idNum
+                let m = _findClient(idNum);
+                // 2) Fallback: por nombre
+                if (!m && entry.name) {
+                    m = _findClientByName(entry.name);
+                }
                 rows.push({ entry, idNum, match: m });
             });
         });
         return rows;
     }
+
+    /** Re-vincula manualmente una fila a un cliente por uid */
+    window._fijosManualLink = function(rowIdx, uid) {
+        if (!_matchCache || !window.userMap || !window.userMap[uid]) return;
+        _matchCache[rowIdx].match = { uid, data: window.userMap[uid], matchedBy: 'manual' };
+        _renderPreview();
+    };
+
+    /** Busca clientes por texto libre (para el dropdown de vinculación manual) */
+    window._fijosSearchClients = function(rowIdx, query) {
+        const out = document.getElementById('fijos-search-results-' + rowIdx);
+        if (!out) return;
+        const q = _normName(query);
+        if (!q || q.length < 2) { out.innerHTML = ''; return; }
+        const results = [];
+        for (const [uid, u] of Object.entries(window.userMap || {})) {
+            const candidate = _normName(u.name);
+            if (candidate.includes(q) || q.includes(candidate)) {
+                results.push({ uid, data: u });
+                if (results.length >= 10) break;
+            }
+        }
+        if (!results.length) {
+            out.innerHTML = '<div style="padding:6px; color:#888; font-size:0.7rem;">Sin resultados</div>';
+            return;
+        }
+        out.innerHTML = results.map(r =>
+            '<div onclick="window._fijosManualLink(' + rowIdx + ', \'' + _esc(r.uid) + '\')" style="padding:5px 8px; cursor:pointer; border-bottom:1px solid #2a2a2a; font-size:0.72rem;" onmouseover="this.style.background=\'#1e3a5f\'" onmouseout="this.style.background=\'transparent\'">' +
+                '<b style="color:#FFD700;">#' + _esc(r.data.idNum || '?') + '</b> · ' + _esc(r.data.name || '—') +
+                '<div style="color:#888; font-size:0.65rem;">NIF ' + _esc(r.data.nif || '—') + ' · ' + _esc(r.data.localidad || '—') + '</div>' +
+            '</div>'
+        ).join('');
+    };
 
     /** Texto humano corto de qué se aplicará */
     function _describeApply(entry) {
@@ -159,18 +240,18 @@
         if (!container) return;
 
         const total = matches.length;
-        const found = matches.filter(r => r.match).length;
+        const byId = matches.filter(r => r.match && r.match.matchedBy === 'idNum').length;
+        const byName = matches.filter(r => r.match && r.match.matchedBy === 'name').length;
+        const byManual = matches.filter(r => r.match && r.match.matchedBy === 'manual').length;
+        const found = byId + byName + byManual;
         const missing = total - found;
-        const flat = matches.filter(r => r.entry.flatAmount).length;
-        const normal = matches.filter(r => r.entry.kind === 'normal').length;
-        const custom = total - flat - normal;
 
         let html = '<div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-bottom:12px;">';
         html += '<div style="background:rgba(255,255,255,0.04); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#5DADE2;">' + total + '</div><div style="font-size:0.7rem; color:#888;">Entradas</div></div>';
-        html += '<div style="background:rgba(76,175,80,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#4CAF50;">' + found + '</div><div style="font-size:0.7rem; color:#888;">Encontrados</div></div>';
-        html += '<div style="background:rgba(229,57,53,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#E53935;">' + missing + '</div><div style="font-size:0.7rem; color:#888;">No encontrados</div></div>';
-        html += '<div style="background:rgba(255,152,0,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#FF9800;">' + flat + '</div><div style="font-size:0.7rem; color:#888;">Tarifa plana</div></div>';
-        html += '<div style="background:rgba(156,39,176,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#9C27B0;">' + custom + '</div><div style="font-size:0.7rem; color:#888;">Custom/Bulto</div></div>';
+        html += '<div style="background:rgba(76,175,80,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#4CAF50;">' + byId + '</div><div style="font-size:0.7rem; color:#888;">Match por #ID</div></div>';
+        html += '<div style="background:rgba(255,152,0,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#FF9800;">' + byName + '</div><div style="font-size:0.7rem; color:#888;">Match por nombre</div></div>';
+        html += '<div style="background:rgba(156,39,176,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#9C27B0;">' + byManual + '</div><div style="font-size:0.7rem; color:#888;">Vinculados manual</div></div>';
+        html += '<div style="background:rgba(229,57,53,0.1); padding:8px; border-radius:6px; text-align:center;"><div style="font-size:1.4rem; font-weight:900; color:#E53935;">' + missing + '</div><div style="font-size:0.7rem; color:#888;">Sin match</div></div>';
         html += '</div>';
 
         html += '<table style="width:100%; border-collapse:collapse; font-size:0.78rem;">';
@@ -185,17 +266,29 @@
         matches.forEach((row, idx) => {
             const e = row.entry;
             const m = row.match;
-            const statusCell = m
-                ? '<span style="color:#4CAF50; font-weight:700;">✓ MATCH</span>'
-                : '<span style="color:#E53935; font-weight:700;">✗ NO EXISTE</span>';
-            const clientCell = m
-                ? '<b>' + _esc(m.data.name || '—') + '</b><br><span style="color:#888; font-size:0.7rem;">NIF: ' + _esc(m.data.nif || '—') + '</span>'
-                : '<span style="color:#FF8A80;">— sin match en /users —</span>';
 
-            html += '<tr ' + (m ? '' : 'style="opacity:0.6;"') + '>';
+            let statusCell, clientCell;
+            if (m) {
+                const matchBadge = m.matchedBy === 'idNum'
+                    ? '<span style="color:#4CAF50; font-weight:700;">✓ MATCH</span>'
+                    : (m.matchedBy === 'name'
+                        ? '<span style="background:#FF9800; color:#000; padding:1px 6px; border-radius:8px; font-size:0.65rem; font-weight:900;">✓ por nombre</span>'
+                        : '<span style="background:#9C27B0; color:#fff; padding:1px 6px; border-radius:8px; font-size:0.65rem; font-weight:900;">✓ manual</span>');
+                statusCell = matchBadge;
+                clientCell = '<b>' + _esc(m.data.name || '—') + '</b>'
+                    + ' <span style="color:#888; font-size:0.65rem;">[#' + _esc(m.data.idNum || '?') + ']</span>'
+                    + '<br><span style="color:#888; font-size:0.7rem;">NIF: ' + _esc(m.data.nif || '—') + '</span>';
+            } else {
+                statusCell = '<span style="color:#E53935; font-weight:700;">✗ NO EXISTE</span>';
+                clientCell = '<span style="color:#FF8A80; display:block; margin-bottom:4px;">— sin match en /users —</span>'
+                    + '<input type="text" placeholder="🔍 Buscar por nombre..." oninput="window._fijosSearchClients(' + idx + ', this.value)" style="width:100%; padding:4px 6px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:4px; font-size:0.7rem;">'
+                    + '<div id="fijos-search-results-' + idx + '" style="margin-top:2px; max-height:140px; overflow-y:auto; background:#111; border-radius:4px;"></div>';
+            }
+
+            html += '<tr ' + (m ? '' : 'style="background:rgba(229,57,53,0.04);"') + '>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a; font-weight:700; color:#FFD700;">#' + _esc(row.idNum) + '</td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a;"><b>' + _esc(e.name) + '</b><br><span style="font-size:0.72rem; color:#aaa;">' + _esc(e.note || '') + '</span></td>';
-            html += '<td style="padding:6px; border:1px solid #2a2a2a;">' + clientCell + '</td>';
+            html += '<td style="padding:6px; border:1px solid #2a2a2a; min-width:240px;">' + clientCell + '</td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a; font-size:0.72rem;">' + _describeApply(e) + '</td>';
             html += '<td style="padding:6px; border:1px solid #2a2a2a;">' + statusCell + '</td>';
             html += '</tr>';
