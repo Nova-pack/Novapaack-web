@@ -20,7 +20,10 @@ service firebase.storage {
     }
 
     // COOPER - Fotos de albaranes cooper
-    match /cooper/{typeFolder}/{fileName} {
+    // Usa {cooperPath=**} para aceptar cualquier profundidad bajo cooper/:
+    //   cooper/recogida/foto.jpg                  (legacy 2 niveles)
+    //   cooper/recogida/g123_abc/foto.jpg         (multi-foto: subcarpeta groupId)
+    match /cooper/{cooperPath=**} {
       allow read: if request.auth != null;
       allow write: if request.auth != null
                    && request.resource.size < 10 * 1024 * 1024
