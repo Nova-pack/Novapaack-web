@@ -10751,7 +10751,11 @@ window.runPublicTicketsBackfill = async function() {
                 _routeMapDriverMarker = null;
 
                 // --- Listen to driver GPS ---
-                var normalPhone = phone.replace(/\D/g, '').replace(/^34/, '');
+                // Usar window.normalizePhone (misma lógica que reparto.js) para que
+                // el gpsDocId coincida exactamente con el docId que escribe el driver.
+                var normalPhone = typeof window.normalizePhone === 'function'
+                    ? window.normalizePhone(phone)
+                    : phone.replace(/\D/g, '').replace(/^34/, '');
                 var gpsDocId = normalPhone.replace(/[^a-zA-Z0-9]/g, '_');
                 _routeMapUnsub = db.collection('driver_locations').doc(gpsDocId)
                     .onSnapshot(function(doc) {
@@ -10815,6 +10819,9 @@ window.runPublicTicketsBackfill = async function() {
                     });
 
                 // --- Load & geocode deliveries for this route ---
+                // Solo mostramos: pendientes (cualquier fecha) + entregados de los últimos 3 días.
+                // Los entregados más viejos se ocultan para no saturar el mapa.
+                var _mapCutoffMs = Date.now() - (3 * 24 * 60 * 60 * 1000);
                 _routeMapTicketUnsub = db.collection('tickets')
                     .where('driverPhone', '==', normalPhone)
                     .onSnapshot(async function(snap) {
@@ -10826,6 +10833,12 @@ window.runPublicTicketsBackfill = async function() {
                         snap.forEach(function(doc) {
                             var t = doc.data();
                             t._id = doc.id;
+                            // Filtro: pendiente siempre visible; entregado/devuelto solo si es reciente
+                            var isPending = t.status !== 'Entregado' && t.status !== 'Devuelto';
+                            var tsMs = t.createdAt
+                                ? (t.createdAt.toDate ? t.createdAt.toDate().getTime() : new Date(t.createdAt).getTime())
+                                : 0;
+                            if (!isPending && tsMs < _mapCutoffMs) return;
                             tickets.push(t);
                         });
 
@@ -11008,8 +11021,50 @@ window.runPublicTicketsBackfill = async function() {
                         _createRouteCard(routeData, grid);
                     });
 
+                    // ── GPS location cache for all drivers (one listener, shared by all cards) ──
+                    // Populated below; key = gpsDocId (digits only, no special chars)
+                    const _towerGpsCache = {};
+                    const _towerGpsUnsub = db.collection('driver_locations').onSnapshot(snap => {
+                        snap.forEach(doc => { _towerGpsCache[doc.id] = doc.data(); });
+                        // Refresh GPS badges on all rendered cards
+                        document.querySelectorAll('[id^="gps-badge-"]').forEach(el => {
+                            const docId = el.getAttribute('data-gps-docid');
+                            if (!docId) return;
+                            const d = _towerGpsCache[docId];
+                            _renderGpsBadge(el, d);
+                        });
+                    });
+                    routeTowerUnsubscribes.push(_towerGpsUnsub);
+
+                    // Helper: render GPS status badge into an existing element
+                    function _renderGpsBadge(el, d) {
+                        if (!d || !d.lat) {
+                            el.innerHTML = '<span style="font-size:0.6rem; color:#555;">📡 Sin GPS</span>';
+                            return;
+                        }
+                        const upd = d.updatedAt ? d.updatedAt.toDate() : null;
+                        const minAgo = upd ? Math.round((Date.now() - upd.getTime()) / 60000) : null;
+                        const stale = minAgo !== null && minAgo > 5;
+                        const online = d.online !== false && !stale;
+                        if (online) {
+                            el.innerHTML = '<span style="font-size:0.6rem; background:#1b3d1b; border:1px solid #2e7d32; color:#4CAF50; border-radius:3px; padding:1px 5px;">🟢 GPS en vivo</span>'
+                                + (d.speed > 0 ? '<span style="font-size:0.58rem; color:#666; margin-left:4px;">' + Math.round(d.speed) + 'km/h</span>' : '');
+                        } else if (minAgo !== null) {
+                            el.innerHTML = '<span style="font-size:0.6rem; background:#2d2000; border:1px solid #6b4e1f; color:#FF9800; border-radius:3px; padding:1px 5px;">🟡 Hace ' + minAgo + 'min</span>';
+                        } else {
+                            el.innerHTML = '<span style="font-size:0.6rem; color:#555;">📡 Offline</span>';
+                        }
+                    }
+
+                    // ── Cutoff: show tickets from last 7 days OR any still-pending ──
+                    const _towerCutoffMs = Date.now() - (7 * 24 * 60 * 60 * 1000);
+
                     function _createRouteCard(routeData, container) {
-                        const pNum = routeData.number ? routeData.number.replace(/\D/g, '').replace(/^34/, '') : '';
+                        // Use window.normalizePhone (same logic as reparto.js) so gpsDocId always matches
+                        const pNum = typeof window.normalizePhone === 'function'
+                            ? window.normalizePhone(routeData.number || '')
+                            : (routeData.number || '').replace(/\D/g,'').replace(/^34/,'');
+                        const gpsDocIdCard = pNum.replace(/[^a-zA-Z0-9]/g, '_');
                         const cardId = 'route-card-' + routeData.docId;
 
                         const driverNames = [];
@@ -11030,7 +11085,15 @@ window.runPublicTicketsBackfill = async function() {
                         card.innerHTML = `<div style="color:#555; text-align:center; padding:20px;">Sincronizando ${escapeHtml(routeData.label)}...</div>`;
                         container.appendChild(card);
 
+                        // Seed GPS badge from cache if already populated
+                        setTimeout(function() {
+                            var badgeEl = document.getElementById('gps-badge-' + routeData.docId);
+                            if (badgeEl) _renderGpsBadge(badgeEl, _towerGpsCache[gpsDocIdCard]);
+                        }, 200);
+
                         // Attach real-time listener for this specific route
+                        // ── FILTRO: últimos 7 días + cualquier pendiente (sin corte de fecha) ──
+                        // Se hace client-side para no necesitar un índice compuesto extra.
                         const unsub = db.collection('tickets').where('driverPhone', '==', pNum).onSnapshot(ticketsSnap => {
                             let total = 0;
                             let pending = 0;
@@ -11042,6 +11105,12 @@ window.runPublicTicketsBackfill = async function() {
 
                             ticketsSnap.forEach(tDoc => {
                                 const tData = tDoc.data();
+                                // Skip: ticket viejo (>7 días) que ya está cerrado
+                                const isPending = tData.status !== 'Entregado' && tData.status !== 'Devuelto';
+                                const tsMs = tData.createdAt
+                                    ? (tData.createdAt.toDate ? tData.createdAt.toDate().getTime() : new Date(tData.createdAt).getTime())
+                                    : 0;
+                                if (!isPending && tsMs < _towerCutoffMs) return;
                                 const bultos = tData.packagesList ? tData.packagesList.reduce((s,p)=>s+(parseInt(p.qty)||1),0) : (tData.packages || 1);
                                 total += bultos;
                                 if (tData.status === 'Entregado') delivered += bultos;
@@ -11108,13 +11177,15 @@ window.runPublicTicketsBackfill = async function() {
 
                                                                 
                                 cardElem.innerHTML = `
-                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
                                         <div style="flex:1; min-width:0;">
                                             <div style="font-size:0.95rem; font-weight:700; color:#FF4D00; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(routeData.label)}">${escapeHtml(routeData.label)}</div>
                                             <div style="font-size:0.68rem; color:#888; margin-top:2px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(names)}"><span class="material-symbols-outlined" style="font-size:0.8rem; vertical-align:middle; margin-right:2px;">person</span>${escapeHtml(names)}</div>
                                         </div>
                                         <div style="font-size:0.65rem; color:#666; background:#111; padding:2px 8px; border-radius:3px; font-weight:700; white-space:nowrap;">${pct}%</div>
                                     </div>
+                                    <!-- Badge GPS status (se actualiza en tiempo real desde _towerGpsCache) -->
+                                    <div id="gps-badge-${escapeHtml(routeData.docId)}" data-gps-docid="${escapeHtml(gpsDocIdCard)}" style="margin-bottom:8px; min-height:16px;"></div>
                                     
                                     <!-- Progress bar -->
                                     <div style="height:4px; background:#222; border-radius:2px; margin-bottom:10px; overflow:hidden;">
@@ -11226,7 +11297,16 @@ window.runPublicTicketsBackfill = async function() {
                         return dayLabel + '<div style="font-size:0.65rem; color:#888;">' + hhmm + '</div>';
                     };
 
-                    const docs = snap.docs.map(doc => ({id: doc.id, data: doc.data()}));
+                    // Filtro: pendientes siempre + entregados/devueltos de los últimos 7 días
+                    const _detailCutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+                    const docs = snap.docs
+                        .map(doc => ({id: doc.id, data: doc.data()}))
+                        .filter(item => {
+                            const d = item.data;
+                            const isPending = d.status !== 'Entregado' && d.status !== 'Devuelto';
+                            if (isPending) return true;
+                            return _ticketTimeMs(d) >= _detailCutoff;
+                        });
                     docs.sort((a,b) => {
                         // Entregados al final
                         if (a.data.status === 'Entregado' && b.data.status !== 'Entregado') return 1;
