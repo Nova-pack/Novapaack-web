@@ -278,3 +278,44 @@ exports.mailboxHealth = onCall({
         timestamp: Date.now()
     };
 });
+
+// =============================================================
+// UPDATE CLIENT AUTH — actualiza email y/o contraseña de una
+// cuenta Firebase Auth existente sin crear una nueva ni dejar
+// cuentas huérfanas.  Solo el admin puede llamar esto.
+// =============================================================
+exports.updateClientAuth = onCall({
+    timeoutSeconds: 30
+}, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'Debes estar autenticado');
+    }
+
+    // Verificar que quien llama ES el admin registrado en config/admin
+    const adminDoc = await db.collection('config').doc('admin').get();
+    if (!adminDoc.exists || adminDoc.data().uid !== request.auth.uid) {
+        throw new HttpsError('permission-denied', 'Solo el administrador puede cambiar credenciales de clientes');
+    }
+
+    const { uid, newEmail, newPassword } = request.data || {};
+    if (!uid) throw new HttpsError('invalid-argument', 'uid requerido');
+
+    const updates = {};
+    if (newEmail && newEmail.trim()) updates.email = newEmail.trim().toLowerCase();
+    if (newPassword && newPassword.trim()) updates.password = newPassword.trim();
+    if (Object.keys(updates).length === 0) {
+        throw new HttpsError('invalid-argument', 'Debes indicar al menos newEmail o newPassword');
+    }
+
+    try {
+        await admin.auth().updateUser(uid, updates);
+    } catch (e) {
+        if (e.code === 'auth/email-already-exists') {
+            throw new HttpsError('already-exists', 'Ese email ya está en uso por otra cuenta Firebase Auth');
+        }
+        throw new HttpsError('internal', e.message || 'Error actualizando Auth');
+    }
+
+    logger.info('updateClientAuth ok', { uid, changedEmail: !!updates.email, changedPassword: !!updates.password, by: request.auth.uid });
+    return { success: true, changedEmail: !!updates.email, changedPassword: !!updates.password };
+});
