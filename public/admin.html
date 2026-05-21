@@ -1871,6 +1871,32 @@
                         window.userMap[clientDocId].welcomeSentBy = adminEmailNow;
                         window.userMap[clientDocId].welcomeSentTo = to;
                     }
+
+                    // ─── Ofrecer borrar loginPasswordPlain ────────────────────
+                    // La contraseña ya está en el email. Guardarla en Firestore
+                    // es innecesario y un riesgo de seguridad: mejor borrarla.
+                    const hasPwd = !!(window.userMap && window.userMap[clientDocId] && window.userMap[clientDocId].loginPasswordPlain)
+                                || !!(opts.password);
+                    if (hasPwd) {
+                        setTimeout(function() {
+                            if (confirm('🔒 Contraseña guardada en Firestore\n\nYa está incluida en el email de bienvenida que acabas de abrir.\n\n¿Borrarla ahora de la base de datos?\n\n[Aceptar] → se borra definitivamente (recomendado).\n[Cancelar] → se queda guardada (solo si todavía no has enviado el correo).')) {
+                                db.collection('users').doc(clientDocId).update({
+                                    loginPasswordPlain: firebase.firestore.FieldValue.delete()
+                                }).then(function() {
+                                    if (window.userMap && window.userMap[clientDocId]) delete window.userMap[clientDocId].loginPasswordPlain;
+                                    if (window._advClientsCache) {
+                                        const cc = window._advClientsCache.find(function(x){ return x.id === clientDocId; });
+                                        if (cc) delete cc.loginPasswordPlain;
+                                    }
+                                    if (typeof showToast === 'function') showToast('Contraseña borrada de Firestore ✓', 'success');
+                                    // Refrescar fila del cliente si está visible
+                                    if (typeof loadUsers === 'function') loadUsers('current');
+                                }).catch(function(e) {
+                                    if (typeof showToast === 'function') showToast('Error al borrar: ' + e.message, 'error');
+                                });
+                            }
+                        }, 600);
+                    }
                 }
             } catch(e) {
                 console.warn('[welcome] no pude marcar welcomeSentAt en el cliente:', e);
@@ -2024,6 +2050,34 @@
                     alert('📧 Email consolidado preparado para ' + to + ' con ' + accesos.length + ' accesos.\n\n'
                         + '⚠️ ' + sinPass.length + ' cuenta(s) NO tienen la contraseña guardada (' + sinPass.map(a=>a.name).join(', ') + ').\n'
                         + 'Son cuentas creadas antes de esta función. Para ellas, usa 🔄 (Cambiar login) que regenera y guarda la contraseña, o el email saldrá con un aviso para esa cuenta.');
+                }
+
+                // ─── Ofrecer borrar loginPasswordPlain en batch ──────────────
+                const conPass = [parent, ...branches].filter(function(u){ return !!u.loginPasswordPlain; });
+                if (conPass.length > 0) {
+                    setTimeout(function() {
+                        if (confirm('🔒 Contraseñas guardadas en Firestore\n\nEl email consolidado ya las incluye para ' + conPass.length + ' cuenta(s):\n' + conPass.map(function(u){ return '  • ' + (u.name || u.id); }).join('\n') + '\n\n¿Borrarlas ahora de la base de datos?\n\n[Aceptar] → se borran definitivamente (recomendado).\n[Cancelar] → se mantienen.')) {
+                            var batch = db.batch();
+                            conPass.forEach(function(u) {
+                                batch.update(db.collection('users').doc(u.id), {
+                                    loginPasswordPlain: firebase.firestore.FieldValue.delete()
+                                });
+                            });
+                            batch.commit().then(function() {
+                                conPass.forEach(function(u) {
+                                    if (window.userMap && window.userMap[u.id]) delete window.userMap[u.id].loginPasswordPlain;
+                                    if (window._advClientsCache) {
+                                        const cc = window._advClientsCache.find(function(x){ return x.id === u.id; });
+                                        if (cc) delete cc.loginPasswordPlain;
+                                    }
+                                });
+                                if (typeof showToast === 'function') showToast('Contraseñas borradas de Firestore (' + conPass.length + ' cuentas) ✓', 'success');
+                                if (typeof loadUsers === 'function') loadUsers('current');
+                            }).catch(function(e) {
+                                if (typeof showToast === 'function') showToast('Error al borrar: ' + e.message, 'error');
+                            });
+                        }
+                    }, 600);
                 }
             } catch(e) {
                 if (typeof hideLoading === 'function') hideLoading();
@@ -8725,6 +8779,7 @@ window.runPublicTicketsBackfill = async function() {
                                 <div style="font-weight:700">${escapeHtml(data.name || 'Sin Nombre')}</div>
                                 <div style="font-size:0.8rem; color:#888">${escapeHtml(data.email || data.nif || '')}</div>
                                 ${data.loginEmail ? `<div style="font-size:0.68rem; color:#FF9F0A; margin-top:2px; font-family:monospace;" title="Usuario sintético para login Firebase Auth"><span class="material-symbols-outlined" style="font-size:0.75rem; vertical-align:middle;">login</span> ${escapeHtml(data.loginEmail)}</div>` : ''}
+                                ${data.loginPasswordPlain ? `<div style="font-size:0.65rem; margin-top:2px; display:inline-flex; align-items:center; gap:3px; background:rgba(255,59,48,0.12); border:1px solid rgba(255,59,48,0.4); color:#FF3B30; border-radius:4px; padding:1px 5px; cursor:pointer;" title="Contraseña guardada en Firestore — pulsa para borrarla" onclick="(function(id){if(confirm('¿Borrar la contraseña guardada en Firestore para este cliente?\\n\\nHazlo sólo si ya le has enviado el email de bienvenida.')){db.collection('users').doc(id).update({loginPasswordPlain:firebase.firestore.FieldValue.delete()}).then(function(){if(window.userMap&&window.userMap[id])delete window.userMap[id].loginPasswordPlain;if(window._advClientsCache){var c=window._advClientsCache.find(function(x){return x.id===id;});if(c)delete c.loginPasswordPlain;}if(typeof showToast==='function')showToast('Contraseña borrada ✓','success');if(typeof loadUsers==='function')loadUsers('current');}).catch(function(e){if(typeof showToast==='function')showToast('Error: '+e.message,'error');});}}('${escapeHtml(data.id)}'))"><span class="material-symbols-outlined" style="font-size:0.72rem;">key</span> Pass guardada — clic para borrar</div>` : ''}
                                 ${data.parentClientId ? `<div style="font-size:0.7rem; color:#2196F3; margin-top:2px;"><span class="material-symbols-outlined" style="font-size:0.75rem; vertical-align:middle;">account_tree</span> ↳ Hijo de #${escapeHtml((userMap[data.parentClientId] || {}).idNum || '?')} (${escapeHtml((userMap[data.parentClientId] || {}).name || data.parentClientId)})</div>` : ''}
                             </td>
                             <td><span class="chip" style="${data.isGlobal ? 'background:#FF9800' : (data.parentClientId ? 'background:#2196F3' : '')}">${data.isGlobal ? 'Nube' : (data.parentClientId ? 'Filial' : 'Activo')}</span></td>
