@@ -11,7 +11,7 @@
         "imap": "^0.8.19",
         "jsdom": "^28.1.0",
         "mailparser": "^3.9.6",
-        "nodemailer": "^8.0.4",
+        "nodemailer": "^8.0.7",
         "puppeteer": "^24.39.0",
         "xlsx": "^0.18.5"
     },
