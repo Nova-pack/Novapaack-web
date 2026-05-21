@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Opción 5 refinada — Total bultos protagonista</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Outfit:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+    body {
+        margin: 0;
+        padding: 20px;
+        background: #2a2a2a;
+        font-family: 'Inter', Arial, sans-serif;
+        color: #ddd;
+    }
+    .toolbar {
+        max-width: 1500px;
+        margin: 0 auto 18px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .toolbar button {
+        background: #FF6600;
+        color: #fff;
+        border: 0;
+        padding: 8px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 700;
+        font-size: 0.82rem;
+    }
+    .toolbar label { color: #ccc; font-size: 0.85rem; }
+    #status { color: #FFB300; font-weight: 700; font-size: 0.85rem; }
+
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 20px;
+        max-width: 1500px;
+        margin: 0 auto;
+    }
+    .opt {
+        background: #fff;
+        color: #000;
+        border-radius: 6px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    .opt-header {
+        background: #FF6600;
+        color: #fff;
+        padding: 8px 14px;
+        font-weight: 800;
+        font-size: 0.9rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .opt-header .num {
+        background: #fff;
+        color: #FF6600;
+        width: 22px; height: 22px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        margin-right: 8px;
+        font-size: 0.78rem;
+    }
+    .opt-body {
+        padding: 16px 18px;
+    }
+    .vote {
+        background: #f5f5f5;
+        padding: 8px 14px;
+        font-size: 0.78rem;
+        color: #555;
+    }
+
+    /* ====== ESTILO COMÚN DE LAS BANDAS (la opción 5 que te gustó) ====== */
+    .bands { margin-top: 10px; }
+    .band {
+        display: flex;
+        align-items: stretch;
+        margin-bottom: 3px;
+        border: 1.5px solid #000;
+    }
+    .band .qty {
+        background: #000;
+        color: #fff;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 15pt;
+        padding: 6px 14px;
+        min-width: 46px;
+        text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .band .name {
+        flex: 1;
+        padding: 6px 12px;
+        font-weight: 800;
+        font-size: 11pt;
+        display: flex;
+        align-items: center;
+        text-transform: uppercase;
+    }
+    .band .weight {
+        padding: 6px 10px;
+        font-size: 8pt;
+        color: #666;
+        background: #f8f8f8;
+        display: flex;
+        align-items: center;
+        border-left: 1px dashed #999;
+        min-width: 50px;
+        justify-content: flex-end;
+        font-weight: 500;
+    }
+
+    /* ============ */
+    /* VARIANTE A — Total caja gigante invertida */
+    /* ============ */
+    .varA .total-hero {
+        background: #000;
+        color: #fff;
+        padding: 12px 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+    }
+    .varA .total-hero .label {
+        font-size: 9pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        opacity: 0.85;
+    }
+    .varA .total-hero .num {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 38pt;
+        line-height: 1;
+        letter-spacing: -1px;
+    }
+    .varA .total-hero .unit {
+        font-size: 14pt;
+        font-weight: 700;
+        margin-left: 8px;
+        letter-spacing: 1px;
+    }
+
+    /* ============ */
+    /* VARIANTE B — Doble caja: bultos enorme + peso pequeño al lado */
+    /* ============ */
+    .varB .totals-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+    .varB .totals-row .big {
+        flex: 1;
+        background: #fff;
+        border: 3px solid #000;
+        padding: 10px 16px;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+    }
+    .varB .totals-row .big .num {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 42pt;
+        line-height: 1;
+    }
+    .varB .totals-row .big .label {
+        font-size: 11pt;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+    .varB .totals-row .small {
+        flex: 0 0 90px;
+        background: #f0f0f0;
+        border: 1.5px solid #999;
+        padding: 8px 10px;
+        text-align: center;
+    }
+    .varB .totals-row .small .label {
+        font-size: 7pt;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #555;
+    }
+    .varB .totals-row .small .num {
+        font-weight: 800;
+        font-size: 14pt;
+        color: #333;
+        line-height: 1.2;
+    }
+
+    /* ============ */
+    /* VARIANTE C — Caja única centrada con borde grueso */
+    /* ============ */
+    .varC .total-hero {
+        border: 4px solid #000;
+        text-align: center;
+        padding: 10px;
+        position: relative;
+        margin-bottom: 8px;
+    }
+    .varC .total-hero .label {
+        font-size: 8pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 3px;
+        color: #555;
+    }
+    .varC .total-hero .num {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 56pt;
+        line-height: 1;
+        letter-spacing: -2px;
+    }
+    .varC .total-hero .sub {
+        font-size: 13pt;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 3px;
+    }
+
+    /* ============ */
+    /* VARIANTE D — Caja con sello "X BULTOS" estilo escudo */
+    /* ============ */
+    .varD .total-hero {
+        display: inline-block;
+        padding: 6px 18px 8px;
+        margin-bottom: 10px;
+        border: 2.5px solid #000;
+        position: relative;
+        background: #fff;
+    }
+    .varD .total-hero::after {
+        content: '';
+        position: absolute;
+        inset: 3px;
+        border: 1px solid #000;
+        pointer-events: none;
+    }
+    .varD .total-hero .num {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 40pt;
+        line-height: 1;
+        position: relative;
+        z-index: 1;
+    }
+    .varD .total-hero .unit {
+        font-size: 13pt;
+        font-weight: 800;
+        text-transform: uppercase;
+        margin-left: 6px;
+        letter-spacing: 1px;
+        position: relative;
+        z-index: 1;
+    }
+    .varD .total-hero .label {
+        display: block;
+        font-size: 7.5pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        color: #555;
+        position: relative;
+        z-index: 1;
+    }
+
+    @media print {
+        body { background: #fff; padding: 0; }
+        .toolbar, .opt-header, .vote { display: none; }
+        .grid { display: block; }
+        .opt { box-shadow: none; }
+    }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <button onclick="toggleData()">🔀 Cambiar pocos / muchos artículos</button>
+    <button onclick="toggleWeight()">⚖️ Mostrar / ocultar columna peso</button>
+    <label>Estado:</label> <span id="status"></span>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+var state = { manyArticles: false, showWeight: false };
+
+function items() {
+    return state.manyArticles ? [
+        { qty: 5, size: 'PAQUETE',  weight: 30 },
+        { qty: 3, size: 'BULTO',    weight: 25 },
+        { qty: 2, size: 'PALET',    weight: 50 },
+        { qty: 4, size: 'BI-200L',  weight: 10 },
+        { qty: 1, size: 'LUNA',     weight: 8  },
+        { qty: 2, size: 'SOBRE',    weight: 1  },
+        { qty: 3, size: 'BAT',      weight: 12 },
+        { qty: 1, size: 'GV',       weight: 25 }
+    ] : [
+        { qty: 5, size: 'PAQUETE', weight: 30 },
+        { qty: 3, size: 'BULTO',   weight: 25 },
+        { qty: 2, size: 'PALET',   weight: 50 }
+    ];
+}
+
+function totals(arr) {
+    var u = arr.reduce(function(s,p){ return s+p.qty; }, 0);
+    var w = arr.reduce(function(s,p){ return s+p.weight; }, 0);
+    return { uds: u, kg: w };
+}
+
+function bandsHtml(arr) {
+    return arr.map(function(p) {
+        var w = state.showWeight ? '<div class="weight">' + p.weight + ' kg</div>' : '';
+        return '<div class="band">' +
+            '<div class="qty">' + p.qty + '</div>' +
+            '<div class="name">' + p.size + '</div>' +
+            w +
+        '</div>';
+    }).join('');
+}
+
+function header(letter, label, pros) {
+    return '<div class="opt-header"><span><span class="num">' + letter + '</span>' + label + '</span><span style="font-size:0.7rem; opacity:0.9;">' + pros + '</span></div>';
+}
+
+function varA() {
+    var arr = items(); var t = totals(arr);
+    return '<div class="opt varA">' +
+        header('A', 'Caja gigante invertida (negro/blanco)', 'Máximo contraste, imposible no verla') +
+        '<div class="opt-body">' +
+        '<div class="total-hero">' +
+            '<span class="label">TOTAL BULTOS</span>' +
+            '<span><span class="num">' + t.uds + '</span><span class="unit">BULTOS</span></span>' +
+        '</div>' +
+        '<div class="bands">' + bandsHtml(arr) + '</div>' +
+        '</div>' +
+        '<div class="vote">🔥 La que más grita el total. Funciona en B&N. Repartidor lo ve a 3 metros.</div>' +
+    '</div>';
+}
+
+function varB() {
+    var arr = items(); var t = totals(arr);
+    return '<div class="opt varB">' +
+        header('B', 'Bultos enorme + peso pequeño al lado', 'Total prioritario, peso accesorio') +
+        '<div class="opt-body">' +
+        '<div class="totals-row">' +
+            '<div class="big">' +
+                '<span class="num">' + t.uds + '</span>' +
+                '<span class="label">Bultos</span>' +
+            '</div>' +
+            '<div class="small">' +
+                '<div class="label">Peso aprox</div>' +
+                '<div class="num">' + t.kg + ' kg</div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="bands">' + bandsHtml(arr) + '</div>' +
+        '</div>' +
+        '<div class="vote">📊 El número de bultos dominante, peso por si lo necesita pero no roba protagonismo.</div>' +
+    '</div>';
+}
+
+function varC() {
+    var arr = items(); var t = totals(arr);
+    return '<div class="opt varC">' +
+        header('C', 'Caja centrada con número gigantesco', 'Estética dramática, máximo foco') +
+        '<div class="opt-body">' +
+        '<div class="total-hero">' +
+            '<div class="label">TOTAL</div>' +
+            '<div class="num">' + t.uds + '</div>' +
+            '<div class="sub">BULTOS</div>' +
+        '</div>' +
+        '<div class="bands">' + bandsHtml(arr) + '</div>' +
+        '</div>' +
+        '<div class="vote">🎯 Estilo "letrero". El nº gigante en el centro. Más espacio vertical pero alto impacto.</div>' +
+    '</div>';
+}
+
+function varD() {
+    var arr = items(); var t = totals(arr);
+    return '<div class="opt varD">' +
+        header('D', 'Sello estilo escudo a la izquierda', 'Compacto, doble línea de borde') +
+        '<div class="opt-body">' +
+        '<div class="total-hero">' +
+            '<span class="label">Total bultos</span>' +
+            '<span class="num">' + t.uds + '</span>' +
+            '<span class="unit">BULTOS</span>' +
+        '</div>' +
+        '<div class="bands">' + bandsHtml(arr) + '</div>' +
+        '</div>' +
+        '<div class="vote">🏷️ Caja con doble borde tipo sello, ocupa solo lo necesario. Bien si quieres dejar espacio para algo a la derecha.</div>' +
+    '</div>';
+}
+
+function render() {
+    document.getElementById('grid').innerHTML = varA() + varB() + varC() + varD();
+    document.getElementById('status').textContent =
+        (state.manyArticles ? '8 tipos · ' : '3 tipos · ') +
+        (state.showWeight ? 'Con peso' : 'Sin peso (recomendado)');
+}
+
+function toggleData() { state.manyArticles = !state.manyArticles; render(); }
+function toggleWeight() { state.showWeight = !state.showWeight; render(); }
+render();
+</script>
+
+</body>
+</html>

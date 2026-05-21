@@ -23,7 +23,16 @@
                             </h2>
                             <p style="color:#666; margin:5px 0 0; font-size:0.85rem;">Gestión de teléfonos y chóferes asignados a cada ruta de reparto.</p>
                         </div>
-                        <div style="display:flex; gap:8px;" id="phones-toolbar">
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;" id="phones-toolbar">
+                            <button onclick="if(typeof window._bulkAssignRoutePhones==='function') window._bulkAssignRoutePhones(); else alert('Recarga la página.');" title="Recorre TODOS los clientes (padres y sucursales) y les asigna el teléfono de ruta según su CP" style="background:#4CAF50; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">auto_fix_high</span> Auto-asignar tel. ruta a todos
+                            </button>
+                            <button onclick="if(typeof window._directoriesRebuildAll==='function') window._directoriesRebuildAll(); else if(typeof window._routeDirectoryRebuildAll==='function') window._routeDirectoryRebuildAll(); else alert('Recarga la página.');" title="Reconstruye los directorios públicos: por ruta (búsqueda de remitente) + global de clientes (búsqueda de destinatario porte debido). Sin datos sensibles." style="background:#2196F3; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">contacts</span> Reconstruir directorios (rutas + global)
+                            </button>
+                            <button onclick="if(typeof window.contactsMigrationDryRun==='function') window.contactsMigrationDryRun(); else alert('Recarga la página.');" title="Unifica Gesco (~6315) + NOVAPACK (/users) en una sola colección /contacts. Gesco manda en idNum, NOVAPACK enriquece con NIF/email/etc. Muestra preview antes de aplicar." style="background:#FF9800; border:none; color:#000; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
+                                <span class="material-symbols-outlined" style="font-size:16px;">merge</span> Unificar Gesco + NOVAPACK → /contacts
+                            </button>
                             <button onclick="openPhoneModal()" style="background:#FF9800; border:none; color:#fff; padding:8px 16px; font-size:0.82rem; cursor:pointer; border-radius:4px; font-weight:bold; display:flex; align-items:center; gap:5px;">
                                 <span class="material-symbols-outlined" style="font-size:16px;">add</span> Nueva Ruta
                             </button>
@@ -273,11 +282,19 @@
         _initZonesAutocomplete();
     };
 
+    function _normalizeRoutePhone(p) {
+        let d = (p || '').toString().replace(/\D/g, '');
+        if (d.length > 9 && d.indexOf('0034') === 0) d = d.slice(4);
+        else if (d.length > 9 && d.indexOf('34') === 0) d = d.slice(2);
+        if (d.length > 9) d = d.slice(-9);
+        return d;
+    }
+
     window.savePhoneRoute = async () => {
         const docId = document.getElementById('phone-edit-docid').value;
         const data = {
             label: document.getElementById('phone-edit-label').value.trim(),
-            number: document.getElementById('phone-edit-number').value.trim(),
+            number: _normalizeRoutePhone(document.getElementById('phone-edit-number').value),
             driverName: document.getElementById('phone-edit-d1').value.trim(),
             driverName2: document.getElementById('phone-edit-d2').value.trim(),
             driverName3: document.getElementById('phone-edit-d3').value.trim(),
@@ -317,17 +334,51 @@
         }
     };
 
-    // ============ MASTER PINS ============
+    // ============ MASTER PINS (stored hashed; plain values are never re-shown) ============
+
+    async function _sha256Hex(str) {
+        const enc = new TextEncoder().encode(str);
+        const buf = await crypto.subtle.digest('SHA-256', enc);
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+    }
 
     async function loadMasterPins() {
         try {
             const doc = await db.collection('config').doc('phones').get();
-            if (doc.exists) {
-                const data = doc.data();
-                const pin1 = document.getElementById('master-pin-1');
-                const pin2 = document.getElementById('master-pin-2');
-                if (pin1 && data.masterPin1) pin1.value = data.masterPin1;
-                if (pin2 && data.masterPin2) pin2.value = data.masterPin2;
+            if (!doc.exists) return;
+            const data = doc.data();
+            const pin1El = document.getElementById('master-pin-1');
+            const pin2El = document.getElementById('master-pin-2');
+            const statusEl = document.getElementById('master-pin-status');
+
+            // Auto-migrate: if plain PINs exist without hashes, hash them and clear plaintext.
+            const needsMigration = (data.masterPin1 && !data.masterPin1Hash)
+                                || (data.masterPin2 && !data.masterPin2Hash);
+            if (needsMigration) {
+                const upd = {
+                    masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    masterPin1: firebase.firestore.FieldValue.delete(),
+                    masterPin2: firebase.firestore.FieldValue.delete()
+                };
+                if (data.masterPin1) upd.masterPin1Hash = await _sha256Hex(data.masterPin1);
+                if (data.masterPin2) upd.masterPin2Hash = await _sha256Hex(data.masterPin2);
+                await db.collection('config').doc('phones').set(upd, { merge: true });
+                console.log('[Phones] Migrated plain PINs → SHA-256 hashes');
+            }
+
+            // Never show the original PIN. Indicate whether one is configured.
+            if (pin1El) {
+                pin1El.value = '';
+                pin1El.placeholder = (data.masterPin1Hash || data.masterPin1) ? '•••• (configurado)' : 'Introduce un PIN';
+            }
+            if (pin2El) {
+                pin2El.value = '';
+                pin2El.placeholder = (data.masterPin2Hash || data.masterPin2) ? '•••• (configurado)' : 'Introduce un PIN';
+            }
+            if (statusEl && needsMigration) {
+                statusEl.textContent = 'PINs migrados a almacenamiento seguro (hash)';
+                statusEl.style.color = '#4CAF50';
+                setTimeout(() => { statusEl.textContent = ''; }, 4000);
             }
         } catch (e) {
             console.error('[Phones] Error loading master PINs:', e);
@@ -345,13 +396,21 @@
         }
 
         try {
-            await db.collection('config').doc('phones').set({
-                masterPin1: pin1,
-                masterPin2: pin2,
-                masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
+            const upd = {
+                masterPinsUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                masterPin1: firebase.firestore.FieldValue.delete(),
+                masterPin2: firebase.firestore.FieldValue.delete()
+            };
+            if (pin1) upd.masterPin1Hash = await _sha256Hex(pin1);
+            if (pin2) upd.masterPin2Hash = await _sha256Hex(pin2);
+            await db.collection('config').doc('phones').set(upd, { merge: true });
+            // Clear inputs so plain PIN never lingers in DOM
+            const pin1El = document.getElementById('master-pin-1');
+            const pin2El = document.getElementById('master-pin-2');
+            if (pin1El) { pin1El.value = ''; pin1El.placeholder = pin1 ? '•••• (configurado)' : pin1El.placeholder; }
+            if (pin2El) { pin2El.value = ''; pin2El.placeholder = pin2 ? '•••• (configurado)' : pin2El.placeholder; }
             if (statusEl) {
-                statusEl.textContent = 'PINs guardados';
+                statusEl.textContent = 'PINs guardados (hash SHA-256)';
                 statusEl.style.color = '#4CAF50';
                 setTimeout(() => { statusEl.textContent = ''; }, 3000);
             }
@@ -399,13 +458,19 @@
         }
     };
 
-    // Auto-load PINs after rendering
-    const _origLoad = window.loadPhonesManager;
-    window.loadPhonesManager = async () => {
-        await _origLoad();
-        loadMasterPins();
-        loadConductorPin();
-    };
+    // Auto-load PINs after rendering. Idempotent: a re-run of phones_manager.js
+    // (for instance via hot-reload) MUST NOT re-wrap the function or each refresh
+    // would multiply PIN-loader calls.
+    if (!window.loadPhonesManager._withPins) {
+        const _origLoad = window.loadPhonesManager;
+        const _wrapped = async () => {
+            await _origLoad();
+            loadMasterPins();
+            loadConductorPin();
+        };
+        _wrapped._withPins = true;
+        window.loadPhonesManager = _wrapped;
+    }
 
     // ============ COVERAGE ZONES AUTOCOMPLETE ============
 

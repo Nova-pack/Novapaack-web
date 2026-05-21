@@ -712,7 +712,13 @@
 
     // --- POD Print ---
     window._albPrintPOD = function() {
-        var id = document.getElementById('pod-alb-id').textContent;
+        var _eh = (typeof escapeHtml === 'function')
+            ? escapeHtml
+            : function(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); };
+        var _safeUrl = function(u) { return (typeof u === 'string' && /^(https?:|data:|blob:)/i.test(u)) ? u : ''; };
+        var _txt = function(elId) { var el = document.getElementById(elId); return _eh(el ? el.textContent : ''); };
+
+        var id = _txt('pod-alb-id');
         var w = window.open('', 'PRINT', 'height=800,width=600');
         w.document.write('<html><head><title>Justificante POD - ' + id + '</title>');
         w.document.write('<style>body{font-family:sans-serif;color:#333;} .box{border:1px solid #ddd;padding:15px;margin-bottom:15px;border-radius:5px;} img{max-width:100%;}</style>');
@@ -720,23 +726,25 @@
         w.document.write('<h2 style="text-align:center;border-bottom:2px solid;padding-bottom:10px;">CERTIFICADO DE ENTREGA</h2>');
         w.document.write('<h3>ALBARÁN: ' + id + '</h3>');
         w.document.write('<div class="box">');
-        w.document.write('<p><strong>Destinatario:</strong> ' + document.getElementById('pod-alb-receiver').textContent + '</p>');
-        w.document.write('<p><strong>Dirección:</strong> ' + document.getElementById('pod-alb-address').textContent + '</p>');
-        w.document.write('<p><strong>Bultos:</strong> ' + document.getElementById('pod-alb-pkgs').textContent + '</p>');
+        w.document.write('<p><strong>Destinatario:</strong> ' + _txt('pod-alb-receiver') + '</p>');
+        w.document.write('<p><strong>Dirección:</strong> ' + _txt('pod-alb-address') + '</p>');
+        w.document.write('<p><strong>Bultos:</strong> ' + _txt('pod-alb-pkgs') + '</p>');
         w.document.write('</div>');
         w.document.write('<div class="box" style="background:#f9f9f9;">');
         w.document.write('<h4>DATOS DE LA RECEPCIÓN</h4>');
-        w.document.write('<p><strong>Entregado a:</strong> ' + document.getElementById('pod-alb-delivery-name').textContent + '</p>');
-        w.document.write('<p><strong>Fecha/Hora:</strong> ' + document.getElementById('pod-alb-delivery-time').textContent + '</p>');
-        w.document.write('<p><strong>GPS:</strong> ' + document.getElementById('pod-alb-gps').textContent + '</p>');
+        w.document.write('<p><strong>Entregado a:</strong> ' + _txt('pod-alb-delivery-name') + '</p>');
+        w.document.write('<p><strong>Fecha/Hora:</strong> ' + _txt('pod-alb-delivery-time') + '</p>');
+        w.document.write('<p><strong>GPS:</strong> ' + _txt('pod-alb-gps') + '</p>');
         w.document.write('</div>');
         var sigImg = document.getElementById('pod-alb-sig-img');
-        if (sigImg.style.display !== 'none') {
-            w.document.write('<div class="box"><h4>FIRMA:</h4><img src="' + sigImg.src + '" style="max-height:150px;background:#fff;"></div>');
+        if (sigImg && sigImg.style.display !== 'none') {
+            var sigUrl = _safeUrl(sigImg.src);
+            if (sigUrl) w.document.write('<div class="box"><h4>FIRMA:</h4><img src="' + _eh(sigUrl) + '" style="max-height:150px;background:#fff;"></div>');
         }
         var photoImg = document.getElementById('pod-alb-photo-img');
-        if (photoImg.style.display !== 'none') {
-            w.document.write('<div class="box"><h4>FOTOGRAFÍA:</h4><img src="' + photoImg.src + '" style="max-height:300px;"></div>');
+        if (photoImg && photoImg.style.display !== 'none') {
+            var photUrl = _safeUrl(photoImg.src);
+            if (photUrl) w.document.write('<div class="box"><h4>FOTOGRAFÍA:</h4><img src="' + _eh(photUrl) + '" style="max-height:300px;"></div>');
         }
         w.document.write('<script>window.onload=function(){setTimeout(function(){window.print();},200);}<\/script>');
         w.document.write('</body></html>');

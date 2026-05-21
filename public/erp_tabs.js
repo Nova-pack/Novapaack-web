@@ -20,11 +20,18 @@
         'adv-providers-workspace', 'adv-manual-tickets-workspace', 'adv-scanner-workspace',
         'erp-tab-inicio',
         'erp-tab-debidos', 'erp-tab-rutas', 'erp-tab-phones', 'erp-tab-config',
-        'erp-tab-maintenance', 'erp-tab-pod', 'erp-tab-pending-deletes', 'erp-tab-driver-incidents', 'erp-tab-users',
+        'erp-tab-maintenance', 'erp-tab-pod', 'erp-tab-pending-deletes', 'erp-tab-driver-incidents', 'erp-tab-prealbaranes', 'erp-tab-users',
         'erp-tab-ticket-search', 'erp-tab-ficha-cliente', 'erp-tab-albaranes-central', 'erp-tab-mailbox',
         'erp-tab-facturas-central', 'erp-tab-route-details', 'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment',
         'erp-tab-trash',
-        'erp-tab-cooper'
+        'erp-tab-cooper',
+        'erp-tab-analytics',
+        'erp-tab-auto-assign',
+        'erp-tab-heatmap',
+        'erp-tab-tariff-builder',
+        'erp-tab-tariff-manager',
+        'erp-tab-parent-diagnostic',
+        'erp-tab-invoice-preview'
     ];
 
     // --- TAB DEFINITIONS (built-in tabs that map to existing workspaces) ---
@@ -48,6 +55,7 @@
         'pod':             { wsId: 'erp-tab-pod',                title: 'Justificantes POD', icon: 'task',               closeable: true },
         'pending-deletes': { wsId: 'erp-tab-pending-deletes',    title: 'Anulaciones',       icon: 'notification_important', closeable: true },
         'driver-incidents': { wsId: 'erp-tab-driver-incidents',  title: 'Incidencias Reparto', icon: 'report_problem',     closeable: true },
+        'prealbaranes':    { wsId: 'erp-tab-prealbaranes',       title: 'Pre-albaranes 24h',  icon: 'pending_actions',    closeable: true },
         'users':           { wsId: 'erp-tab-users',              title: 'Gestión Clientes',  icon: 'group',              closeable: true },
         'ticket-search':   { wsId: 'erp-tab-ticket-search',      title: 'Buscar Albaranes',  icon: 'search',             closeable: true },
         'ficha-cliente':       { wsId: 'erp-tab-ficha-cliente',      title: 'Ficha Cliente',       icon: 'person',             closeable: true },
@@ -60,6 +68,59 @@
         'nif-enrichment':  { wsId: 'erp-tab-nif-enrichment',      title: 'Enriquecer NIF',     icon: 'badge',              closeable: true },
         'trash':           { wsId: 'erp-tab-trash',               title: 'Papelera',           icon: 'delete',             closeable: true },
         'cooper':          { wsId: 'erp-tab-cooper',              title: 'Cooper',             icon: 'local_shipping',     closeable: true },
+        'analytics':       { wsId: 'erp-tab-analytics',           title: 'Analítica',          icon: 'monitoring',         closeable: true },
+        'auto-assign':     { wsId: 'erp-tab-auto-assign',         title: 'Auto-asignar',       icon: 'auto_awesome',       closeable: true },
+        'heatmap':         { wsId: 'erp-tab-heatmap',             title: 'Heatmap retrasos',   icon: 'whatshot',           closeable: true },
+        'tariff-builder':  { wsId: 'erp-tab-tariff-builder',       title: 'Editor Tarifa',      icon: 'paid',               closeable: true },
+        'tariff-manager':  { wsId: 'erp-tab-tariff-manager',       title: 'Tarifa Cliente',     icon: 'price_change',       closeable: true },
+        'parent-diagnostic': { wsId: 'erp-tab-parent-diagnostic',  title: 'Diagnóstico',        icon: 'monitor_heart',      closeable: true },
+        'invoice-preview': { wsId: 'erp-tab-invoice-preview',      title: 'Preview Factura',    icon: 'receipt',            closeable: true },
+    };
+
+    // ─── HELPER: abre como ERP tab si está disponible, si no como modal ──
+    // Reutilizable para cualquier pantalla "workspace-like" sin duplicar la
+    // detección manual en cada función.
+    //
+    // Uso:
+    //   const { container, close, useERP } = window.openWorkspaceOrModal({
+    //       tabKey: 'parent-diagnostic',
+    //       tabTitle: 'Diagnóstico Luis Moleon',
+    //       tabIcon: 'monitor_heart',
+    //       modalId: 'parent-diag-modal',
+    //       modalStyle: 'position:fixed; inset:0; ...'
+    //   });
+    //   container.innerHTML = '<div>contenido</div>';
+    //   // ...
+    //   close(); // funciona en ambos modos
+    //
+    // Si el wsId del tabKey no existe en el DOM, cae a modal automáticamente.
+    window.openWorkspaceOrModal = function(opts) {
+        opts = opts || {};
+        const tabKey = opts.tabKey;
+        const wsId = tabKey && TAB_WORKSPACE_MAP[tabKey] ? TAB_WORKSPACE_MAP[tabKey].wsId : ('erp-tab-' + tabKey);
+        const useERP = !!(tabKey && document.getElementById(wsId));
+        let container, close;
+        if (useERP) {
+            window.erpOpenTab(tabKey, {
+                title: opts.tabTitle,
+                icon: opts.tabIcon,
+                closeable: opts.closeable !== false
+            });
+            container = document.getElementById(wsId);
+            if (container) container.innerHTML = '';
+            close = () => {
+                if (typeof window.erpCloseTab === 'function') window.erpCloseTab(tabKey);
+            };
+        } else {
+            const oldModal = opts.modalId ? document.getElementById(opts.modalId) : null;
+            if (oldModal) oldModal.remove();
+            container = document.createElement('div');
+            if (opts.modalId) container.id = opts.modalId;
+            container.style.cssText = opts.modalStyle || 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; display:flex; align-items:center; justify-content:center; padding:20px;';
+            document.body.appendChild(container);
+            close = () => { try { container.remove(); } catch(_) {} };
+        }
+        return { container, close, useERP };
     };
 
     // --- CORE API ---
@@ -231,6 +292,10 @@
             case 'tariffs':
                 if (typeof window.loadTariffClients === 'function') window.loadTariffClients();
                 if (typeof window.loadArticlesCount === 'function') window.loadArticlesCount();
+                // Activar sub-tab 'global' (Mis tarifas) y renderizar las cards.
+                // Sin esto, el panel se quedaba vacío al abrir el workspace.
+                if (typeof window.showTariffTab === 'function') window.showTariffTab('global');
+                if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
                 break;
             case 'debidos':
                 if (typeof window.loadDebidosManager === 'function') window.loadDebidosManager();
@@ -274,6 +339,9 @@
                 break;
             case 'driver-incidents':
                 if (typeof window.loadDriverIncidents === 'function') window.loadDriverIncidents();
+                break;
+            case 'prealbaranes':
+                if (typeof window.loadPrealbaranesView === 'function') window.loadPrealbaranesView();
                 break;
             case 'contabilidad':
                 if (typeof window.toggleContabilidad === 'function') window.toggleContabilidad();
@@ -450,7 +518,10 @@
                 'adv-billing-workspace', 'adv-history-workspace', 'adv-reports-workspace', 'adv-tariffs-workspace',
                 'adv-clients-workspace', 'adv-providers-workspace', 'adv-manual-tickets-workspace',
                 'adv-scanner-workspace', 'erp-tab-mailbox', 'erp-tab-facturas-central', 'erp-tab-route-details',
-                'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment', 'erp-tab-trash', 'erp-tab-cooper'
+                'erp-tab-route-map', 'erp-tab-comunicaciones', 'erp-tab-nif-enrichment', 'erp-tab-trash', 'erp-tab-cooper',
+                'erp-tab-analytics', 'erp-tab-auto-assign', 'erp-tab-heatmap',
+                'erp-tab-tariff-builder', 'erp-tab-tariff-manager',
+                'erp-tab-parent-diagnostic', 'erp-tab-invoice-preview'
             ];
             tabContainerIds.forEach(function(id) {
                 var el = document.getElementById(id);

@@ -1,8 +1,9 @@
-const CACHE_NAME = 'novapack-repartidor-v8';
+const CACHE_NAME = 'novapack-repartidor-v15';
 const urlsToCache = [
     '/reparto.html',
     '/reparto.css',
     '/reparto.js',
+    '/copiloto.js',
     '/manifest-repartidor.json',
     '/firebase-config.js',
     '/libs/html5-qrcode.min.js',

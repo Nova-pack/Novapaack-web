@@ -16,7 +16,8 @@
     <style>
         @font-face {
             font-family: 'Xenotron';
-            src: local('Xenotron'), url('https://db.onlinewebfonts.com/t/13f990d5baee565bea4d9ff96e201c84.woff2') format('woff2');
+            src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2');
+            font-display: block;
         }
     </style>
     <link rel="stylesheet" href="reparto.css">
@@ -218,7 +219,9 @@
     </style>
 
     <!-- App Logic -->
-    <script src="reparto.js" defer></script>
+    <script src="reparto.js?v=20260515_authuid_fix" defer></script>
+    <script src="copiloto.js?v=20260515_copiloto_v2" defer></script>
+    <script src="ocr.js" defer></script>
 </head>
 <body>
 
@@ -319,13 +322,14 @@
             <button class="btn btn-primary" id="btn-send-sms" style="margin-top:10px;"><span class="material-symbols-outlined">send</span> ENVIAR CÓDIGO SMS</button>
 
             <div class="login-divider">
-                <span>O ACCESO ADMIN</span>
+                <span>O ACCESO CON PIN</span>
             </div>
             <div class="form-group" style="margin-bottom:0;">
-                <label class="form-label" style="color:#AB47BC;"><span class="material-symbols-outlined">lock</span> PIN Maestro</label>
-                <input type="password" id="master-pin-input" class="form-control" placeholder="Introduce PIN maestro" style="text-align:center; font-size:1.2rem; font-weight:900; letter-spacing:5px;">
+                <label class="form-label" style="color:#AB47BC;"><span class="material-symbols-outlined">lock</span> PIN de tu ruta (o PIN maestro)</label>
+                <input type="tel" inputmode="numeric" id="master-pin-input" class="form-control" placeholder="Introduce tu PIN" style="text-align:center; font-size:1.2rem; font-weight:900; letter-spacing:5px;">
+                <div style="font-size:0.7rem; color:#888; margin-top:6px; text-align:center; line-height:1.4;">Con el PIN de tu ruta entras directo a tu reparto, sin SMS. Si no lo tienes, pídeselo al administrador.</div>
             </div>
-            <button class="btn btn-primary" id="btn-master-pin" style="margin-top:10px; background:linear-gradient(135deg,#AB47BC,#7B1FA2);"><span class="material-symbols-outlined">key</span> ACCEDER COMO ADMIN</button>
+            <button class="btn btn-primary" id="btn-master-pin" style="margin-top:10px; background:linear-gradient(135deg,#AB47BC,#7B1FA2);"><span class="material-symbols-outlined">key</span> ACCEDER CON PIN</button>
         </div>
 
         <!-- Step 2: Verify code -->
@@ -414,6 +418,7 @@
             <button class="header-btn" id="btn-clean-route" title="Limpiar entregas completadas"><span class="material-symbols-outlined">cleaning_services</span></button>
             <button class="header-btn" id="btn-sort-route" title="Ordenar ruta por GPS"><span class="material-symbols-outlined">route</span></button>
             <button class="header-btn" id="btn-refresh" title="Refrescar entregas"><span class="material-symbols-outlined">refresh</span></button>
+            <button class="header-btn" id="btn-van-mode" title="Modo furgón (botones grandes)"><span class="material-symbols-outlined">local_shipping</span></button>
             <button class="header-btn danger" id="btn-logout" title="Cerrar sesión"><span class="material-symbols-outlined">power_settings_new</span></button>
         </div>
     </header>
@@ -493,6 +498,23 @@
                     <input type="text" id="manual-id-input" class="form-control" placeholder="ID albarán o nombre...">
                     <button class="btn btn-primary btn-sm" id="btn-manual-search" style="white-space:nowrap;"><span class="material-symbols-outlined" style="font-size:1rem;">search</span></button>
                 </div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <input type="file" id="ocr-photo-input" accept="image/*" capture="environment" style="display:none;">
+                    <button class="btn btn-outline btn-sm" id="btn-ocr-scan" style="flex:1; color:#5DADE2; border-color:rgba(93,173,226,0.3);"><span class="material-symbols-outlined" style="font-size:1rem;">document_scanner</span> OCR Etiqueta (si el QR no lee)</button>
+                </div>
+                <div id="ocr-status" style="font-size:0.78rem; color:var(--text-dim); margin-top:6px; min-height:1em;"></div>
+
+                <!-- Recogida sin albarán -->
+                <div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(255,255,255,0.12);">
+                    <button class="btn" id="btn-open-pickup-no-doc" style="width:100%; background:#E53935; color:#fff; border:0; padding:14px; border-radius:10px; font-weight:900; font-size:0.92rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
+                        <span class="material-symbols-outlined">report</span>
+                        📦 RECOGIDA SIN ALBARÁN
+                    </button>
+                    <p style="font-size:0.7rem; color:var(--text-dim); margin:6px 0 0; text-align:center; line-height:1.4;">
+                        Si el cliente te entrega bultos sin albarán/etiqueta.
+                        Crea un pre-albarán con foto y conteo. El cliente lo completa en su app.
+                    </p>
+                </div>
             </div>
 
             <!-- Scan Result -->
@@ -502,6 +524,16 @@
                     <span id="scan-ticket-status" class="dc-status pending">PENDIENTE</span>
                 </div>
                 <div id="scan-ticket-details" style="font-size:0.85rem; line-height:1.6; margin-bottom:12px;"></div>
+
+                <!-- Discrepancia / Corrección de items en recogida -->
+                <button class="btn" id="btn-open-discrepancy" style="width:100%; margin-bottom:10px; background:#FF9800; color:#000; border:0; padding:14px; border-radius:10px; font-weight:900; font-size:0.95rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
+                    <span class="material-symbols-outlined">edit_note</span>
+                    ✏️ DISCREPANCIA — corregir items recogidos
+                </button>
+                <p style="font-size:0.7rem; color:var(--text-dim); margin:0 0 14px; text-align:center; line-height:1.4;">
+                    Pulsa solo si lo recogido NO coincide con lo declarado por el cliente.
+                    Requiere foto. Se factura por lo recogido y se notifica al cliente.
+                </p>
 
                 <!-- Confirm Panel -->
                 <div class="confirm-panel" id="confirm-panel">
@@ -516,6 +548,9 @@
                             <button class="btn btn-sm btn-outline" id="btn-clear-sig" style="padding:2px 10px; font-size:0.65rem; color:var(--danger);">Borrar</button>
                         </div>
                         <canvas id="sig-canvas"></canvas>
+                        <p style="font-size:0.68rem; color:var(--text-dim); margin:6px 4px 0; line-height:1.3;">
+                            Al firmar, el receptor confirma haber recibido el envío en buen estado. La firma se guarda con sello de tiempo y, si está disponible, ubicación GPS.
+                        </p>
                     </div>
                     <div class="form-group">
                         <label class="form-label"><span class="material-symbols-outlined">photo_camera</span> Foto <span class="form-label-optional">(opcional)</span></label>
@@ -643,25 +678,32 @@
         </div>
     </div>
 
-    <!-- ===== COOPER PHOTO MODAL ===== -->
+    <!-- ===== COOPER PHOTO MODAL (multi-foto) ===== -->
     <div class="modal-overlay" id="cooper-modal">
-        <div class="modal-sheet" style="max-width:420px;">
+        <div class="modal-sheet" style="max-width:460px;">
             <div class="modal-handle"></div>
             <h3 id="cooper-modal-title" class="modal-title" style="color:#FF9800;"></h3>
-            <p class="modal-subtitle">Haz una foto al albaran de Cooper</p>
+            <p class="modal-subtitle">Puedes hacer varias fotos (un albarán o varios bultos) y mandarlas todas a la vez.</p>
             <input type="file" id="cooper-photo-input" accept="image/*" capture="environment" style="display:none;">
             <div style="display:flex; flex-direction:column; gap:12px;">
+                <!-- Strip de miniaturas -->
+                <div id="cooper-photo-strip" style="display:none; flex-wrap:wrap; gap:6px; padding:8px; background:rgba(0,0,0,0.25); border:1px dashed var(--border); border-radius:10px; min-height:80px;"></div>
+                <span id="cooper-photo-status" style="font-size:0.82rem; color:var(--text-dim); text-align:center; font-weight:700;">Sin fotos · Pulsa <b>AÑADIR FOTO</b></span>
+
                 <button class="btn btn-primary btn-lg" id="btn-cooper-camera">
-                    <span class="material-symbols-outlined">camera_alt</span> ABRIR CAMARA
+                    <span class="material-symbols-outlined">add_a_photo</span> <span id="btn-cooper-camera-label">AÑADIR FOTO</span>
                 </button>
-                <img id="cooper-photo-preview" style="display:none; width:100%; border-radius:8px; border:2px solid var(--border); max-height:300px; object-fit:contain;">
-                <span id="cooper-photo-status" style="font-size:0.8rem; color:var(--text-dim); text-align:center;">Sin foto</span>
+
                 <div class="form-group" style="margin:0;">
-                    <label class="form-label"><span class="material-symbols-outlined">edit_note</span> Nota <span class="form-label-optional">(opcional)</span></label>
-                    <input type="text" id="cooper-note" class="form-control" placeholder="Ej: 2 bultos, P-4521..." maxlength="200" style="font-size:0.9rem;">
+                    <label class="form-label"><span class="material-symbols-outlined">edit_note</span> Nota <span class="form-label-optional">(opcional · se aplica a todas)</span></label>
+                    <input type="text" id="cooper-note" class="form-control" placeholder="Ej: 3 bultos, P-4521..." maxlength="200" style="font-size:0.9rem;">
                 </div>
+
+                <button class="btn btn-danger btn-lg" id="btn-cooper-clear" style="display:none;">
+                    <span class="material-symbols-outlined">delete_sweep</span> VACIAR TODO
+                </button>
                 <button class="btn btn-success btn-lg" id="btn-cooper-send" style="display:none;">
-                    <span class="material-symbols-outlined">upload</span> ENVIAR FOTO
+                    <span class="material-symbols-outlined">upload</span> <span id="btn-cooper-send-label">ENVIAR</span>
                 </button>
                 <button class="btn btn-ghost" id="btn-cooper-cancel">CANCELAR</button>
             </div>
@@ -672,6 +714,169 @@
 
 <!-- ===== TOAST CONTAINER (outside main-app, always visible) ===== -->
 <div id="toast-container"></div>
+
+<!-- ===== MODAL: DISCREPANCIA / CORRECCIÓN DE ITEMS EN RECOGIDA ===== -->
+<div id="discrepancy-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:100000; padding:14px; overflow-y:auto;">
+    <div style="max-width:560px; margin:0 auto; background:#1a1a1a; border:2px solid #FF9800; border-radius:14px; padding:16px; color:#eee;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0; color:#FF9800; font-size:1rem; font-weight:900;">✏️ DISCREPANCIA EN RECOGIDA</h3>
+            <button id="disc-close" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(255,152,0,0.08); border:1px solid rgba(255,152,0,0.3); border-radius:8px; padding:10px; margin-bottom:12px; font-size:0.78rem; line-height:1.45;">
+            ℹ️ <strong>Albarán: <span id="disc-ticket-id">—</span></strong><br>
+            Ajusta abajo lo realmente recogido. Foto obligatoria. Se notifica al cliente y la factura saldrá según ESTOS valores.
+        </div>
+
+        <div style="margin-bottom:6px; font-size:0.78rem; color:#FFB300; font-weight:700;">DECLARADO POR EL CLIENTE:</div>
+        <div id="disc-declared" style="background:rgba(255,255,255,0.04); border:1px solid #333; border-radius:8px; padding:8px 10px; margin-bottom:14px; font-size:0.8rem; color:#aaa; line-height:1.5;"></div>
+
+        <div style="margin-bottom:6px; font-size:0.8rem; color:#4CAF50; font-weight:700;">RECOGIDO REALMENTE:</div>
+        <div id="disc-items-edit" style="margin-bottom:10px;"></div>
+        <button id="disc-add-item" style="width:100%; background:rgba(76,175,80,0.15); border:1px dashed #4CAF50; color:#4CAF50; padding:10px; border-radius:8px; cursor:pointer; font-weight:700; font-size:0.82rem; margin-bottom:14px;">+ Añadir otro artículo recogido</button>
+
+        <div style="margin-bottom:12px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">📷 Foto del bulto (obligatoria)</label>
+            <input type="file" id="disc-photo-input" accept="image/*" capture="environment" style="display:none;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button id="disc-take-photo" style="flex:1; background:rgba(255,255,255,0.08); border:1px solid #555; color:#fff; padding:14px; border-radius:8px; cursor:pointer; font-weight:700;">📷 Tomar foto</button>
+                <span id="disc-photo-status" style="font-size:0.75rem; color:#FF8A50; min-width:80px;">Sin foto</span>
+            </div>
+            <img id="disc-photo-preview" style="display:none; width:100%; max-height:160px; object-fit:contain; border-radius:8px; margin-top:8px; border:1px solid #333;">
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">Motivo (opcional)</label>
+            <select id="disc-reason" style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:8px; font-size:0.85rem;">
+                <option value="">— Selecciona si quieres —</option>
+                <option value="cantidad_mayor">Cantidad mayor a la declarada</option>
+                <option value="tamano_mayor">Tamaño mayor al declarado</option>
+                <option value="tipo_distinto">Tipo de artículo distinto</option>
+                <option value="peso_mayor">Peso mayor al declarado</option>
+                <option value="otro">Otro</option>
+            </select>
+        </div>
+
+        <button id="disc-save" style="width:100%; background:#FF9800; border:0; color:#000; padding:16px; border-radius:10px; font-weight:900; font-size:1rem; cursor:pointer;">✅ GUARDAR DISCREPANCIA</button>
+    </div>
+</div>
+
+<style>
+    .pnd-porte-opt.active { background: rgba(229,57,53,0.18) !important; border-color: #E53935 !important; color: #fff !important; }
+    .pnd-porte-opt.active div { color: #ffcdc7 !important; }
+</style>
+
+<!-- ===== MODAL: RECOGIDA SIN ALBARÁN (PRE-ALBARÁN) ===== -->
+<div id="pickup-no-doc-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.92); z-index:100001; padding:14px; overflow-y:auto;">
+    <div style="max-width:560px; margin:0 auto; background:#1a1a1a; border:2px solid #E53935; border-radius:14px; padding:16px; color:#eee;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0; color:#E53935; font-size:1rem; font-weight:900;">📦 RECOGIDA SIN ALBARÁN</h3>
+            <button id="pnd-close" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(229,57,53,0.08); border:1px solid rgba(229,57,53,0.3); border-radius:8px; padding:10px; margin-bottom:14px; font-size:0.78rem; line-height:1.45;">
+            ℹ️ Genera un <strong>pre-albarán</strong> con tu conteo + foto. El cliente recibirá un aviso para completarlo en 24h. Si no lo hace, prevalecen los datos que aquí registres.
+        </div>
+
+        <!-- Paso 1: REMITENTE (origen — quien envía) -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">1️⃣ REMITENTE <span style="color:#666; font-weight:400;">(de dónde recoges)</span></label>
+            <p style="font-size:0.7rem; color:#777; margin:0 0 6px; line-height:1.35;">El cliente que reconoces por su precinto / etiqueta interna.</p>
+            <input type="text" id="pnd-client-search" placeholder="Busca por nombre o NIF…" autocomplete="off" style="width:100%; padding:11px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:8px; font-size:0.9rem; box-sizing:border-box;">
+            <div id="pnd-client-results" style="max-height:180px; overflow-y:auto; margin-top:4px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; display:none;"></div>
+            <div id="pnd-client-picked" style="display:none; margin-top:8px; padding:10px; background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.4); border-radius:8px; font-size:0.85rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-weight:800; color:#4CAF50;" id="pnd-client-picked-name">—</div>
+                        <div style="font-size:0.7rem; color:#aaa; margin-top:2px;" id="pnd-client-picked-meta">—</div>
+                    </div>
+                    <button id="pnd-client-clear" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Cambiar</button>
+                </div>
+            </div>
+            <button id="pnd-client-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.75rem; cursor:pointer;">Remitente no encontrado · introducir manualmente</button>
+            <div id="pnd-client-manual-wrap" style="display:none; margin-top:8px; gap:6px;">
+                <input type="text" id="pnd-client-manual-name" placeholder="Nombre comercial del remitente" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:6px;">
+                <input type="text" id="pnd-client-manual-nif" placeholder="NIF / CIF (opcional)" style="width:100%; padding:9px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box;">
+            </div>
+        </div>
+
+        <!-- Paso 2: PORTE (toggle obligatorio) + DESTINATARIO -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">2️⃣ PORTE <span style="color:#E53935; font-weight:700;">(obligatorio)</span></label>
+            <p style="font-size:0.7rem; color:#777; margin:0 0 6px; line-height:1.35;">Quién paga el envío. Cambia dónde buscar al destinatario.</p>
+            <div style="display:flex; gap:6px;">
+                <label class="pnd-porte-opt" style="flex:1; padding:11px; background:rgba(255,255,255,0.04); border:2px solid #333; border-radius:8px; cursor:pointer; text-align:center; font-size:0.85rem; font-weight:700;">
+                    <input type="radio" name="pnd-porte" value="PAGADO" style="display:none;">
+                    <span>📤 PAGADO</span>
+                    <div style="font-size:0.62rem; color:#888; font-weight:400; margin-top:2px;">paga el remitente</div>
+                </label>
+                <label class="pnd-porte-opt" style="flex:1; padding:11px; background:rgba(255,255,255,0.04); border:2px solid #333; border-radius:8px; cursor:pointer; text-align:center; font-size:0.85rem; font-weight:700;">
+                    <input type="radio" name="pnd-porte" value="DEBIDO" style="display:none;">
+                    <span>📥 DEBIDO</span>
+                    <div style="font-size:0.62rem; color:#888; font-weight:400; margin-top:2px;">paga el destinatario</div>
+                </label>
+            </div>
+        </div>
+
+        <!-- Destinatario (solo visible cuando se elige porte) -->
+        <div id="pnd-dest-wrap" style="display:none; margin-bottom:14px; padding:12px; background:rgba(33,150,243,0.06); border:1px solid rgba(33,150,243,0.25); border-radius:8px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:4px; font-weight:700;">📍 DESTINATARIO <span id="pnd-dest-mode-tag" style="color:#888; font-weight:400;"></span></label>
+            <p id="pnd-dest-hint" style="font-size:0.7rem; color:#777; margin:0 0 8px; line-height:1.35;"></p>
+
+            <input type="text" id="pnd-dest-search" placeholder="Busca por nombre o NIF…" autocomplete="off" style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:7px; font-size:0.85rem; box-sizing:border-box;">
+            <div id="pnd-dest-results" style="max-height:160px; overflow-y:auto; margin-top:4px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:7px; display:none;"></div>
+
+            <div id="pnd-dest-picked" style="display:none; margin-top:8px; padding:9px; background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.4); border-radius:7px; font-size:0.82rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-weight:800; color:#4CAF50;" id="pnd-dest-picked-name">—</div>
+                        <div style="font-size:0.68rem; color:#aaa; margin-top:2px;" id="pnd-dest-picked-meta">—</div>
+                    </div>
+                    <button id="pnd-dest-clear" style="background:transparent; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:6px; font-size:0.72rem; cursor:pointer;">Cambiar</button>
+                </div>
+            </div>
+
+            <button id="pnd-dest-manual" style="margin-top:6px; width:100%; background:transparent; border:1px dashed #777; color:#bbb; padding:8px; border-radius:6px; font-size:0.73rem; cursor:pointer;">+ Introducir destinatario manualmente</button>
+            <div id="pnd-dest-manual-wrap" style="display:none; margin-top:8px;">
+                <input type="text" id="pnd-dest-manual-name" placeholder="Nombre del destinatario" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box; margin-bottom:6px;">
+                <div style="display:flex; gap:6px; margin-bottom:6px;">
+                    <input type="text" id="pnd-dest-manual-cp" placeholder="CP" maxlength="5" inputmode="numeric" style="flex:0 0 80px; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+                    <input type="text" id="pnd-dest-manual-loc" placeholder="Localidad" style="flex:1; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+                </div>
+                <input type="text" id="pnd-dest-manual-addr" placeholder="Dirección (calle, nº)" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box; margin-bottom:6px;">
+                <input type="tel" id="pnd-dest-manual-phone" placeholder="Tel. receptor (opcional)" inputmode="tel" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.82rem; box-sizing:border-box;">
+            </div>
+        </div>
+
+        <!-- Paso 3: Conteo + foto -->
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">3️⃣ Nº DE BULTOS RECOGIDOS</label>
+            <input type="number" id="pnd-bultos" inputmode="numeric" min="1" max="999" value="1" style="width:100%; padding:18px; background:#0a0a0a; border:2px solid #E53935; color:#fff; border-radius:10px; font-size:1.6rem; font-weight:900; text-align:center; box-sizing:border-box;">
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block; font-size:0.78rem; color:#aaa; margin-bottom:6px; font-weight:700;">4️⃣ FOTO DEL LOTE (obligatoria)</label>
+            <input type="file" id="pnd-photo-input" accept="image/*" capture="environment" style="display:none;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button id="pnd-take-photo" style="flex:1; background:rgba(255,255,255,0.08); border:1px solid #555; color:#fff; padding:14px; border-radius:8px; cursor:pointer; font-weight:700;">📷 Tomar foto del lote</button>
+                <span id="pnd-photo-status" style="font-size:0.75rem; color:#FF8A50; min-width:80px;">Sin foto</span>
+            </div>
+            <img id="pnd-photo-preview" style="display:none; width:100%; max-height:180px; object-fit:contain; border-radius:8px; margin-top:8px; border:1px solid #333;">
+            <p style="font-size:0.68rem; color:#888; margin:6px 0 0; line-height:1.4;">Asegúrate de que el precinto / etiqueta del remitente sea visible — sirve como prueba del origen.</p>
+        </div>
+
+        <details style="margin-bottom:14px; background:rgba(255,255,255,0.03); border:1px solid #333; border-radius:8px; padding:8px 12px;">
+            <summary style="cursor:pointer; font-size:0.78rem; color:#bbb; font-weight:700;">+ Datos adicionales (opcional)</summary>
+            <div style="margin-top:10px;">
+                <label style="display:block; font-size:0.72rem; color:#aaa; margin-bottom:4px;">Peso aproximado (kg)</label>
+                <input type="number" id="pnd-weight" inputmode="decimal" step="0.1" min="0" placeholder="—" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; margin-bottom:8px;">
+                <label style="display:block; font-size:0.72rem; color:#aaa; margin-bottom:4px;">Descripción / observaciones</label>
+                <textarea id="pnd-note" rows="2" placeholder="P. ej. 3 cajas grandes + 1 sobre…" style="width:100%; padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem; box-sizing:border-box; resize:vertical; font-family:inherit;"></textarea>
+            </div>
+        </details>
+
+        <button id="pnd-save" style="width:100%; background:#E53935; border:0; color:#fff; padding:16px; border-radius:10px; font-weight:900; font-size:1rem; cursor:pointer;">✅ CREAR PRE-ALBARÁN</button>
+        <p style="font-size:0.68rem; color:#888; margin:8px 0 0; text-align:center; line-height:1.4;">El cliente recibirá una notificación en su buzón con foto, conteo y plazo de 24h para completar/impugnar.</p>
+    </div>
+</div>
 
 </body>
 </html>

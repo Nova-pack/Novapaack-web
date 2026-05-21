@@ -107,33 +107,33 @@ window.advInvoiceAllPending = async () => {
             if(filial.legal) finalSenderData.legal = filial.legal;
         }
 
-        // Obtener el próximo número de factura — Format: FAC-YY-SEQ, resets each year
+        // Atomic per-year invoice numbering. Each invoice in the loop reserves
+        // its own number transactionally so concurrent admin runs cannot collide.
         const currentYear = new Date().getFullYear();
         const currentYY = String(currentYear).slice(-2);
-        const yearStart = new Date(currentYear, 0, 1);
-        const yearEnd = new Date(currentYear + 1, 0, 1);
-        const invYearSnap = await db.collection('invoices')
-            .where('date', '>=', yearStart)
-            .where('date', '<', yearEnd)
-            .orderBy('date', 'desc')
-            .limit(10000)
-            .get();
-        let currentInvNumber = 0;
-        invYearSnap.forEach(doc => {
-            const iid = doc.data().invoiceId || '';
-            const match = iid.match(/^FAC-\d{2}-(\d+)$/);
-            if (match) {
-                const seq = parseInt(match[1], 10);
-                if (!isNaN(seq) && seq >= currentInvNumber) currentInvNumber = seq + 1;
-            }
-        });
-        // Fallback for legacy invoices without new format
-        if (currentInvNumber === 0 && !invYearSnap.empty) {
-            invYearSnap.forEach(doc => {
+        const _invCounterPath = 'sequence_counters/invoices_' + currentYear;
+        const _seedInvFromHistory = async () => {
+            const yearStart = new Date(currentYear, 0, 1);
+            const yearEnd = new Date(currentYear + 1, 0, 1);
+            const invSnap = await db.collection('invoices')
+                .where('date', '>=', yearStart)
+                .where('date', '<', yearEnd)
+                .orderBy('date', 'desc')
+                .limit(10000)
+                .get();
+            let max = 0;
+            invSnap.forEach(doc => {
+                const iid = doc.data().invoiceId || '';
+                const m = iid.match(/^FAC-\d{2}-(\d+)$/);
+                if (m) {
+                    const seq = parseInt(m[1], 10);
+                    if (!isNaN(seq) && seq > max) max = seq;
+                }
                 const n = doc.data().number || 0;
-                if (n >= currentInvNumber) currentInvNumber = n + 1;
+                if (n > max) max = n;
             });
-        }
+            return max;
+        };
         const invoiceDate = new Date(); // Fecha de emisión
 
         // 6. Generar facturas en lote
@@ -196,10 +196,17 @@ window.advInvoiceAllPending = async () => {
             
             const totalAmount = subtotal + ivaAmount - irpfAmount;
 
-            const invoiceIdStr = `FAC-${currentYY}-${currentInvNumber}`;
-            
+            // Reserve next number atomically for THIS invoice only.
+            let nextInvNumber;
+            if (typeof window.allocSequentialNumber === 'function') {
+                nextInvNumber = await window.allocSequentialNumber(_invCounterPath, _seedInvFromHistory);
+            } else {
+                nextInvNumber = (await _seedInvFromHistory()) + 1;
+            }
+            const invoiceIdStr = `FAC-${currentYY}-${nextInvNumber}`;
+
             const invoiceData = {
-                number: currentInvNumber,
+                number: nextInvNumber,
                 invoiceId: invoiceIdStr,
                 date: invoiceDate,
                 clientId: client.id,
@@ -240,7 +247,7 @@ window.advInvoiceAllPending = async () => {
 
             facturasGeneradas++;
             importeTotalGenerado += totalAmount;
-            currentInvNumber++; // Incrementar secuencialmente
+            // (No manual increment: each iteration calls allocSequentialNumber.)
         }
 
         alert(`✅ PROCESO MASIVO COMPLETADO.\n\n• Facturas Generadas: ${facturasGeneradas}\n• Importe Total Billed: ${importeTotalGenerado.toFixed(2)}€`);

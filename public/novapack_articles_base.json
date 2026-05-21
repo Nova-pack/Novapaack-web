@@ -1,0 +1,173 @@
+{
+  "source": "TARIFA GENERAL PARA PROGRAMA APP.xlsx",
+  "version": "2026-05-14",
+  "description": "Catálogo base de artículos NOVAPACK. El 90% de los clientes usa estos. Códigos custom por ruta (pms, psg, bms, etc.) se añaden a la tarifa de cada cliente manualmente.",
+  "convention": {
+    "sufijo_P": "Provincial (mismo origen-destino dentro de provincia)",
+    "sufijo_I": "Interprovincial (provincias distintas)",
+    "rutas_custom": "Códigos tipo pms/psg/bms representan ruta concreta (paquete málaga-sevilla, etc.) — se crean ad-hoc en tarifa cliente"
+  },
+  "articles": [
+    {
+      "code": "S",
+      "name": "Servicio paquetería mes",
+      "mode": "flat_monthly",
+      "basePrice": 0,
+      "unit": "mes",
+      "category": "servicio"
+    },
+    {
+      "code": "PI",
+      "name": "Paquete Interprovincial hasta 20kg",
+      "mode": "per_package",
+      "basePrice": 12,
+      "unit": "paquete",
+      "category": "paquete",
+      "conditions": { "maxKg": 20 }
+    },
+    {
+      "code": "PP",
+      "name": "Paquete Provincial hasta 20kg",
+      "mode": "per_package",
+      "basePrice": 9,
+      "unit": "paquete",
+      "category": "paquete",
+      "conditions": { "maxKg": 20 }
+    },
+    {
+      "code": "BI",
+      "name": "Bulto Interprovincial más de 20kg",
+      "mode": "per_package",
+      "basePrice": 15,
+      "unit": "bulto",
+      "category": "bulto",
+      "conditions": { "minKg": 20 }
+    },
+    {
+      "code": "BP",
+      "name": "Bulto Provincial más de 20kg",
+      "mode": "per_package",
+      "basePrice": 13,
+      "unit": "bulto",
+      "category": "bulto",
+      "conditions": { "minKg": 20 }
+    },
+    {
+      "code": "V",
+      "name": "Volumen",
+      "mode": "per_package",
+      "basePrice": 20,
+      "unit": "bulto",
+      "category": "volumen"
+    },
+    {
+      "code": "GV",
+      "name": "Gran Volumen",
+      "mode": "per_package",
+      "basePrice": 30,
+      "unit": "bulto",
+      "category": "volumen"
+    },
+    {
+      "code": "PLT-1",
+      "name": "Palet hasta 50 kg",
+      "mode": "per_package",
+      "basePrice": 30,
+      "unit": "palet",
+      "category": "palet",
+      "conditions": { "maxKg": 50 }
+    },
+    {
+      "code": "PLT-2",
+      "name": "Palet de 50 a 70 kg",
+      "mode": "per_package",
+      "basePrice": 45,
+      "unit": "palet",
+      "category": "palet",
+      "conditions": { "minKg": 50, "maxKg": 70 }
+    },
+    {
+      "code": "PLT-3",
+      "name": "Palet de 70 a 150 kg",
+      "mode": "per_package",
+      "basePrice": 90,
+      "unit": "palet",
+      "category": "palet",
+      "conditions": { "minKg": 70, "maxKg": 150 }
+    },
+    {
+      "code": "PLT-4",
+      "name": "Palet de 150 a 200 kg",
+      "mode": "per_package",
+      "basePrice": 95,
+      "unit": "palet",
+      "category": "palet",
+      "conditions": { "minKg": 150, "maxKg": 200 }
+    },
+    {
+      "code": "PLT-6",
+      "name": "Palet más de 200 kg",
+      "mode": "per_package",
+      "basePrice": 100,
+      "unit": "palet",
+      "category": "palet",
+      "conditions": { "minKg": 200 }
+    },
+    {
+      "code": "PLT-7",
+      "name": "Palet superior",
+      "mode": "per_package",
+      "basePrice": 150,
+      "unit": "palet",
+      "category": "palet"
+    },
+    {
+      "code": "LN",
+      "name": "Luna / Luneta",
+      "mode": "per_package",
+      "basePrice": 0,
+      "unit": "luna",
+      "category": "luna"
+    },
+    {
+      "code": "LS",
+      "name": "Luna descendente y fijo",
+      "mode": "per_package",
+      "basePrice": 0,
+      "unit": "luna",
+      "category": "luna"
+    },
+    {
+      "code": "LF",
+      "name": "Luna furgón",
+      "mode": "per_package",
+      "basePrice": 0,
+      "unit": "luna",
+      "category": "luna"
+    },
+    {
+      "code": "LC",
+      "name": "Luna camión",
+      "mode": "per_package",
+      "basePrice": 0,
+      "unit": "luna",
+      "category": "luna"
+    },
+    {
+      "code": "PA",
+      "name": "Paquete adicional",
+      "mode": "per_package",
+      "basePrice": 0,
+      "unit": "paquete",
+      "category": "extra"
+    },
+    {
+      "code": "AB",
+      "name": "Abono",
+      "mode": "per_expedition",
+      "basePrice": 0,
+      "unit": "ud",
+      "category": "abono"
+    }
+  ]
+}

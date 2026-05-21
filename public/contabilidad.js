@@ -58,12 +58,22 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
         console.warn('[CONTA] Error checking existing entry:', e);
     }
     
-    // Obtener número secuencial de asiento
+    // Atomic sequential journal number — prevents collisions when two admins
+    // post entries concurrently. Falls back to last-row scan only on first run.
     let asientoNum = 1;
-    try {
-        const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-        if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-    } catch(e) { /* first entry */ }
+    if (typeof window.allocSequentialNumber === 'function') {
+        try {
+            asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+            });
+        } catch(e) { console.warn('[CONTA] allocSequentialNumber failed, falling back:', e); }
+    } else {
+        try {
+            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+        } catch(e) { /* first entry */ }
+    }
 
     const subtotal = invoiceData.subtotal || 0;
     const ivaAmount = invoiceData.iva || 0;
@@ -122,16 +132,26 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
         entries[0].debit = total; // total ya lleva la resta del IRPF
     }
 
+    // Si es ABONO (factura rectificativa) → invertir signos: el cliente nos debe MENOS
+    // (HABER en 430), reducimos ingresos (DEBE en 700), reducimos IVA repercutido (DEBE en 477).
+    // Sprint1 #3 fix — antes los abonos generaban asiento incoherente.
+    const isAbono = !!invoiceData.isAbono;
+    if (isAbono) {
+        entries.forEach(e => {
+            const d = e.debit; e.debit = e.credit; e.credit = d;
+        });
+    }
+
     const journalEntry = {
         number: asientoNum,
         date: invoiceData.date || new Date(),
-        description: `Factura emitida ${invoiceId} a ${clientName}`,
+        description: (isAbono ? `Factura rectificativa ${invoiceId} a ${clientName}` : `Factura emitida ${invoiceId} a ${clientName}`),
         entries: entries,
         invoiceRef: invoiceDocId,
         invoiceId: invoiceId,
         clientId: clientId,
         clientName: clientName,
-        type: 'invoice', // invoice | payment | credit_note | manual
+        type: isAbono ? 'credit_note' : 'invoice', // invoice | payment | credit_note | manual
         subtotal: subtotal,
         ivaAmount: ivaAmount,
         irpfAmount: irpfAmount,
@@ -142,7 +162,7 @@ window.generateInvoiceJournalEntry = async function(invoiceData, invoiceDocId) {
 
     try {
         await db.collection('journal').add(journalEntry);
-        console.log(`[CONTA] ✅ Asiento #${asientoNum} generado para factura ${invoiceId}`);
+        console.log(`[CONTA] ✅ Asiento #${asientoNum} ${isAbono ? '(ABONO)' : ''} generado para ${invoiceId}`);
     } catch(e) {
         console.error('[CONTA] Error generando asiento:', e);
     }
@@ -166,10 +186,19 @@ window.generatePaymentJournalEntry = async function(invoiceData, invoiceDocId) {
     } catch(e) { /* proceed */ }
 
     let asientoNum = 1;
-    try {
-        const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-        if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-    } catch(e) { /* first entry */ }
+    if (typeof window.allocSequentialNumber === 'function') {
+        try {
+            asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+            });
+        } catch(e) { console.warn('[CONTA] allocSequentialNumber failed:', e); }
+    } else {
+        try {
+            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+        } catch(e) { /* first entry */ }
+    }
 
     const total = invoiceData.total || 0;
     const clientName = invoiceData.clientName || 'Cliente';
@@ -971,6 +1000,9 @@ window.contaLoadModelo303 = async function() {
                 <div style="font-size:0.65rem; color:#FFD700; text-transform:uppercase; font-weight:bold;">${yearNeto >= 0 ? 'A Ingresar' : 'A Compensar'}</div>
                 <div style="font-size:1.2rem; font-weight:bold; color:#FFD700;">${yearNeto.toFixed(2)}€</div>
             </div>
+        </div>
+        <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+            ${[1,2,3,4].map(q => `<button onclick="window.contaExportModelo303CSV(${year}, ${q})" style="background:#00BCD4; border:0; color:#000; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:700; font-size:0.74rem;">📥 ${q}T CSV</button>`).join('')}
         </div>`;
         
         container.innerHTML = html;
@@ -992,52 +1024,91 @@ window.contaLoadModelo347 = async function() {
     try {
         const year = new Date().getFullYear();
         const UMBRAL = 3005.06;
-        
-        const invSnap = await db.collection('invoices')
-            .where('date', '>=', new Date(year, 0, 1))
-            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
-            .orderBy('date', 'asc')
-            .limit(5000)
-            .get();
-        
-        // Aggregate by client + quarter
-        const clientOps = {};
-        
+
+        // Cargar EN PARALELO invoices y expenses (Sprint 2 — corrige §1.3)
+        const [invSnap, expSnap] = await Promise.all([
+            db.collection('invoices')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get(),
+            db.collection('expenses')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get().catch(() => ({ forEach: () => {} }))
+        ]);
+
+        // Normalizador NIF (clave fiscal — Sprint 2 §1.3)
+        const _normNif = nif => String(nif || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+
+        // Agregar por NIF + lado (CLIENTE vs PROVEEDOR), no por nombre
+        const ops = {};
+
         invSnap.forEach(doc => {
             const inv = doc.data();
+            // Excluir abonos del cómputo (se suman/restan automáticamente con su signo)
+            const cNIF = _normNif(inv.clientCIF);
+            if (!cNIF || cNIF === 'NA' || cNIF === '-') return;  // sin NIF → no declarable
             const cName = inv.clientName || 'Desconocido';
-            const cNIF = inv.clientCIF || '-';
             const date = inv.date && inv.date.toDate ? inv.date.toDate() : new Date(inv.date);
             const quarter = Math.floor(date.getMonth() / 3) + 1;
-            
-            if (!clientOps[cName]) clientOps[cName] = { nif: cNIF, total: 0, q1: 0, q2: 0, q3: 0, q4: 0 };
-            clientOps[cName].total += inv.total || 0;
-            clientOps[cName]['q' + quarter] += inv.total || 0;
+            const key = 'C|' + cNIF;
+            if (!ops[key]) ops[key] = { side: 'C', sideLabel: 'Cliente', nif: cNIF, name: cName, total: 0, q1: 0, q2: 0, q3: 0, q4: 0, n: 0 };
+            // Abonos restan: total ya es negativo en abonos según billing_adv_v4 y facturas_central
+            ops[key].total += (inv.total || 0);
+            ops[key]['q' + quarter] += (inv.total || 0);
+            ops[key].n++;
         });
-        
-        // Filter only those >3.005,06€
-        const declarables = Object.entries(clientOps)
-            .filter(([_, data]) => data.total >= UMBRAL)
-            .sort((a, b) => b[1].total - a[1].total);
-        
+
+        // Lado proveedores (gastos)
+        expSnap.forEach(doc => {
+            const exp = doc.data();
+            const pNIF = _normNif(exp.providerNif || exp.providerCIF || exp.nif);
+            if (!pNIF) return;  // gastos sin NIF de proveedor no se pueden declarar
+            const pName = exp.provider || exp.providerName || 'Proveedor';
+            const date = exp.date && exp.date.toDate ? exp.date.toDate() : new Date(exp.date);
+            if (!date || isNaN(date.getTime())) return;
+            const quarter = Math.floor(date.getMonth() / 3) + 1;
+            const amount = parseFloat(exp.total || exp.amount || 0) || 0;
+            const key = 'P|' + pNIF;
+            if (!ops[key]) ops[key] = { side: 'P', sideLabel: 'Proveedor', nif: pNIF, name: pName, total: 0, q1: 0, q2: 0, q3: 0, q4: 0, n: 0 };
+            ops[key].total += amount;
+            ops[key]['q' + quarter] += amount;
+            ops[key].n++;
+        });
+
+        // Filtrar por umbral (cliente o proveedor)
+        const declarables = Object.values(ops)
+            .filter(d => Math.abs(d.total) >= UMBRAL)
+            .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+
+        const totalClientes = declarables.filter(d => d.side === 'C').length;
+        const totalProveedores = declarables.filter(d => d.side === 'P').length;
+
         let html = `
         <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">📄 MODELO 347 — Operaciones con Terceros — ${year}</div>
-        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Clientes con operaciones anuales ≥ ${UMBRAL.toFixed(2)}€ (IVA incluido)</div>`;
-        
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Clientes y proveedores con operaciones anuales ≥ ${UMBRAL.toFixed(2)}€ (IVA incluido). Agrupado por NIF.</div>`;
+
         if (declarables.length === 0) {
-            html += '<div style="text-align:center; padding:40px; color:#888; font-size:0.9rem;">No hay clientes que superen el umbral de 3.005,06€ este año.</div>';
+            html += '<div style="text-align:center; padding:40px; color:#888; font-size:0.9rem;">No hay operaciones que superen el umbral de 3.005,06€ este año.</div>';
         } else {
             html += `
-            <div style="background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:8px; padding:10px; margin-bottom:15px; text-align:center;">
-                <span style="color:#FFB74D; font-weight:bold;">${declarables.length}</span>
-                <span style="color:#888;"> clientes declarables</span>
+            <div style="display:flex; gap:10px; margin-bottom:15px;">
+                <div style="flex:1; background:rgba(76,175,80,0.1); border:1px solid #4CAF50; border-radius:8px; padding:10px; text-align:center;">
+                    <span style="color:#4CAF50; font-weight:bold; font-size:1.2rem;">${totalClientes}</span>
+                    <div style="color:#888; font-size:0.7rem;">Clientes declarables</div>
+                </div>
+                <div style="flex:1; background:rgba(255,152,0,0.1); border:1px solid #FF9800; border-radius:8px; padding:10px; text-align:center;">
+                    <span style="color:#FFB74D; font-weight:bold; font-size:1.2rem;">${totalProveedores}</span>
+                    <div style="color:#888; font-size:0.7rem;">Proveedores declarables</div>
+                </div>
             </div>
-            
+
             <table style="width:100%; border-collapse:collapse; font-size:0.8rem;">
                 <thead>
                     <tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
-                        <th style="padding:8px 6px; text-align:left;">Cliente</th>
-                        <th style="padding:8px 6px; text-align:left;">NIF/ID</th>
+                        <th style="padding:8px 6px; text-align:center; width:80px;">Lado</th>
+                        <th style="padding:8px 6px; text-align:left;">Razón Social</th>
+                        <th style="padding:8px 6px; text-align:left;">NIF</th>
                         <th style="padding:8px 6px; text-align:right;">1T</th>
                         <th style="padding:8px 6px; text-align:right;">2T</th>
                         <th style="padding:8px 6px; text-align:right;">3T</th>
@@ -1046,27 +1117,606 @@ window.contaLoadModelo347 = async function() {
                     </tr>
                 </thead>
                 <tbody>`;
-            
-            declarables.forEach(([name, data]) => {
+
+            declarables.forEach(d => {
+                const badge = d.side === 'C'
+                    ? '<span style="background:rgba(76,175,80,0.2); color:#4CAF50; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:700;">A · Cliente</span>'
+                    : '<span style="background:rgba(255,152,0,0.2); color:#FFB74D; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:700;">B · Proveedor</span>';
                 html += `
                 <tr style="border-bottom:1px solid #2d2d30;">
-                    <td style="padding:6px; color:#fff; font-weight:600;">${name}</td>
-                    <td style="padding:6px; color:#888;">${data.nif}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q1 > 0 ? data.q1.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q2 > 0 ? data.q2.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q3 > 0 ? data.q3.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#ccc;">${data.q4 > 0 ? data.q4.toFixed(2) + '€' : '-'}</td>
-                    <td style="padding:6px; text-align:right; color:#FFD700; font-weight:bold;">${data.total.toFixed(2)}€</td>
+                    <td style="padding:6px; text-align:center;">${badge}</td>
+                    <td style="padding:6px; color:#fff; font-weight:600;">${d.name}</td>
+                    <td style="padding:6px; color:#888; font-family:monospace;">${d.nif}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q1 !== 0 ? d.q1.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q2 !== 0 ? d.q2.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q3 !== 0 ? d.q3.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#ccc;">${d.q4 !== 0 ? d.q4.toFixed(2) + '€' : '-'}</td>
+                    <td style="padding:6px; text-align:right; color:#FFD700; font-weight:bold;">${d.total.toFixed(2)}€</td>
                 </tr>`;
             });
-            
+
             html += '</tbody></table>';
+            html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">';
+            html += '💡 <strong>Recordatorio AEAT</strong>: el modelo 347 declara operaciones ≥ 3.005,06€ anuales con un mismo NIF. Las claves típicas son <strong>A</strong> (adquisición/compra a proveedores) y <strong>B</strong> (entrega/venta a clientes). Cobros en efectivo &gt; 6.000€ en metálico se marcan aparte. Excluye operaciones declaradas en modelo 349 (intracomunitarias).';
+            html += '</div>';
+            html += `<div style="margin-top:10px;"><button onclick="window.contaExportModelo347CSV(${year})" style="background:#FF9800; border:0; color:#000; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">📥 Exportar 347 CSV año ${year}</button></div>`;
         }
-        
+
         container.innerHTML = html;
     } catch(e) {
         container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`;
     }
+};
+
+// ============================================================
+//  EXPORTADORES CSV de modelos AEAT (Sprint 3 §1.x)
+//  No es formato BOE binario importable directamente — es CSV
+//  para revisión por asesor/gestoría, que luego transcribe a la
+//  sede AEAT manualmente o lo importa via Excel. Suficiente
+//  para empresas que delegan presentación en gestoría.
+// ============================================================
+window.contaExportModelo303CSV = async function(year, quarter) {
+    year = year || new Date().getFullYear();
+    quarter = quarter || (Math.floor(new Date().getMonth() / 3) + 1);
+    const qStart = new Date(year, (quarter-1)*3, 1);
+    const qEnd = new Date(year, quarter*3, 0, 23, 59, 59);
+    const [invSnap, expSnap] = await Promise.all([
+        db.collection('invoices').where('date','>=',qStart).where('date','<=',qEnd).limit(20000).get(),
+        db.collection('expenses').where('date','>=',qStart).where('date','<=',qEnd).limit(20000).get().catch(()=>({forEach:()=>{}}))
+    ]);
+    let csv = 'CASILLA;DESCRIPCION;BASE;TIPO;CUOTA\n';
+    // Agregar por tipo IVA
+    const ventas = { 4:{b:0,c:0}, 10:{b:0,c:0}, 21:{b:0,c:0} };
+    const compras = { 4:{b:0,c:0}, 10:{b:0,c:0}, 21:{b:0,c:0} };
+    invSnap.forEach(d => {
+        const i = d.data();
+        const sign = i.isAbono ? -1 : 1;
+        const grid = Array.isArray(i.advancedGrid) ? i.advancedGrid : [{ total: i.subtotal, iva: i.ivaRate || 21 }];
+        grid.forEach(row => {
+            const base = parseFloat(row.total) || 0;
+            const ivaR = parseFloat(row.iva) || 21;
+            const tipo = ivaR <= 5 ? 4 : (ivaR <= 14 ? 10 : 21);
+            ventas[tipo].b += sign * base;
+            ventas[tipo].c += sign * Math.round(base * tipo/100 * 100)/100;
+        });
+    });
+    expSnap.forEach(d => {
+        const e = d.data();
+        const base = parseFloat(e.base || 0);
+        const cuota = parseFloat(e.ivaAmount || 0);
+        const ivaR = base > 0 ? Math.round((cuota/base)*100) : 21;
+        const tipo = ivaR <= 5 ? 4 : (ivaR <= 14 ? 10 : 21);
+        compras[tipo].b += base;
+        compras[tipo].c += cuota;
+    });
+    // Casillas oficiales 303
+    csv += `01;Base imponible al 4%;${ventas[4].b.toFixed(2)};4;${ventas[4].c.toFixed(2)}\n`;
+    csv += `04;Base imponible al 10%;${ventas[10].b.toFixed(2)};10;${ventas[10].c.toFixed(2)}\n`;
+    csv += `07;Base imponible al 21%;${ventas[21].b.toFixed(2)};21;${ventas[21].c.toFixed(2)}\n`;
+    csv += `27;TOTAL CUOTA DEVENGADA;;;${(ventas[4].c+ventas[10].c+ventas[21].c).toFixed(2)}\n`;
+    csv += `28;Base bienes/servicios deducibles 4%;${compras[4].b.toFixed(2)};4;${compras[4].c.toFixed(2)}\n`;
+    csv += `30;Base bienes/servicios deducibles 10%;${compras[10].b.toFixed(2)};10;${compras[10].c.toFixed(2)}\n`;
+    csv += `32;Base bienes/servicios deducibles 21%;${compras[21].b.toFixed(2)};21;${compras[21].c.toFixed(2)}\n`;
+    csv += `45;TOTAL CUOTA SOPORTADA DEDUCIBLE;;;${(compras[4].c+compras[10].c+compras[21].c).toFixed(2)}\n`;
+    const liq = (ventas[4].c+ventas[10].c+ventas[21].c) - (compras[4].c+compras[10].c+compras[21].c);
+    csv += `46;RESULTADO LIQUIDACION;;;${liq.toFixed(2)}\n`;
+    csv += `\nMETADATA;Periodo;${quarter}T-${year};Generado;${new Date().toISOString().split('T')[0]}\n`;
+    const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `modelo303_${year}_${quarter}T.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+window.contaExportModelo347CSV = async function(year) {
+    year = year || new Date().getFullYear();
+    const UMBRAL = 3005.06;
+    const [invSnap, expSnap] = await Promise.all([
+        db.collection('invoices').where('date','>=',new Date(year,0,1)).where('date','<=',new Date(year,11,31,23,59,59)).limit(20000).get(),
+        db.collection('expenses').where('date','>=',new Date(year,0,1)).where('date','<=',new Date(year,11,31,23,59,59)).limit(20000).get().catch(()=>({forEach:()=>{}}))
+    ]);
+    const _norm = nif => String(nif||'').toUpperCase().replace(/[^A-Z0-9]/g,'').trim();
+    const ops = {};
+    invSnap.forEach(d => { const i=d.data(); const n=_norm(i.clientCIF); if(!n)return; const k='A|'+n; const q=Math.floor((i.date.toDate()).getMonth()/3)+1; if(!ops[k]) ops[k]={clave:'A',nif:n,nombre:i.clientName,total:0,q1:0,q2:0,q3:0,q4:0}; ops[k].total+=(i.total||0); ops[k]['q'+q]+=(i.total||0); });
+    expSnap.forEach(d => { const e=d.data(); const n=_norm(e.providerNif||e.providerCIF||e.nif); if(!n)return; const dt=e.date&&e.date.toDate?e.date.toDate():new Date(e.date); if(!dt||isNaN(dt))return; const k='B|'+n; const q=Math.floor(dt.getMonth()/3)+1; if(!ops[k]) ops[k]={clave:'B',nif:n,nombre:e.provider||e.providerName||'',total:0,q1:0,q2:0,q3:0,q4:0}; const amt=parseFloat(e.total||e.amount||0)||0; ops[k].total+=amt; ops[k]['q'+q]+=amt; });
+    let csv = 'CLAVE;NIF;RAZON_SOCIAL;1T;2T;3T;4T;ANUAL\n';
+    Object.values(ops).filter(o => Math.abs(o.total) >= UMBRAL).sort((a,b)=>Math.abs(b.total)-Math.abs(a.total)).forEach(o => {
+        csv += `${o.clave};${o.nif};${(o.nombre||'').replace(/;/g,',')};${o.q1.toFixed(2)};${o.q2.toFixed(2)};${o.q3.toFixed(2)};${o.q4.toFixed(2)};${o.total.toFixed(2)}\n`;
+    });
+    csv += `\nMETADATA;Año;${year};Umbral;${UMBRAL};Generado;${new Date().toISOString().split('T')[0]}\n`;
+    const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `modelo347_${year}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+window.contaExportModelo111CSV = async function(year, quarter) {
+    year = year || new Date().getFullYear();
+    quarter = quarter || (Math.floor(new Date().getMonth()/3) + 1);
+    const qStart = new Date(year, (quarter-1)*3, 1);
+    const qEnd = new Date(year, quarter*3, 0, 23, 59, 59);
+    const expSnap = await db.collection('expenses').where('date','>=',qStart).where('date','<=',qEnd).limit(20000).get();
+    let csv = 'NIF;PERCEPTOR;FECHA;CONCEPTO;BASE;%RET;RETENCION_IRPF\n';
+    let totalBase = 0, totalRet = 0, nPerceptores = 0;
+    const seenNif = new Set();
+    expSnap.forEach(d => {
+        const e = d.data();
+        const ret = parseFloat(e.retencionIrpf || 0);
+        if (ret <= 0) return;
+        if ((e.category || '').toLowerCase().indexOf('alquiler') !== -1) return;  // van al 115
+        const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+        const base = parseFloat(e.base || 0);
+        const rate = base > 0 ? Math.round((ret/base)*100) : 0;
+        const date = e.date && e.date.toDate ? e.date.toDate().toISOString().split('T')[0] : '';
+        csv += `${nif};${(e.provider||e.providerName||'').replace(/;/g,',')};${date};${(e.concepto||e.description||'').replace(/;/g,',')};${base.toFixed(2)};${rate};${ret.toFixed(2)}\n`;
+        totalBase += base; totalRet += ret;
+        if (!seenNif.has(nif)) { seenNif.add(nif); nPerceptores++; }
+    });
+    csv += `\nTOTALES;Perceptores;${nPerceptores};Base;${totalBase.toFixed(2)};Retencion;${totalRet.toFixed(2)}\nMETADATA;Periodo;${quarter}T-${year};Generado;${new Date().toISOString().split('T')[0]}\n`;
+    const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `modelo111_${year}_${quarter}T.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+window.contaExportModelo115CSV = async function(year, quarter) {
+    year = year || new Date().getFullYear();
+    quarter = quarter || (Math.floor(new Date().getMonth()/3) + 1);
+    const qStart = new Date(year, (quarter-1)*3, 1);
+    const qEnd = new Date(year, quarter*3, 0, 23, 59, 59);
+    const expSnap = await db.collection('expenses').where('date','>=',qStart).where('date','<=',qEnd).limit(20000).get();
+    let csv = 'NIF;ARRENDADOR;FECHA;CONCEPTO;BASE;RETENCION_19%;CONTRAPRESTACION_INTEGRA\n';
+    let totalBase = 0, totalRet = 0, nArrendadores = 0;
+    const seenNif = new Set();
+    expSnap.forEach(d => {
+        const e = d.data();
+        if ((e.category || '').toLowerCase().indexOf('alquiler') === -1) return;
+        const ret = parseFloat(e.retencionIrpf || 0);
+        if (ret <= 0) return;
+        const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+        const base = parseFloat(e.base || 0);
+        const date = e.date && e.date.toDate ? e.date.toDate().toISOString().split('T')[0] : '';
+        csv += `${nif};${(e.provider||e.providerName||'').replace(/;/g,',')};${date};${(e.concepto||e.description||'').replace(/;/g,',')};${base.toFixed(2)};${ret.toFixed(2)};${(base+ret).toFixed(2)}\n`;
+        totalBase += base; totalRet += ret;
+        if (!seenNif.has(nif)) { seenNif.add(nif); nArrendadores++; }
+    });
+    csv += `\nTOTALES;Arrendadores;${nArrendadores};Base;${totalBase.toFixed(2)};Retencion;${totalRet.toFixed(2)}\nMETADATA;Periodo;${quarter}T-${year};Generado;${new Date().toISOString().split('T')[0]}\n`;
+    const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `modelo115_${year}_${quarter}T.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+// ============================================================
+//  INCOBRABLES — Flujo formal art. 80.4 LIVA (Sprint 3 §5.3)
+//  Genera abono rectificativo por modificación de BI por impago.
+//  Causa R5 — concurso o judicialmente declarado incobrable.
+// ============================================================
+window.contaMarkAsIncobrable = async function(invoiceDocId) {
+    if (!invoiceDocId) return;
+    if (!confirm(
+        'MARCAR FACTURA COMO INCOBRABLE (art. 80.4 LIVA)\n\n' +
+        'Genera factura rectificativa (R-YY-N) por modificación de Base Imponible.\n\n' +
+        'Requisitos legales para que sea válido:\n' +
+        '  • Más de 1 año desde devengo (6 meses si PYME <6M€)\n' +
+        '  • Reclamación judicial o notarial al deudor\n' +
+        '  • O concurso de acreedores declarado\n\n' +
+        '¿Continuar? Se emitirá rectificativa con motivo R5.'
+    )) return;
+    try {
+        const docSnap = await db.collection('invoices').doc(invoiceDocId).get();
+        if (!docSnap.exists) { alert('Factura no encontrada.'); return; }
+        const orig = docSnap.data();
+        if (orig.isAbono) { alert('Esto ya es una factura rectificativa.'); return; }
+        if (orig.paid) {
+            if (!confirm('Esta factura está marcada como COBRADA. ¿Seguro que es incobrable?')) return;
+        }
+
+        const aboYear = new Date().getFullYear();
+        const aboYY = String(aboYear).slice(-2);
+        const counterPath = 'sequence_counters/credits_' + aboYear;
+        const nextNum = await window.allocSequentialNumber(counterPath, async () => {
+            const yrStart = new Date(aboYear, 0, 1);
+            const yrEnd = new Date(aboYear + 1, 0, 1);
+            const snap = await db.collection('invoices').where('date','>=',yrStart).where('date','<',yrEnd).limit(20000).get();
+            let max = 0;
+            snap.forEach(d => { const iid=d.data().invoiceId||''; const m=iid.match(/^R-\d{2}-(\d+)$/); if(m){const n=parseInt(m[1],10); if(n>max)max=n;} });
+            return max;
+        });
+
+        const abonoData = Object.assign({}, orig, {
+            number: nextNum,
+            invoiceId: `R-${aboYY}-${nextNum}`,
+            serie: 'R',
+            date: new Date(),
+            subtotal: -orig.subtotal,
+            iva: -orig.iva,
+            irpf: -orig.irpf,
+            total: -orig.total,
+            isAbono: true,
+            isIncobrable: true,
+            rectificaA: orig.invoiceId,
+            rectificaDocId: invoiceDocId,
+            rectificaDate: orig.date || null,
+            motivoRectificacion: 'R5',
+            motivoRectificacionTexto: 'Impago / Incobrable — art. 80.4 LIVA',
+            paid: false,
+            advancedGrid: (orig.advancedGrid || []).map(r => ({...r, qty: -r.qty, total: -r.total})),
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        await db.collection('invoices').add(abonoData);
+        // Marcar factura original como incobrable (sin tocar campos fiscales — solo metadata)
+        await db.collection('invoices').doc(invoiceDocId).update({
+            isIncobrableMarcadaPor: abonoData.invoiceId,
+            incobrableMarcadoAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        alert(`✅ Factura ${orig.invoiceId} marcada como incobrable.\n\nGenerada rectificativa ${abonoData.invoiceId} (motivo R5 - art. 80.4 LIVA).\n\nEl IVA se recupera en el trimestre actual.`);
+        // Refrescar vista si aplica
+        if (typeof window._facLoadData === 'function') window._facLoadData();
+    } catch(e) {
+        console.error('[incobrable]', e);
+        alert('Error: ' + e.message);
+    }
+};
+
+// ============================================================
+//  MODELO 390 — Declaración anual resumen IVA
+//  (Sprint 3 §1.2 — antes no existía)
+//  Agrega los 4 trimestres del 303 + desglose por TIPO DE IVA
+//  (0/4/10/21%) leyendo directamente de /invoices.advancedGrid.
+// ============================================================
+window.contaLoadModelo390 = async function() {
+    contaCurrentView = 'modelo390';
+    const container = document.getElementById('conta-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">Calculando Modelo 390...</div>';
+    try {
+        const year = (window._conta390Year || new Date().getFullYear()) - 0;
+        const [invSnap, expSnap] = await Promise.all([
+            db.collection('invoices')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get(),
+            db.collection('expenses')
+                .where('date', '>=', new Date(year, 0, 1))
+                .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+                .orderBy('date', 'asc').limit(20000).get().catch(() => ({ forEach: () => {} }))
+        ]);
+
+        // Estructura por tipo: 0 (exento), 4, 10, 21
+        const types = [0, 4, 10, 21];
+        const ventas = {};
+        const compras = {};
+        types.forEach(t => { ventas[t] = { base: 0, cuota: 0, n: 0 }; compras[t] = { base: 0, cuota: 0, n: 0 }; });
+
+        invSnap.forEach(doc => {
+            const inv = doc.data();
+            const isAbono = !!inv.isAbono;
+            const grid = Array.isArray(inv.advancedGrid) ? inv.advancedGrid : [];
+            if (grid.length > 0) {
+                grid.forEach(row => {
+                    const base = parseFloat(row.total) || 0;
+                    const ivaR = parseFloat(row.iva) || 0;
+                    // Encajar a tipo más cercano
+                    const t = types.reduce((best, t) => Math.abs(ivaR-t) < Math.abs(ivaR-best) ? t : best, types[0]);
+                    const cuota = Math.round(base * (t/100) * 100) / 100;
+                    const sign = isAbono ? -1 : 1;
+                    ventas[t].base += sign * base;
+                    ventas[t].cuota += sign * cuota;
+                    ventas[t].n++;
+                });
+            } else {
+                // Fallback: usar subtotal + ivaRate del header
+                const base = parseFloat(inv.subtotal) || 0;
+                const ivaR = parseFloat(inv.ivaRate || 21);
+                const t = types.reduce((best, t) => Math.abs(ivaR-t) < Math.abs(ivaR-best) ? t : best, types[0]);
+                const cuota = Math.round(base * (t/100) * 100) / 100;
+                const sign = isAbono ? -1 : 1;
+                ventas[t].base += sign * base;
+                ventas[t].cuota += sign * cuota;
+                ventas[t].n++;
+            }
+        });
+
+        // Compras (lado IVA soportado deducible)
+        expSnap.forEach(doc => {
+            const e = doc.data();
+            const base = parseFloat(e.base || e.subtotal || 0);
+            const cuota = parseFloat(e.ivaAmount || 0);
+            const ivaR = base > 0 ? Math.round((cuota/base)*100) : 21;
+            const t = types.reduce((best, t) => Math.abs(ivaR-t) < Math.abs(ivaR-best) ? t : best, types[0]);
+            compras[t].base += base;
+            compras[t].cuota += cuota;
+            compras[t].n++;
+        });
+
+        // Totales
+        const totalBaseVentas = types.reduce((s,t) => s+ventas[t].base, 0);
+        const totalCuotaVentas = types.reduce((s,t) => s+ventas[t].cuota, 0);
+        const totalBaseCompras = types.reduce((s,t) => s+compras[t].base, 0);
+        const totalCuotaCompras = types.reduce((s,t) => s+compras[t].cuota, 0);
+        const liquidacion = totalCuotaVentas - totalCuotaCompras;
+
+        // Selector año
+        let yearOpts = '';
+        for (let y = new Date().getFullYear(); y >= new Date().getFullYear() - 4; y--) {
+            yearOpts += `<option value="${y}" ${y===year?'selected':''}>${y}</option>`;
+        }
+
+        let html = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+            <div style="color:#9C27B0; font-size:0.85rem; font-weight:bold;">📊 MODELO 390 — Declaración Anual Resumen IVA — ${year}</div>
+            <select onchange="window._conta390Year=parseInt(this.value); window.contaLoadModelo390();" style="background:#2d2d30; border:1px solid #555; color:#fff; padding:4px 10px; border-radius:4px; font-size:0.78rem;">${yearOpts}</select>
+        </div>
+        <div style="color:#888; font-size:0.72rem; margin-bottom:18px;">Resumen anual obligatorio para sujetos en régimen general (LIVA art. 164). Desglose por tipo IVA leído de invoices.advancedGrid.</div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:18px;">
+            <div>
+                <div style="color:#81C784; font-weight:700; font-size:0.78rem; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">IVA REPERCUTIDO (ventas)</div>
+                <table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                    <thead><tr style="background:#1a2e1a; color:#A5D6A7; font-size:0.7rem;">
+                        <th style="padding:6px; text-align:left;">Tipo</th>
+                        <th style="padding:6px; text-align:right;">Base €</th>
+                        <th style="padding:6px; text-align:right;">Cuota €</th>
+                        <th style="padding:6px; text-align:center;">N</th>
+                    </tr></thead><tbody>`;
+        types.forEach(t => {
+            const row = ventas[t];
+            const label = t === 0 ? 'Exentas' : (t + '%');
+            html += `<tr style="border-bottom:1px solid #2d2d30;">
+                <td style="padding:5px; font-weight:700;">${label}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${row.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#81C784; font-weight:700;">${row.cuota.toFixed(2)}</td>
+                <td style="padding:5px; text-align:center; color:#888;">${row.n}</td></tr>`;
+        });
+        html += `<tr style="border-top:2px solid #4CAF50; font-weight:900; background:rgba(76,175,80,0.08);">
+                <td style="padding:6px;">TOTAL</td>
+                <td style="padding:6px; text-align:right;">${totalBaseVentas.toFixed(2)}</td>
+                <td style="padding:6px; text-align:right; color:#4CAF50;">${totalCuotaVentas.toFixed(2)}</td>
+                <td style="padding:6px;"></td>
+            </tr></tbody></table>
+            </div>
+
+            <div>
+                <div style="color:#FF8A65; font-weight:700; font-size:0.78rem; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">IVA SOPORTADO (compras/gastos)</div>
+                <table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                    <thead><tr style="background:#2e1a1a; color:#FFAB91; font-size:0.7rem;">
+                        <th style="padding:6px; text-align:left;">Tipo</th>
+                        <th style="padding:6px; text-align:right;">Base €</th>
+                        <th style="padding:6px; text-align:right;">Cuota €</th>
+                        <th style="padding:6px; text-align:center;">N</th>
+                    </tr></thead><tbody>`;
+        types.forEach(t => {
+            const row = compras[t];
+            const label = t === 0 ? 'Exentas' : (t + '%');
+            html += `<tr style="border-bottom:1px solid #2d2d30;">
+                <td style="padding:5px; font-weight:700;">${label}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${row.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#FF8A65; font-weight:700;">${row.cuota.toFixed(2)}</td>
+                <td style="padding:5px; text-align:center; color:#888;">${row.n}</td></tr>`;
+        });
+        html += `<tr style="border-top:2px solid #FF5722; font-weight:900; background:rgba(255,87,34,0.08);">
+                <td style="padding:6px;">TOTAL</td>
+                <td style="padding:6px; text-align:right;">${totalBaseCompras.toFixed(2)}</td>
+                <td style="padding:6px; text-align:right; color:#FF5722;">${totalCuotaCompras.toFixed(2)}</td>
+                <td style="padding:6px;"></td>
+            </tr></tbody></table>
+            </div>
+        </div>
+
+        <div style="background:linear-gradient(135deg, rgba(156,39,176,0.15), rgba(103,58,183,0.08)); border:2px solid #9C27B0; border-radius:10px; padding:18px; text-align:center;">
+            <div style="font-size:0.7rem; color:#CE93D8; text-transform:uppercase; letter-spacing:2px; margin-bottom:6px;">LIQUIDACIÓN ANUAL</div>
+            <div style="font-size:2.2rem; font-weight:900; color:#FFD700; line-height:1;">${liquidacion.toFixed(2)}€</div>
+            <div style="font-size:0.78rem; color:#${liquidacion>=0?'FFD700':'4FC3F7'}; font-weight:700; margin-top:6px;">${liquidacion >= 0 ? '⬆ A INGRESAR' : '⬇ A COMPENSAR'}</div>
+            <div style="font-size:0.65rem; color:#aaa; margin-top:8px;">IVA repercutido ${totalCuotaVentas.toFixed(2)}€  −  IVA soportado ${totalCuotaCompras.toFixed(2)}€</div>
+        </div>
+
+        <div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">
+            💡 Modelo 390: presentación anual antes del 30 enero del año siguiente. Suma de los 4 trimestres del 303. Si has presentado SII (no aplica a NOVAPACK por tamaño), estás exento del 390.
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+            <button onclick="window.contaExportModelo390CSV(${year})" style="background:#7B1FA2; border:0; color:#fff; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">📥 Exportar CSV (revisión)</button>
+        </div>`;
+        container.innerHTML = html;
+    } catch(e) { container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`; }
+};
+
+// Exportar Modelo 390 a CSV (uso interno / revisión asesor — no es importable AEAT directo)
+window.contaExportModelo390CSV = async function(year) {
+    year = year || new Date().getFullYear();
+    const [invSnap, expSnap] = await Promise.all([
+        db.collection('invoices').where('date','>=',new Date(year,0,1)).where('date','<=',new Date(year,11,31,23,59,59)).limit(20000).get(),
+        db.collection('expenses').where('date','>=',new Date(year,0,1)).where('date','<=',new Date(year,11,31,23,59,59)).limit(20000).get().catch(()=>({forEach:()=>{}}))
+    ]);
+    let csv = 'TIPO;FECHA;NUM;CLIENTE/PROV;NIF;BASE;TIPO_IVA;CUOTA_IVA;TOTAL\n';
+    invSnap.forEach(d => {
+        const i = d.data();
+        const date = i.date && i.date.toDate ? i.date.toDate().toISOString().split('T')[0] : '';
+        csv += `${i.isAbono?'ABONO':'FACTURA'};${date};${i.invoiceId};${(i.clientName||'').replace(/;/g,',')};${i.clientCIF||''};${(i.subtotal||0).toFixed(2)};${i.ivaRate||21};${(i.iva||0).toFixed(2)};${(i.total||0).toFixed(2)}\n`;
+    });
+    expSnap.forEach(d => {
+        const e = d.data();
+        const date = e.date && e.date.toDate ? e.date.toDate().toISOString().split('T')[0] : '';
+        csv += `GASTO;${date};${e.invoiceNum||''};${(e.provider||e.providerName||'').replace(/;/g,',')};${e.providerNif||e.providerCIF||''};${(e.base||0).toFixed(2)};;${(e.ivaAmount||0).toFixed(2)};${(e.total||0).toFixed(2)}\n`;
+    });
+    const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `modelo390_${year}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+// ============================================================
+//  MODELO 111 — Retenciones IRPF practicadas a profesionales
+//  (Sprint 2 §1.6 — antes calculaba mal IRPF soportado)
+//  Lee de /expenses los gastos con retencionIrpf > 0 y los agrupa
+//  por trimestre. Excluye alquileres (van al 115).
+// ============================================================
+window.contaLoadModelo111 = async function() {
+    contaCurrentView = 'modelo111';
+    const container = document.getElementById('conta-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">Calculando Modelo 111...</div>';
+    try {
+        const year = new Date().getFullYear();
+        const expSnap = await db.collection('expenses')
+            .where('date', '>=', new Date(year, 0, 1))
+            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+            .orderBy('date', 'asc').limit(10000).get();
+
+        const quarters = { 1: { perceptores: 0, base: 0, ret: 0 }, 2: {perceptores:0,base:0,ret:0}, 3:{perceptores:0,base:0,ret:0}, 4:{perceptores:0,base:0,ret:0} };
+        const detailByPerceptor = {};
+
+        expSnap.forEach(doc => {
+            const e = doc.data();
+            const retIrpf = parseFloat(e.retencionIrpf || 0);
+            if (retIrpf <= 0) return;  // sin retención → no aplica
+            // Excluir alquileres (van al modelo 115)
+            if ((e.category || '').toLowerCase().indexOf('alquiler') !== -1) return;
+            const date = e.date && e.date.toDate ? e.date.toDate() : new Date(e.date);
+            if (!date || isNaN(date.getTime())) return;
+            const q = Math.floor(date.getMonth() / 3) + 1;
+            const base = parseFloat(e.base || 0);
+
+            quarters[q].base += base;
+            quarters[q].ret += retIrpf;
+            const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+            const key = (nif || e.provider || 'sin-id') + '|q' + q;
+            if (!detailByPerceptor[key]) {
+                detailByPerceptor[key] = { provider: e.provider || e.providerName || '—', nif: nif, q: q, base: 0, ret: 0, n: 0 };
+                quarters[q].perceptores++;
+            }
+            detailByPerceptor[key].base += base;
+            detailByPerceptor[key].ret += retIrpf;
+            detailByPerceptor[key].n++;
+        });
+
+        const detail = Object.values(detailByPerceptor).sort((a,b) => a.q - b.q || b.ret - a.ret);
+        const totalBase = Object.values(quarters).reduce((s,q) => s+q.base, 0);
+        const totalRet = Object.values(quarters).reduce((s,q) => s+q.ret, 0);
+
+        let html = `
+        <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">📋 MODELO 111 — Retenciones IRPF practicadas a profesionales/empleados — ${year}</div>
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Trimestral. Excluye alquileres (van al modelo 115).</div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px;">
+            ${[1,2,3,4].map(q => `
+                <div style="background:rgba(255,152,0,0.08); border:1px solid rgba(255,152,0,0.3); padding:10px; border-radius:6px; text-align:center;">
+                    <div style="font-size:0.7rem; color:#FFB74D; font-weight:700;">${q}T</div>
+                    <div style="font-size:1.1rem; color:#FFD700; font-weight:900; margin-top:4px;">${quarters[q].ret.toFixed(2)}€</div>
+                    <div style="font-size:0.65rem; color:#888; margin-top:2px;">${quarters[q].perceptores} perceptor(es)<br>Base: ${quarters[q].base.toFixed(2)}€</div>
+                </div>`).join('')}
+        </div>
+
+        <div style="background:rgba(76,175,80,0.08); border:1px solid #4CAF50; border-radius:8px; padding:12px; margin-bottom:15px; text-align:center;">
+            <span style="color:#4CAF50; font-weight:700; font-size:1.3rem;">${totalRet.toFixed(2)}€</span>
+            <span style="color:#aaa; font-size:0.8rem;"> retenciones totales año · sobre base ${totalBase.toFixed(2)}€</span>
+        </div>`;
+
+        if (detail.length === 0) {
+            html += '<div style="text-align:center; padding:30px; color:#888;">No hay gastos con retención IRPF este año.<br><small>Recuerda: añade campo <code>retencionIrpf</code> al crear gastos de profesionales/autónomos.</small></div>';
+        } else {
+            html += `<table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                <thead><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
+                    <th style="padding:6px;">Trim.</th><th style="padding:6px; text-align:left;">Perceptor</th><th style="padding:6px;">NIF</th>
+                    <th style="padding:6px; text-align:right;">Base €</th><th style="padding:6px; text-align:right;">Retención €</th>
+                </tr></thead><tbody>`;
+            detail.forEach(d => {
+                html += `<tr style="border-bottom:1px solid #2d2d30;"><td style="padding:5px; text-align:center;">${d.q}T</td>
+                <td style="padding:5px;">${d.provider}</td><td style="padding:5px; font-family:monospace; color:#888;">${d.nif || '—'}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${d.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#FFD700; font-weight:700;">${d.ret.toFixed(2)}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">💡 <strong>Para que un gasto aparezca aquí</strong>: añade campo <code>retencionIrpf</code> (importe €) al crear el gasto. La AEAT exige presentar modelo 111 trimestral con esta info.</div>';
+        html += `<div style="margin-top:10px;"><button onclick="window.contaExportModelo111CSV(${year}, ${Math.floor(new Date().getMonth()/3)+1})" style="background:#FF9800; border:0; color:#000; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">📥 Exportar CSV trimestre actual</button></div>`;
+        container.innerHTML = html;
+    } catch(e) { container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`; }
+};
+
+// ============================================================
+//  MODELO 115 — Retenciones IRPF por alquileres de inmuebles urbanos
+//  (Sprint 2 §1.7 — antes no existía)
+// ============================================================
+window.contaLoadModelo115 = async function() {
+    contaCurrentView = 'modelo115';
+    const container = document.getElementById('conta-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:#888;">Calculando Modelo 115...</div>';
+    try {
+        const year = new Date().getFullYear();
+        const expSnap = await db.collection('expenses')
+            .where('date', '>=', new Date(year, 0, 1))
+            .where('date', '<=', new Date(year, 11, 31, 23, 59, 59))
+            .orderBy('date', 'asc').limit(10000).get();
+
+        const quarters = { 1:{arrendadores:0,base:0,ret:0}, 2:{arrendadores:0,base:0,ret:0}, 3:{arrendadores:0,base:0,ret:0}, 4:{arrendadores:0,base:0,ret:0} };
+        const detailByArrendador = {};
+
+        expSnap.forEach(doc => {
+            const e = doc.data();
+            // Solo alquileres
+            if ((e.category || '').toLowerCase().indexOf('alquiler') === -1) return;
+            const retIrpf = parseFloat(e.retencionIrpf || 0);
+            if (retIrpf <= 0) return;
+            const date = e.date && e.date.toDate ? e.date.toDate() : new Date(e.date);
+            if (!date || isNaN(date.getTime())) return;
+            const q = Math.floor(date.getMonth() / 3) + 1;
+            const base = parseFloat(e.base || 0);
+            quarters[q].base += base;
+            quarters[q].ret += retIrpf;
+            const nif = (e.providerNif || e.providerCIF || e.nif || '').toUpperCase().trim();
+            const key = (nif || e.provider || 'sin-id') + '|q' + q;
+            if (!detailByArrendador[key]) {
+                detailByArrendador[key] = { provider: e.provider || e.providerName || '—', nif: nif, q: q, base: 0, ret: 0 };
+                quarters[q].arrendadores++;
+            }
+            detailByArrendador[key].base += base;
+            detailByArrendador[key].ret += retIrpf;
+        });
+
+        const detail = Object.values(detailByArrendador).sort((a,b) => a.q - b.q || b.ret - a.ret);
+        const totalRet = Object.values(quarters).reduce((s,q) => s+q.ret, 0);
+        const totalBase = Object.values(quarters).reduce((s,q) => s+q.base, 0);
+
+        let html = `
+        <div style="color:#FF9800; font-size:0.85rem; font-weight:bold; margin-bottom:5px;">🏢 MODELO 115 — Retenciones IRPF por alquileres de inmuebles urbanos — ${year}</div>
+        <div style="color:#888; font-size:0.75rem; margin-bottom:20px;">Trimestral. Retención del 19% sobre rentas de alquiler (LIRPF art. 101).</div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px;">
+            ${[1,2,3,4].map(q => `
+                <div style="background:rgba(33,150,243,0.08); border:1px solid rgba(33,150,243,0.3); padding:10px; border-radius:6px; text-align:center;">
+                    <div style="font-size:0.7rem; color:#5DADE2; font-weight:700;">${q}T</div>
+                    <div style="font-size:1.1rem; color:#FFD700; font-weight:900; margin-top:4px;">${quarters[q].ret.toFixed(2)}€</div>
+                    <div style="font-size:0.65rem; color:#888; margin-top:2px;">${quarters[q].arrendadores} arrendador(es)<br>Base: ${quarters[q].base.toFixed(2)}€</div>
+                </div>`).join('')}
+        </div>
+
+        <div style="background:rgba(76,175,80,0.08); border:1px solid #4CAF50; border-radius:8px; padding:12px; margin-bottom:15px; text-align:center;">
+            <span style="color:#4CAF50; font-weight:700; font-size:1.3rem;">${totalRet.toFixed(2)}€</span>
+            <span style="color:#aaa; font-size:0.8rem;"> retenciones por alquileres · sobre base ${totalBase.toFixed(2)}€</span>
+        </div>`;
+
+        if (detail.length === 0) {
+            html += '<div style="text-align:center; padding:30px; color:#888;">No hay alquileres con retención IRPF este año.<br><small>Si alquilas nave/oficina, añade gasto con categoría "Alquiler Local/Nave" y campo <code>retencionIrpf</code> (19% sobre la base).</small></div>';
+        } else {
+            html += `<table style="width:100%; border-collapse:collapse; font-size:0.78rem;">
+                <thead><tr style="background:#2d2d30; color:#9cdcfe; font-size:0.7rem;">
+                    <th style="padding:6px;">Trim.</th><th style="padding:6px; text-align:left;">Arrendador</th><th style="padding:6px;">NIF</th>
+                    <th style="padding:6px; text-align:right;">Base €</th><th style="padding:6px; text-align:right;">Retención 19% €</th>
+                </tr></thead><tbody>`;
+            detail.forEach(d => {
+                html += `<tr style="border-bottom:1px solid #2d2d30;"><td style="padding:5px; text-align:center;">${d.q}T</td>
+                <td style="padding:5px;">${d.provider}</td><td style="padding:5px; font-family:monospace; color:#888;">${d.nif || '—'}</td>
+                <td style="padding:5px; text-align:right; color:#ccc;">${d.base.toFixed(2)}</td>
+                <td style="padding:5px; text-align:right; color:#FFD700; font-weight:700;">${d.ret.toFixed(2)}</td></tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        html += '<div style="margin-top:14px; padding:10px; background:rgba(255,255,255,0.03); border-left:3px solid #5DADE2; font-size:0.72rem; color:#aaa;">💡 La AEAT exige presentar modelo 115 trimestral. Excepciones: viviendas <span style="color:#FF8A50;">(no se retiene)</span>, alquileres &lt;900€/año al mismo arrendador.</div>';
+        html += `<div style="margin-top:10px;"><button onclick="window.contaExportModelo115CSV(${year}, ${Math.floor(new Date().getMonth()/3)+1})" style="background:#2196F3; border:0; color:#fff; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:700; font-size:0.78rem;">📥 Exportar CSV trimestre actual</button></div>`;
+        container.innerHTML = html;
+    } catch(e) { container.innerHTML = `<div style="color:#f44; padding:20px;">Error: ${e.message}</div>`; }
 };
 
 // ============================================================
@@ -1262,11 +1912,20 @@ window.contaSaveGasto = async function() {
         // DEBE: 600 Gastos (Base) + 472 IVA Soportado (IVA)
         // HABER: 400 Proveedores (Total)
         let asientoNum = 1;
-        try {
-            const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
-            if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
-        } catch(e) { /* first */ }
-        
+        if (typeof window.allocSequentialNumber === 'function') {
+            try {
+                asientoNum = await window.allocSequentialNumber('sequence_counters/journal', async () => {
+                    const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                    return lastSnap.empty ? 0 : (lastSnap.docs[0].data().number || 0);
+                });
+            } catch(e) { console.warn('[CONTA] allocSequentialNumber failed:', e); }
+        } else {
+            try {
+                const lastSnap = await db.collection('journal').orderBy('number', 'desc').limit(1).get();
+                if (!lastSnap.empty) asientoNum = (lastSnap.docs[0].data().number || 0) + 1;
+            } catch(e) { /* first */ }
+        }
+
         const entries = [
             {
                 account: '600',

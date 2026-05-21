@@ -40,6 +40,7 @@ var _GPS_MAX_RETRIES = 5;
 var _GPS_RETRY_DELAYS = [3000, 5000, 10000, 20000, 30000]; // Escalating retry delays
 var _gpsTrackingEnabled = false; // Flag: should tracking be active?
 var _gpsLastPosition = null; // Last known good position timestamp
+var _gpsLastCoords = null;   // { lat, lng, accuracy, ts } — for stamping POD signatures
 var _gpsHealthCheckTimer = null;
 var _GPS_HEALTH_INTERVAL = 60000; // Check GPS health every 60 seconds
 var _GPS_STALE_THRESHOLD = 120000; // Position stale after 2 minutes
@@ -77,6 +78,12 @@ function _startGPSWatch() {
             // Reset retry count on successful position
             _gpsRetryCount = 0;
             _gpsLastPosition = Date.now();
+            _gpsLastCoords = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                accuracy: Math.round(pos.coords.accuracy),
+                ts: _gpsLastPosition
+            };
 
             var now = Date.now();
             if (now - _gpsLastSent < _GPS_SEND_INTERVAL) {
@@ -451,7 +458,17 @@ function compressImage(file, maxWidth, quality) {
 // --- HELPERS ---
 function showLoading() { document.getElementById('loading-overlay').classList.add('active'); }
 function hideLoading() { document.getElementById('loading-overlay').classList.remove('active'); }
-function normalizePhone(p) { return (p || '').toString().replace(/\D/g, '').replace(/^34/, ''); }
+// Use shared canonicalizer if loaded by firebase-app.js, else inline fallback
+function normalizePhone(p) {
+    if (typeof window !== 'undefined' && typeof window.normalizePhone === 'function' && window.normalizePhone !== normalizePhone) {
+        return window.normalizePhone(p);
+    }
+    var digits = (p || '').toString().replace(/\D/g, '');
+    if (digits.length > 9 && digits.indexOf('0034') === 0) digits = digits.slice(4);
+    else if (digits.length > 9 && digits.indexOf('34') === 0) digits = digits.slice(2);
+    if (digits.length > 9) digits = digits.slice(-9);
+    return digits;
+}
 
 function getPackageCount(d) {
     if (d.packagesList && d.packagesList.length > 0) {
@@ -721,6 +738,228 @@ document.addEventListener('DOMContentLoaded', function() {
 function initApp() {
     var storage = firebase.storage();
 
+    // ============================================================
+    //  ANTI-CIERRE — cuatro candados para que la app no se cierre
+    //  sin querer durante una jornada de reparto
+    // ============================================================
+    (function setupAntiClose() {
+        var isStandalone =
+            window.matchMedia && window.matchMedia('(display-mode: standalone)').matches ||
+            window.navigator.standalone === true;
+
+        // Track de visibilidad: si popstate llega justo después de volver del background
+        // (típico al regresar de la cámara nativa o de otra app), lo ignoramos sin
+        // mostrar el confirm — el usuario no está intentando salir, solo volvió.
+        var _npLastVisibleAt = Date.now();
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') _npLastVisibleAt = Date.now();
+        });
+
+        // Helper: detectar si hay algún modal abierto (Cooper, recogida sin doc, etc.)
+        function _npAnyModalOpen() {
+            // .modal-overlay.active = sheets nuevos · #pickup-no-doc-modal[display:flex] = recogida
+            if (document.querySelector('.modal-overlay.active')) return true;
+            var pnd = document.getElementById('pickup-no-doc-modal');
+            if (pnd && pnd.style.display && pnd.style.display !== 'none') return true;
+            var disc = document.getElementById('discrepancy-modal');
+            if (disc && disc.style.display && disc.style.display !== 'none') return true;
+            return false;
+        }
+
+        // --- 1) TRAMPA BOTÓN "ATRÁS" (Android) ---
+        // Inyectamos un estado dummy al historial. Cuando el repartidor pulsa
+        // "Atrás" se dispara popstate → mostramos confirm. Si dice NO, volvemos
+        // a inyectar el estado para que la próxima pulsación vuelva a preguntar.
+        try {
+            history.pushState({ npAntiClose: true }, '', location.href);
+        } catch(_) {}
+        window.addEventListener('popstate', function(e) {
+            // Si el evento viene de una navegación interna controlada (no anti-close),
+            // dejamos pasar — usa window._npAllowExit = true antes de hacer history.back()
+            if (window._npAllowExit) { window._npAllowExit = false; return; }
+
+            // Si acabamos de volver del background (cámara nativa, otra app...),
+            // ignoramos el popstate silenciosamente — no es intento de salir
+            if (Date.now() - _npLastVisibleAt < 2000) {
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+                return;
+            }
+
+            // Si hay un modal abierto, primero cierra el modal en lugar de salir
+            if (_npAnyModalOpen()) {
+                // Cierra el primer modal abierto
+                var m = document.querySelector('.modal-overlay.active');
+                if (m) m.classList.remove('active');
+                var pnd = document.getElementById('pickup-no-doc-modal');
+                if (pnd && pnd.style.display === 'flex') pnd.style.display = 'none';
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+                return;
+            }
+
+            var ok = confirm(
+                '⚠️ ¿Salir de la app de Reparto?\n\n' +
+                'Vas a perder la sesión y tendrás que volver a entrar.\n\n' +
+                'Pulsa CANCELAR para seguir trabajando.'
+            );
+            if (!ok) {
+                // Re-inyectamos el estado para volver a interceptar el próximo "atrás"
+                try { history.pushState({ npAntiClose: true }, '', location.href); } catch(_) {}
+            } else {
+                // El usuario confirma salir — dejamos que el siguiente popstate o
+                // close suceda sin más prompts en esta sesión
+                window._npAllowExit = true;
+                history.back();
+            }
+        });
+
+        // --- 2) AVISO AL CERRAR PESTAÑA / RECARGAR (navegador) ---
+        // Solo aplica si NO es PWA standalone (en standalone no hay barra de
+        // navegador donde se pueda cerrar accidentalmente).
+        window.addEventListener('beforeunload', function(e) {
+            if (window._npAllowExit) return; // salida confirmada
+            // Texto custom ya no se muestra en navegadores modernos, pero el
+            // simple hecho de setear returnValue dispara el diálogo nativo
+            e.preventDefault();
+            e.returnValue = '¿Cerrar la app de Reparto? Vas a perder la sesión.';
+            return e.returnValue;
+        });
+
+        // --- 3) WAKE LOCK PERMANENTE (mantén pantalla encendida) ---
+        // Antes solo se pedía con GPS activo. Ahora la pedimos siempre que la
+        // app esté visible, así no se duerme la pantalla aunque el repartidor
+        // tarde en pulsar (importante: solo se concede tras un gesto del
+        // usuario, así que también la volvemos a pedir en cada interacción).
+        var _appWakeLock = null;
+        async function _ensureAppWakeLock() {
+            if (!('wakeLock' in navigator)) return;
+            if (document.visibilityState !== 'visible') return;
+            if (_appWakeLock && !_appWakeLock.released) return;
+            try {
+                _appWakeLock = await navigator.wakeLock.request('screen');
+                _appWakeLock.addEventListener('release', function() {
+                    _appWakeLock = null;
+                });
+                console.log('[anti-close] Wake lock activo — pantalla no se apaga');
+            } catch(e) {
+                console.warn('[anti-close] Wake lock denegado:', e.message);
+            }
+        }
+        _ensureAppWakeLock();
+        // Reacquire on visibility return + on any user gesture (más fiable)
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') _ensureAppWakeLock();
+        });
+        ['click', 'touchstart'].forEach(function(ev) {
+            document.addEventListener(ev, _ensureAppWakeLock, { passive: true, capture: true });
+        });
+
+        // --- 4) BANNER "INSTALAR APP" si no está en PWA ---
+        // Si la app no se ha "Añadido a pantalla de inicio", el riesgo de cierre
+        // accidental es mucho mayor. Mostramos un banner discreto persistente
+        // que recuerda instalar para protegerse contra cierres.
+        var _deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', function(e) {
+            e.preventDefault();
+            _deferredInstallPrompt = e;
+            _showInstallBanner();
+        });
+
+        function _showInstallBanner() {
+            if (isStandalone) return; // Ya instalada
+            if (document.getElementById('np-install-banner')) return;
+            // Respeta el "no me lo recuerdes" del usuario
+            if (localStorage.getItem('npHideInstallBanner') === '1') return;
+
+            var banner = document.createElement('div');
+            banner.id = 'np-install-banner';
+            // z-index 150: por debajo del modal (200) para no tapar botones SEND/CANCEL
+            // Position TOP en lugar de bottom para evitar conflicto con sheets bottom-anchor
+            banner.style.cssText =
+                'position:fixed; top:8px; left:12px; right:12px; z-index:150; ' +
+                'background:linear-gradient(135deg, #FF4D00, #FF9800); color:#fff; ' +
+                'border-radius:14px; padding:10px 12px; font-family:Inter,Arial,sans-serif; ' +
+                'box-shadow:0 4px 16px rgba(0,0,0,0.4); display:flex; align-items:center; ' +
+                'gap:10px; font-size:0.82rem;';
+            banner.innerHTML =
+                '<span class="material-symbols-outlined" style="font-size:1.5rem;">install_mobile</span>' +
+                '<div style="flex:1; line-height:1.2;"><b>Instala la app</b><br>' +
+                '<span style="opacity:0.9; font-size:0.7rem;">Evita cierres accidentales</span></div>' +
+                '<button id="np-install-btn" style="background:#fff; color:#FF4D00; border:0; ' +
+                'padding:6px 12px; border-radius:6px; font-weight:900; cursor:pointer; font-size:0.75rem;">INSTALAR</button>' +
+                '<button id="np-install-skip" aria-label="Cerrar" style="background:transparent; ' +
+                'border:0; color:#fff; font-size:1.2rem; cursor:pointer; padding:4px 6px;">×</button>';
+            document.body.appendChild(banner);
+
+            // Auto-ocultar cuando se abra cualquier modal (Cooper, recogida sin doc, etc.)
+            // y re-mostrar cuando se cierre. Observer ligero sobre body para detectar
+            // cambios de clase 'active' en modales.
+            try {
+                var bannerObs = new MutationObserver(function() {
+                    var anyOpen = !!document.querySelector('.modal-overlay.active');
+                    var pnd = document.getElementById('pickup-no-doc-modal');
+                    if (pnd && pnd.style.display && pnd.style.display !== 'none') anyOpen = true;
+                    var disc = document.getElementById('discrepancy-modal');
+                    if (disc && disc.style.display && disc.style.display !== 'none') anyOpen = true;
+                    banner.style.display = anyOpen ? 'none' : 'flex';
+                });
+                bannerObs.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class', 'style'] });
+            } catch(_) {}
+
+            document.getElementById('np-install-btn').addEventListener('click', async function() {
+                if (_deferredInstallPrompt) {
+                    _deferredInstallPrompt.prompt();
+                    try { await _deferredInstallPrompt.userChoice; } catch(_) {}
+                    _deferredInstallPrompt = null;
+                    banner.remove();
+                } else {
+                    // iOS no soporta beforeinstallprompt — instruir manual
+                    alert(
+                        'Para instalar la app:\n\n' +
+                        '1. Pulsa el botón "Compartir" del navegador (Safari: cuadrado con flecha arriba)\n' +
+                        '2. Selecciona "Añadir a pantalla de inicio"\n' +
+                        '3. Confirma "Añadir"'
+                    );
+                }
+            });
+            document.getElementById('np-install-skip').addEventListener('click', function() {
+                localStorage.setItem('npHideInstallBanner', '1');
+                banner.remove();
+            });
+        }
+
+        // Si ya está instalada en iOS (no dispara beforeinstallprompt pero tampoco standalone si lo
+        // abrió desde Safari) no mostramos nada. Si tras 3s no ha disparado el evento Y no es
+        // standalone, mostramos el banner igualmente para iOS.
+        setTimeout(function() {
+            if (!isStandalone && !_deferredInstallPrompt) {
+                _showInstallBanner();
+            }
+        }, 3000);
+
+        console.log('[anti-close] candados activos · standalone=' + isStandalone);
+    })();
+
+    // --- VAN MODE (modo furgón: botones grandes, alto contraste) ---
+    (function() {
+        var urlParams = new URLSearchParams(window.location.search);
+        var fromUrl = urlParams.get('furgon') === '1';
+        var saved = localStorage.getItem('vanMode') === '1';
+        if (fromUrl || saved) {
+            document.body.classList.add('van-mode');
+            if (fromUrl) localStorage.setItem('vanMode', '1');
+        }
+        var btn = document.getElementById('btn-van-mode');
+        if (btn) {
+            btn.addEventListener('click', function() {
+                var on = document.body.classList.toggle('van-mode');
+                localStorage.setItem('vanMode', on ? '1' : '0');
+                if (typeof showToast === 'function') {
+                    showToast(on ? 'Modo furgón activado' : 'Modo furgón desactivado', 'info', 1800);
+                }
+            });
+        }
+    })();
+
     // --- CONNECTION STATUS MONITOR ---
     function updateConnectionDot(online) {
         var dot = document.getElementById('connection-dot');
@@ -799,7 +1038,34 @@ function initApp() {
     // --- MASTER PIN AUTH ---
     var _adminRoutes = [];
 
+    // SHA-256 hex of an input string. Falls back gracefully if SubtleCrypto missing.
+    async function _sha256Hex(str) {
+        try {
+            var enc = new TextEncoder().encode(str);
+            var buf = await crypto.subtle.digest('SHA-256', enc);
+            var bytes = new Uint8Array(buf);
+            var hex = '';
+            for (var i = 0; i < bytes.length; i++) {
+                hex += bytes[i].toString(16).padStart(2, '0');
+            }
+            return hex;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Rate-limit PIN attempts per browser to slow down brute force
+    var _pinAttempts = parseInt(sessionStorage.getItem('pinAttempts') || '0', 10);
+    var _pinLockUntil = parseInt(sessionStorage.getItem('pinLockUntil') || '0', 10);
+
     document.getElementById('btn-master-pin').addEventListener('click', async function() {
+        var now = Date.now();
+        if (now < _pinLockUntil) {
+            var secs = Math.ceil((_pinLockUntil - now) / 1000);
+            document.getElementById('login-error').textContent = 'Demasiados intentos. Espera ' + secs + 's.';
+            return;
+        }
+
         var pin = (document.getElementById('master-pin-input').value || '').trim();
         if (!pin) {
             document.getElementById('login-error').textContent = 'Introduce un PIN maestro.';
@@ -809,37 +1075,7 @@ function initApp() {
         showLoading();
 
         try {
-            var configDoc = await db.collection('config').doc('phones').get();
-            var configData = configDoc.exists ? configDoc.data() : {};
-            var pin1 = configData.masterPin1 || '';
-            var pin2 = configData.masterPin2 || '';
-
-            if (pin !== pin1 && pin !== pin2) {
-                document.getElementById('login-error').textContent = 'PIN maestro incorrecto.';
-                hideLoading();
-                return;
-            }
-
-            // PIN valid — load all routes
-            var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
-            _adminRoutes = [];
-            phonesSnap.forEach(function(doc) {
-                var d = doc.data();
-                _adminRoutes.push({
-                    docId: doc.id,
-                    label: d.label || 'Sin nombre',
-                    number: d.number || '',
-                    driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
-                });
-            });
-
-            if (_adminRoutes.length === 0) {
-                document.getElementById('login-error').textContent = 'No hay rutas configuradas.';
-                hideLoading();
-                return;
-            }
-
-            // Anonymous auth needed so Firestore rules (request.auth != null) allow ticket queries
+            // STEP 1: anonymous auth FIRST so config/phones (now auth-protected) is readable
             _isMasterPinSession = true;
             try {
                 await auth.signInAnonymously();
@@ -847,14 +1083,115 @@ function initApp() {
             } catch (authErr) {
                 console.error('[REPARTO] Anonymous auth failed:', authErr);
                 document.getElementById('login-error').textContent = 'Error de autenticación. Contacta al administrador.';
+                _isMasterPinSession = false;
                 hideLoading();
                 return;
             }
+
+            // STEP 2: read PIN config (requires auth)
+            var configDoc = await db.collection('config').doc('phones').get();
+            var configData = configDoc.exists ? configDoc.data() : {};
+            var pin1Hash = configData.masterPin1Hash || '';
+            var pin2Hash = configData.masterPin2Hash || '';
+            var pin1Plain = configData.masterPin1 || '';  // legacy fallback
+            var pin2Plain = configData.masterPin2 || '';  // legacy fallback
+
+            // STEP 3: cargar TODAS las rutas (necesario para comprobar el PIN
+            // de ruta, y también para el selector si entra con PIN maestro).
+            var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
+            _adminRoutes = [];
+            // Mapa label → pin, para que las subrutas hereden el PIN del padre
+            var _pinByLabel = {};
+            phonesSnap.forEach(function(doc) {
+                var d = doc.data();
+                if (d.label) _pinByLabel[d.label.trim()] = (d.pin || '').toString().trim();
+            });
+            phonesSnap.forEach(function(doc) {
+                var d = doc.data();
+                var effectivePin = (d.pin || '').toString().trim();
+                if (d.parentRoute && d.parentRoute.trim()) {
+                    // Subruta: hereda el PIN del padre
+                    effectivePin = _pinByLabel[d.parentRoute.trim()] || '';
+                }
+                _adminRoutes.push({
+                    docId: doc.id,
+                    label: d.label || 'Sin nombre',
+                    number: d.number || '',
+                    pin: effectivePin,
+                    driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
+                });
+            });
+
+            if (_adminRoutes.length === 0) {
+                document.getElementById('login-error').textContent = 'No hay rutas configuradas.';
+                try { await auth.signOut(); } catch(e){}
+                _isMasterPinSession = false;
+                hideLoading();
+                return;
+            }
+
+            // STEP 4: ¿el PIN escrito coincide con el PIN de alguna ruta?
+            // → entrar DIRECTAMENTE a esa ruta (sin SMS, sin selector).
+            var matchedRoute = null;
+            for (var ri = 0; ri < _adminRoutes.length; ri++) {
+                if (_adminRoutes[ri].pin && _adminRoutes[ri].pin === pin) {
+                    matchedRoute = _adminRoutes[ri];
+                    break;
+                }
+            }
+            if (matchedRoute) {
+                sessionStorage.removeItem('pinAttempts');
+                sessionStorage.removeItem('pinLockUntil');
+                _pinAttempts = 0;
+                currentDriverPhone = normalizePhone(matchedRoute.number);
+                currentRouteLabel = matchedRoute.label;
+                console.log('[REPARTO] Entrada por PIN de ruta:', matchedRoute.label);
+                hideLoading();
+                if (matchedRoute.driverNames.length <= 1) {
+                    currentDriverName = matchedRoute.driverNames[0] || 'Repartidor';
+                    document.getElementById('login-view').style.display = 'none';
+                    enterMainApp();
+                } else {
+                    showDriverSelector(matchedRoute.driverNames, matchedRoute.label);
+                }
+                return;
+            }
+
+            // STEP 5: comprobar PIN MAESTRO (hash; fallback plano por migración).
+            var pinHash = await _sha256Hex(pin);
+            var ok = false;
+            if (pinHash && (pinHash === pin1Hash || pinHash === pin2Hash)) ok = true;
+            else if (pin1Plain && pin === pin1Plain) ok = true;
+            else if (pin2Plain && pin === pin2Plain) ok = true;
+
+            if (!ok) {
+                _pinAttempts++;
+                sessionStorage.setItem('pinAttempts', String(_pinAttempts));
+                if (_pinAttempts >= 5) {
+                    _pinLockUntil = Date.now() + 60000; // 60s lockout after 5 fails
+                    sessionStorage.setItem('pinLockUntil', String(_pinLockUntil));
+                    sessionStorage.setItem('pinAttempts', '0');
+                    _pinAttempts = 0;
+                }
+                document.getElementById('login-error').textContent = 'PIN incorrecto (ni de ruta ni maestro).';
+                // Roll back the anonymous session — never leave logged in on bad PIN
+                try { await auth.signOut(); } catch(e){}
+                _isMasterPinSession = false;
+                hideLoading();
+                return;
+            }
+
+            // PIN maestro correcto → reset intentos + selector de rutas
+            sessionStorage.removeItem('pinAttempts');
+            sessionStorage.removeItem('pinLockUntil');
+            _pinAttempts = 0;
 
             showAdminRouteSelector();
         } catch (e) {
             console.error('Master PIN error:', e);
             document.getElementById('login-error').textContent = 'Error: ' + e.message;
+            try { await auth.signOut(); } catch(_){}
+            _isMasterPinSession = false;
         } finally {
             hideLoading();
         }
@@ -908,32 +1245,73 @@ function initApp() {
             showLoading();
             try {
                 currentDriverPhone = normalizePhone(user.phoneNumber);
-                console.log('[REPARTO] Autenticado:', currentDriverPhone);
+                console.log('[REPARTO] Autenticado. Teléfono crudo:', user.phoneNumber, '→ normalizado:', currentDriverPhone);
 
                 var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
                 var found = false;
                 var foundRouteLabel = '';
                 var driverNames = [];
+                var allRoutes = []; // para diagnóstico
+                var closeMatches = []; // por últimos 4 dígitos
+
+                // Poblar _adminRoutes también en el flujo de login por SMS, para
+                // poder ofrecer el selector manual de ruta como fallback si el
+                // teléfono no coincide con ninguna ruta configurada.
+                _adminRoutes = [];
 
                 phonesSnap.forEach(function(doc) {
                     var d = doc.data();
                     var routePhone = normalizePhone(d.number);
+                    allRoutes.push({ label: d.label || '(sin label)', raw: d.number, normalized: routePhone });
+                    _adminRoutes.push({
+                        docId: doc.id,
+                        label: d.label || 'Sin nombre',
+                        number: d.number || '',
+                        driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
+                    });
                     if (routePhone === currentDriverPhone) {
                         found = true;
                         foundRouteLabel = d.label || '';
-                        // Collect all configured driver names
                         if (d.driverName) driverNames.push(d.driverName);
                         if (d.driverName2) driverNames.push(d.driverName2);
                         if (d.driverName3) driverNames.push(d.driverName3);
                         if (d.driverName4) driverNames.push(d.driverName4);
+                    } else if (routePhone && currentDriverPhone && routePhone.slice(-4) === currentDriverPhone.slice(-4)) {
+                        closeMatches.push({ label: d.label || '?', raw: d.number, normalized: routePhone });
                     }
                 });
 
+                console.log('[REPARTO] Rutas configuradas en config/phones/list (' + allRoutes.length + '):', allRoutes);
+
+                // ── NO SE ENCONTRÓ RUTA POR TELÉFONO ──
+                // En lugar de entrar SIN ruta (lo que hacía que las fotos Cooper
+                // se guardaran como 'Sin ruta' y rompía la app), ofrecemos el
+                // selector manual de ruta. El repartidor elige su ruta y entra
+                // con todo correcto.
+                if (!found) {
+                    console.warn('[REPARTO] ❌ NO se encontró ruta con teléfono ' + currentDriverPhone);
+                    if (closeMatches.length) {
+                        console.warn('[REPARTO] Rutas con últimos 4 dígitos coincidentes (posible typo en config):', closeMatches);
+                    }
+                    hideLoading();
+                    showToast('No detectamos tu ruta por el teléfono (' + currentDriverPhone + '). Selecciónala manualmente.', 'warning', 7000);
+                    if (_adminRoutes.length > 0) {
+                        // Marca de sesión para que el selector funcione igual que el de admin
+                        _isMasterPinSession = true;
+                        showAdminRouteSelector();
+                        return;
+                    }
+                    // Sin rutas configuradas en absoluto → último recurso
+                    showToast('⚠️ No hay rutas configuradas. Avisa al admin.', 'error', 9000);
+                    return;
+                }
+
+                console.log('[REPARTO] ✅ Ruta encontrada:', foundRouteLabel);
                 currentRouteLabel = foundRouteLabel;
 
                 // If no names found, use a default
                 if (driverNames.length === 0) {
-                    driverNames.push(found ? 'Repartidor' : 'Repartidor ' + currentDriverPhone.slice(-4));
+                    driverNames.push('Repartidor');
                 }
 
                 // If only one driver, skip selection and go straight to app
@@ -1376,6 +1754,7 @@ function initApp() {
             var typeColor = '#2196F3';
             if (a.type === 'recogida') { typeIcon = '\ud83d\udce5'; typeLabel = 'Recogida'; typeColor = '#FF9800'; }
             else if (a.type === 'entrega_urgente') { typeIcon = '\ud83d\udea8'; typeLabel = 'Entrega urgente'; typeColor = '#FF3B30'; }
+            else if (a.kind === 'extravio') { typeIcon = '\ud83d\udea8'; typeLabel = 'Posible extrav\u00edo'; typeColor = '#FF3B30'; }
 
             var dateStr = '';
             if (a.createdAt) {
@@ -1393,6 +1772,10 @@ function initApp() {
             html += '<span style="color:' + typeColor + '; font-weight:800; font-size:0.82rem; letter-spacing:0.5px;">' + typeIcon + ' ' + escapeHtml(typeLabel).toUpperCase() + '</span>';
             html += '<span style="color:#888; font-size:0.72rem;">' + escapeHtml(dateStr) + '</span>';
             html += '</div>';
+            // Title (used by alerts that don't have an address \u2014 e.g. anti-extrav\u00edo)
+            if (a.title && !a.address) {
+                html += '<div style="color:#fff; font-weight:700; font-size:0.92rem; margin-bottom:6px;">' + escapeHtml(a.title) + '</div>';
+            }
             // Address
             if (a.address) {
                 html += '<div style="display:flex; align-items:start; gap:6px; margin-bottom:6px; color:#eee; font-size:0.9rem; line-height:1.5;">';
@@ -1400,12 +1783,17 @@ function initApp() {
                 html += '<span style="font-weight:600;">' + escapeHtml(a.address) + '</span>';
                 html += '</div>';
             }
-            // Notes
-            if (a.notes) {
+            // Notes (or alert body when notes absent)
+            var bodyText = a.notes || a.body || '';
+            if (bodyText) {
                 html += '<div style="display:flex; align-items:start; gap:6px; margin-bottom:6px; color:#aaa; font-size:0.82rem; line-height:1.4;">';
                 html += '<span style="font-size:0.9rem; flex-shrink:0;">\ud83d\udcdd</span>';
-                html += '<span>' + escapeHtml(a.notes) + '</span>';
+                html += '<span>' + escapeHtml(bodyText) + '</span>';
                 html += '</div>';
+            }
+            // Ticket reference for extrav\u00edo alerts
+            if (a.ticketBusinessId) {
+                html += '<div style="color:#FF8A50; font-size:0.72rem; margin-bottom:6px;">\ud83d\udce6 Albar\u00e1n <strong>' + escapeHtml(a.ticketBusinessId) + '</strong></div>';
             }
             // Sent by
             if (a.sentBy) {
@@ -1538,6 +1926,21 @@ function initApp() {
             return;
         }
 
+        // Formato corto DD/MM para la card (fecha de creación del albarán)
+        function _fmtCardDate(ts) {
+            if (!ts) return '';
+            try {
+                var dt = (ts && typeof ts.toDate === 'function') ? ts.toDate() : new Date(ts);
+                if (isNaN(dt.getTime())) return '';
+                var dd = ('0' + dt.getDate()).slice(-2);
+                var mm = ('0' + (dt.getMonth() + 1)).slice(-2);
+                // Año corto solo si es distinto al actual
+                var yy = dt.getFullYear();
+                var curY = new Date().getFullYear();
+                return dd + '/' + mm + (yy !== curY ? '/' + String(yy).slice(-2) : '');
+            } catch(_) { return ''; }
+        }
+
         container.innerHTML = filtered.map(function(d, idx) {
             var isDelivered = d.status === 'Entregado' || d.delivered;
             var statusClass = isDelivered ? 'delivered' : 'pending';
@@ -1545,11 +1948,13 @@ function initApp() {
             var addr = [d.address, d.localidad, d.cp, d.province].filter(Boolean).join(', ');
             var pkgCount = getPackageCount(d);
             var orderNum = isDelivered ? '' : '<span class="route-order">' + (idx + 1) + '</span>';
+            var dateStr = _fmtCardDate(d.createdAt || d.date);
+            var dateChip = dateStr ? '<span class="dc-date" style="font-size:0.7rem; color:#888; margin-left:6px; white-space:nowrap;"><span class="material-symbols-outlined" style="font-size:0.85rem; vertical-align:middle;">event</span> ' + dateStr + '</span>' : '';
 
             return '<div class="delivery-card ' + statusClass + '" data-id="' + escapeHtml(d._id) + '" data-idx="' + idx + '" draggable="true">' +
                 '<span class="drag-handle"><span class="material-symbols-outlined" style="font-size:0.9rem;">drag_indicator</span></span>' +
                 '<div class="dc-header">' +
-                    '<span class="dc-id">' + orderNum + escapeHtml(d.id || d._id.substring(0,12)) + '</span>' +
+                    '<span class="dc-id">' + orderNum + escapeHtml(d.id || d._id.substring(0,12)) + dateChip + '</span>' +
                     '<span class="dc-status ' + statusClass + '">' + statusText + '</span>' +
                 '</div>' +
                 '<div class="dc-name">' + escapeHtml(d.receiver || d.clientName || 'Sin nombre') + '</div>' +
@@ -1560,6 +1965,11 @@ function initApp() {
                 '</div>' +
             '</div>';
         }).join('');
+
+        // Exponer deliveries al scope global para que el copiloto (y otros módulos)
+        // puedan acceder sin necesidad de live access al IIFE de reparto.js.
+        try { window.deliveries = deliveries; } catch(_) {}
+        try { window.dispatchEvent(new CustomEvent('deliveries-rendered', { detail: { count: deliveries.length } })); } catch(_) {}
 
         // Card click → detail modal
         container.querySelectorAll('.delivery-card').forEach(function(card) {
@@ -1743,6 +2153,7 @@ function initApp() {
     window.openGPS = openGPS;
 
     // --- DETAIL MODAL ---
+    window.showDetailModal = showDetailModal;
     function showDetailModal(d) {
         var modal = document.getElementById('detail-modal');
         var content = document.getElementById('modal-content');
@@ -1765,6 +2176,18 @@ function initApp() {
                 (d.cod ? '<b>Reembolso:</b> ' + escapeHtml(d.cod) + '€<br>' : '') +
                 (d.deliveryReceiverName ? '<b>Recibido por:</b> ' + escapeHtml(d.deliveryReceiverName) + '<br>' : '') +
             '</div>' +
+            (!isDelivered && addr ?
+                '<div id="modal-eta" style="display:none; background:rgba(33,150,243,0.10); border:1px solid rgba(33,150,243,0.30); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:0.85rem; color:#5DADE2;"></div>'
+                : '') +
+            // Chat per-ticket (idea 11)
+            '<details id="modal-chat-wrap" style="margin-bottom:12px; background:rgba(171,71,188,0.06); border:1px solid rgba(171,71,188,0.25); border-radius:8px;">'
+            + '<summary style="padding:10px 12px; cursor:pointer; font-size:0.88rem; font-weight:700; color:#CE93D8;"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">forum</span> Chat con el cliente</summary>'
+            + '<div id="modal-chat-thread" style="max-height:240px; overflow-y:auto; padding:8px 12px; display:flex; flex-direction:column; gap:6px; font-size:0.85rem;"></div>'
+            + '<div style="display:flex; gap:6px; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.06);">'
+            + '<input id="modal-chat-input" type="text" placeholder="Escribe un mensaje al cliente…" maxlength="500" style="flex:1; background:#0a0a0a; border:1px solid rgba(255,255,255,0.10); color:#fff; padding:8px 10px; border-radius:6px; font-size:0.85rem;">'
+            + '<button id="modal-chat-send" class="btn btn-sm" style="background:#AB47BC; border:0; color:#fff; padding:6px 14px; border-radius:6px; font-weight:700;">Enviar</button>'
+            + '</div>'
+            + '</details>' +
             '<div style="display:flex; flex-direction:column; gap:8px;">' +
                 '<button class="btn btn-primary" id="modal-btn-gps"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">near_me</span> ABRIR EN GPS</button>' +
                 (!isDelivered ?
@@ -1813,6 +2236,125 @@ function initApp() {
                 closeModal();
                 openReassignModal(d);
             };
+        }
+
+        // Chat per-ticket (idea 11) — cliente, repartidor y admin pueden
+        // intercambiar mensajes cortos. Se carga on-demand al expandir el
+        // panel (un único onSnapshot mientras el modal esté abierto).
+        var _chatUnsub = null;
+        var chatWrap = document.getElementById('modal-chat-wrap');
+        if (chatWrap) {
+            chatWrap.addEventListener('toggle', function() {
+                if (chatWrap.open && !_chatUnsub) _attachChatThread(d);
+                else if (!chatWrap.open && _chatUnsub) { _chatUnsub(); _chatUnsub = null; }
+            }, { once: false });
+            // Detach when modal closes
+            var modalRef = document.getElementById('detail-modal');
+            var detachOnClose = function() {
+                if (!modalRef.classList.contains('active') && _chatUnsub) {
+                    _chatUnsub(); _chatUnsub = null;
+                    modalRef.removeEventListener('transitionend', detachOnClose);
+                }
+            };
+            modalRef.addEventListener('transitionend', detachOnClose);
+        }
+        function _attachChatThread(ticket) {
+            var thread = document.getElementById('modal-chat-thread');
+            var input = document.getElementById('modal-chat-input');
+            var send = document.getElementById('modal-chat-send');
+            if (!thread || !input || !send) return;
+            thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center;">Cargando…</div>';
+            _chatUnsub = db.collection('tickets').doc(ticket._id).collection('chat')
+                .orderBy('createdAt', 'asc').limit(100)
+                .onSnapshot(function(snap) {
+                    if (snap.empty) {
+                        thread.innerHTML = '<div style="color:#888; font-size:0.78rem; text-align:center; padding:8px;">Aún no hay mensajes.</div>';
+                        return;
+                    }
+                    var html = '';
+                    snap.forEach(function(doc) {
+                        var m = doc.data();
+                        var mine = (m.senderRole === 'driver');
+                        var bubbleColor = mine
+                            ? 'background:rgba(255,77,0,0.18); align-self:flex-end; border:1px solid rgba(255,77,0,0.35);'
+                            : (m.senderRole === 'admin'
+                                ? 'background:rgba(171,71,188,0.18); align-self:flex-start; border:1px solid rgba(171,71,188,0.35);'
+                                : 'background:rgba(33,150,243,0.18); align-self:flex-start; border:1px solid rgba(33,150,243,0.35);');
+                        var ts = '';
+                        if (m.createdAt && m.createdAt.toDate) {
+                            try { ts = m.createdAt.toDate().toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' }); } catch(e) {}
+                        }
+                        html += '<div style="' + bubbleColor + ' padding:6px 10px; border-radius:10px; max-width:80%;">'
+                              + '<div style="font-size:0.7rem; color:#aaa; margin-bottom:2px;">' + escapeHtml(m.senderRole || '?') + (m.senderName ? ' · ' + escapeHtml(m.senderName) : '') + (ts ? ' · ' + ts : '') + '</div>'
+                              + '<div>' + escapeHtml(m.text || '') + '</div>'
+                              + '</div>';
+                    });
+                    thread.innerHTML = html;
+                    thread.scrollTop = thread.scrollHeight;
+                }, function(err) {
+                    thread.innerHTML = '<div style="color:#FF3B30; font-size:0.78rem;">Error: ' + escapeHtml(err.message) + '</div>';
+                });
+            send.onclick = async function() {
+                var text = (input.value || '').trim();
+                if (!text) return;
+                send.disabled = true;
+                try {
+                    await db.collection('tickets').doc(ticket._id).collection('chat').add({
+                        text: text.slice(0, 1500),
+                        senderRole: 'driver',
+                        senderName: currentDriverName || 'Repartidor',
+                        senderPhone: currentDriverPhone || '',
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    input.value = '';
+                } catch(e) {
+                    alert('Error enviando: ' + e.message);
+                } finally {
+                    send.disabled = false;
+                }
+            };
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.onclick(); }
+            });
+        }
+
+        // ETA dinámico (idea 6) — sólo si la entrega está pendiente, hay GPS
+        // reciente y Maps cargado. Distance Matrix usa la posición del chófer
+        // como origen y la dirección de la entrega como destino.
+        var etaEl = document.getElementById('modal-eta');
+        if (etaEl && _gpsLastCoords && (Date.now() - _gpsLastCoords.ts) < 120000
+            && window.google && google.maps && google.maps.DistanceMatrixService && addr) {
+            etaEl.style.display = 'block';
+            etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> Calculando ETA…';
+            try {
+                var svc = new google.maps.DistanceMatrixService();
+                svc.getDistanceMatrix({
+                    origins: [{ lat: _gpsLastCoords.lat, lng: _gpsLastCoords.lng }],
+                    destinations: [addr + ', España'],
+                    travelMode: 'DRIVING',
+                    unitSystem: google.maps.UnitSystem.METRIC
+                }, function(resp, status) {
+                    if (status !== 'OK' || !resp || !resp.rows || !resp.rows[0] || !resp.rows[0].elements || !resp.rows[0].elements[0]) {
+                        etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA no disponible.';
+                        return;
+                    }
+                    var el = resp.rows[0].elements[0];
+                    if (el.status !== 'OK') {
+                        etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA no disponible (' + escapeHtml(el.status) + ')';
+                        return;
+                    }
+                    var arrival = new Date(Date.now() + (el.duration.value * 1000));
+                    var arrivalStr = arrival.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+                    etaEl.innerHTML =
+                        '<div style="display:flex; gap:14px; flex-wrap:wrap;">'
+                        + '<div><b>🕒 ' + escapeHtml(el.duration.text) + '</b> en coche</div>'
+                        + '<div>📍 ' + escapeHtml(el.distance.text) + '</div>'
+                        + '<div>Llegada estimada <b>' + arrivalStr + '</b></div>'
+                        + '</div>';
+                });
+            } catch(e) {
+                etaEl.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">schedule</span> ETA: ' + escapeHtml(e.message || 'error');
+            }
         }
     }
 
@@ -2407,9 +2949,27 @@ function initApp() {
             document.getElementById('confirm-receiver').focus();
             return;
         }
-        if (isSignatureEmpty()) {
-            showToast('Se necesita la firma del receptor.', 'warning');
-            return;
+
+        // Signature gate: must be a real signature, not blank or single-pixel.
+        // Driver may explicitly mark "rehúsa firmar" to bypass — that flags
+        // the delivery as not billing-ready and stores the reason.
+        var signatureRefused = false;
+        var signatureRefusedReason = '';
+        if (!isSignatureValid()) {
+            if (isSignatureEmpty()) {
+                var reason = prompt('No hay firma. Si el receptor rehúsa firmar, escribe el motivo (ej. "buzón", "rehúsa", "ausente").\n\nDeja vacío y cancela para volver a pedir firma.');
+                if (reason == null) return; // cancelled
+                reason = String(reason).trim();
+                if (!reason) {
+                    showToast('Se necesita firma o motivo.', 'warning');
+                    return;
+                }
+                signatureRefused = true;
+                signatureRefusedReason = reason.slice(0, 200);
+            } else {
+                showToast('La firma es muy pequeña. Pide una firma completa.', 'warning');
+                return;
+            }
         }
 
         var btn = document.getElementById('btn-confirm-delivery');
@@ -2431,6 +2991,10 @@ function initApp() {
         try {
             var docId = currentScanDoc._id;
             var docRef = currentScanDoc._ref || db.collection('tickets').doc(docId);
+            // Capture signature audit trail BEFORE async work — ensures the
+            // timestamp/GPS reflect the moment of physical delivery.
+            var sigMeta = signatureRefused ? null : getSignatureMeta();
+
             var deliveryData = {
                 status: 'Entregado',
                 delivered: true,
@@ -2438,7 +3002,10 @@ function initApp() {
                 distributedAt: firebase.firestore.FieldValue.serverTimestamp(),
                 deliveryReceiverName: receiverName,
                 deliveredByDriver: currentDriverName,
-                deliveredByPhone: currentDriverPhone
+                deliveredByPhone: currentDriverPhone,
+                signatureRefused: signatureRefused,
+                signatureRefusedReason: signatureRefusedReason || null,
+                signatureMeta: sigMeta
             };
 
             // Auto-asignación de cargo según tipo de porte
@@ -2477,7 +3044,7 @@ function initApp() {
 
             // --- OFFLINE PATH: queue everything for later sync ---
             if (!navigator.onLine) {
-                var sigB64 = getSignatureDataURL();
+                var sigB64 = signatureRefused ? null : getSignatureDataURL();
                 // Remove serverTimestamp (not serializable) — will be set on sync
                 var offlineDeliveryData = Object.assign({}, deliveryData);
                 offlineDeliveryData.deliveredAt = new Date().toISOString();
@@ -2525,13 +3092,15 @@ function initApp() {
             }
 
             // --- ONLINE PATH: upload + save normally ---
-            // Upload signature (MANDATORY — abort delivery if fails)
-            var sigData = getSignatureDataURL();
-            if (sigData) {
-                var sigBlob = await (await fetch(sigData)).blob();
-                var sigRef = storage.ref('deliveries/' + docId + '/signature.png');
-                await withTimeout(sigRef.put(sigBlob, { contentType: 'image/png' }), 15000, 'Firma');
-                deliveryData.signatureURL = await withTimeout(sigRef.getDownloadURL(), 5000, 'Firma URL');
+            // Upload signature only if the receiver actually signed.
+            if (!signatureRefused) {
+                var sigData = getSignatureDataURL();
+                if (sigData) {
+                    var sigBlob = await (await fetch(sigData)).blob();
+                    var sigRef = storage.ref('deliveries/' + docId + '/signature.png');
+                    await withTimeout(sigRef.put(sigBlob, { contentType: 'image/png' }), 15000, 'Firma');
+                    deliveryData.signatureURL = await withTimeout(sigRef.getDownloadURL(), 5000, 'Firma URL');
+                }
             }
 
             // Upload photo (optional, non-blocking on failure)
@@ -2556,6 +3125,9 @@ function initApp() {
             archiveData.billingTarget = deliveryData.billingTarget || null;
             archiveData.billingName = deliveryData.billingName || null;
             archiveData.billingReady = deliveryData.billingReady || false;
+            archiveData.signatureRefused = deliveryData.signatureRefused || false;
+            archiveData.signatureRefusedReason = deliveryData.signatureRefusedReason || null;
+            archiveData.signatureMeta = deliveryData.signatureMeta || null;
             archiveData.deliveredAt = firebase.firestore.FieldValue.serverTimestamp();
             archiveData.archivedAt = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -2611,20 +3183,51 @@ function initApp() {
         }
     });
 
-    // --- SIGNATURE CANVAS (responsive) ---
+    // --- SIGNATURE CANVAS (responsive, smoothed, with pixel-density check) ---
+    var _sigState = {
+        startedAt: 0,
+        endedAt: 0,
+        strokes: 0,
+        bbox: null   // { minX, minY, maxX, maxY }
+    };
+    function _resetSigState() {
+        _sigState.startedAt = 0;
+        _sigState.endedAt = 0;
+        _sigState.strokes = 0;
+        _sigState.bbox = null;
+    }
+    function _bumpBbox(x, y) {
+        if (!_sigState.bbox) _sigState.bbox = { minX: x, minY: y, maxX: x, maxY: y };
+        else {
+            if (x < _sigState.bbox.minX) _sigState.bbox.minX = x;
+            if (y < _sigState.bbox.minY) _sigState.bbox.minY = y;
+            if (x > _sigState.bbox.maxX) _sigState.bbox.maxX = x;
+            if (y > _sigState.bbox.maxY) _sigState.bbox.maxY = y;
+        }
+    }
+
     (function() {
         var canvas = document.getElementById('sig-canvas');
         if (!canvas) return;
         var ctx = canvas.getContext('2d');
-        var drawing = false, lx = 0, ly = 0;
+        var drawing = false;
+        var pts = [];      // quadratic-smoothing buffer
 
         function resizeCanvas() {
             var wrap = canvas.parentElement;
             var w = wrap ? wrap.clientWidth : 300;
-            var h = Math.round(w * 0.35); // ~35% aspect ratio
+            var h = Math.round(w * 0.35);
             if (canvas.width !== w || canvas.height !== h) {
+                // Preserve drawing across resizes if possible
+                var prev;
+                try { prev = canvas.toDataURL(); } catch(e) {}
                 canvas.width = w;
                 canvas.height = h;
+                if (prev) {
+                    var img = new Image();
+                    img.onload = function() { ctx.drawImage(img, 0, 0, w, h); };
+                    img.src = prev;
+                }
             }
         }
         resizeCanvas();
@@ -2636,15 +3239,52 @@ function initApp() {
             var t = e.touches ? e.touches[0] : e;
             return { x: (t.clientX - r.left) * sx, y: (t.clientY - r.top) * sy };
         }
-        function start(e) { e.preventDefault(); drawing = true; var p = pos(e); lx = p.x; ly = p.y; }
-        function draw(e) {
-            if (!drawing) return; e.preventDefault();
+        function start(e) {
+            e.preventDefault();
+            drawing = true;
             var p = pos(e);
-            ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(p.x, p.y);
-            ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke();
-            lx = p.x; ly = p.y;
+            pts = [p];
+            _sigState.strokes++;
+            if (!_sigState.startedAt) _sigState.startedAt = Date.now();
+            _bumpBbox(p.x, p.y);
         }
-        function stop() { drawing = false; }
+        function draw(e) {
+            if (!drawing) return;
+            e.preventDefault();
+            var p = pos(e);
+            pts.push(p);
+            _bumpBbox(p.x, p.y);
+            // Quadratic smoothing: draw a curve through midpoints
+            if (pts.length >= 3) {
+                var n = pts.length;
+                var p0 = pts[n - 3];
+                var p1 = pts[n - 2];
+                var p2 = pts[n - 1];
+                var midA = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+                var midB = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+                ctx.beginPath();
+                ctx.moveTo(midA.x, midA.y);
+                ctx.quadraticCurveTo(p1.x, p1.y, midB.x, midB.y);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2.2;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+            } else if (pts.length === 2) {
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                ctx.lineTo(pts[1].x, pts[1].y);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2.2;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+        }
+        function stop() {
+            if (drawing) _sigState.endedAt = Date.now();
+            drawing = false;
+            pts = [];
+        }
 
         canvas.addEventListener('mousedown', start);
         canvas.addEventListener('mousemove', draw);
@@ -2658,20 +3298,62 @@ function initApp() {
     function clearSignature() {
         var c = document.getElementById('sig-canvas');
         if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+        _resetSigState();
     }
     document.getElementById('btn-clear-sig').addEventListener('click', clearSignature);
 
-    function isSignatureEmpty() {
+    // Counts non-transparent pixels. A real signature has hundreds of inked
+    // pixels even for a small scrawl; a stray tap leaves <50.
+    function getSignaturePixelCount() {
         var c = document.getElementById('sig-canvas');
-        if (!c) return true;
-        var b = document.createElement('canvas');
-        b.width = c.width; b.height = c.height;
-        return c.toDataURL() === b.toDataURL();
+        if (!c) return 0;
+        try {
+            var ctx = c.getContext('2d');
+            var img = ctx.getImageData(0, 0, c.width, c.height);
+            var data = img.data;
+            var count = 0;
+            for (var i = 3; i < data.length; i += 4) { if (data[i] > 0) count++; }
+            return count;
+        } catch(e) { return 0; }
     }
+
+    function isSignatureValid() {
+        if (getSignaturePixelCount() < 200) return false;
+        if (!_sigState.bbox) return false;
+        var w = _sigState.bbox.maxX - _sigState.bbox.minX;
+        var h = _sigState.bbox.maxY - _sigState.bbox.minY;
+        // Reject "single dot" or unreasonably tiny bounding box
+        if (w < 30 || h < 10) return false;
+        return true;
+    }
+
+    function isSignatureEmpty() { return getSignaturePixelCount() === 0; }
 
     function getSignatureDataURL() {
         var c = document.getElementById('sig-canvas');
         return c ? c.toDataURL('image/png') : null;
+    }
+
+    // Try to capture a fresh GPS coord at signing time. Falls back to the
+    // last known driver position if available, or returns null.
+    function getSignatureMeta() {
+        var meta = {
+            signedAt: new Date().toISOString(),
+            pixelCount: getSignaturePixelCount(),
+            strokes: _sigState.strokes,
+            bbox: _sigState.bbox ? Object.assign({}, _sigState.bbox) : null,
+            startedAt: _sigState.startedAt || null,
+            endedAt: _sigState.endedAt || null,
+            durationMs: _sigState.endedAt && _sigState.startedAt ? (_sigState.endedAt - _sigState.startedAt) : null
+        };
+        // Best-effort GPS — use the last known driver coords (kept fresh by the
+        // GPS watcher). Only stamp if it's recent (< 2 min).
+        if (_gpsLastCoords && (Date.now() - _gpsLastCoords.ts) < 120000) {
+            meta.lat = _gpsLastCoords.lat;
+            meta.lng = _gpsLastCoords.lng;
+            meta.accuracy = _gpsLastCoords.accuracy;
+        }
+        return meta;
     }
 
     // --- PHOTO ---
@@ -2979,9 +3661,65 @@ function initApp() {
     })();
 
     // ============================================================
-    //  COOPER PHOTO — Recogidas & Entregas
+    //  COOPER PHOTO — Recogidas & Entregas (multi-foto)
     // ============================================================
     var _cooperType = null; // 'recogida' or 'entrega'
+    var _cooperQueue = [];  // [{ id, file, dataUrl }]
+    var _cooperUid = 0;
+
+    function _cooperRefreshUI() {
+        var strip   = document.getElementById('cooper-photo-strip');
+        var status  = document.getElementById('cooper-photo-status');
+        var sendBtn = document.getElementById('btn-cooper-send');
+        var clrBtn  = document.getElementById('btn-cooper-clear');
+        var camBtn  = document.getElementById('btn-cooper-camera');
+        var camLab  = document.getElementById('btn-cooper-camera-label');
+        var sendLab = document.getElementById('btn-cooper-send-label');
+
+        if (!strip) return;
+
+        if (_cooperQueue.length === 0) {
+            strip.style.display = 'none';
+            strip.innerHTML = '';
+            if (status) status.innerHTML = 'Sin fotos &middot; Pulsa <b>AÑADIR FOTO</b>';
+            if (sendBtn) sendBtn.style.display = 'none';
+            if (clrBtn) clrBtn.style.display = 'none';
+            if (camLab) camLab.textContent = 'AÑADIR FOTO';
+            if (camBtn) camBtn.innerHTML = '<span class="material-symbols-outlined">add_a_photo</span> <span id="btn-cooper-camera-label">AÑADIR FOTO</span>';
+            return;
+        }
+
+        // Render strip
+        strip.style.display = 'flex';
+        strip.innerHTML = _cooperQueue.map(function(p, idx) {
+            return '' +
+                '<div style="position:relative; width:74px; height:74px; border-radius:8px; overflow:hidden; border:2px solid #FF9800; background:#000;">' +
+                    '<img src="' + p.dataUrl + '" style="width:100%; height:100%; object-fit:cover; display:block;">' +
+                    '<div style="position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); color:#fff; font-size:0.65rem; font-weight:900; text-align:center; padding:1px 0;">#' + (idx + 1) + '</div>' +
+                    '<button onclick="_cooperRemovePhoto(' + p.id + ')" type="button" style="position:absolute; top:-4px; right:-4px; width:22px; height:22px; border-radius:50%; border:0; background:#E53935; color:#fff; font-weight:900; font-size:0.85rem; line-height:1; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.6);">×</button>' +
+                '</div>';
+        }).join('');
+
+        if (status) status.innerHTML = '<b style="color:#FF9800;">' + _cooperQueue.length + ' foto' + (_cooperQueue.length > 1 ? 's' : '') + '</b> en cola';
+        if (sendBtn) sendBtn.style.display = 'flex';
+        if (sendLab) sendLab.textContent = 'ENVIAR ' + _cooperQueue.length + ' FOTO' + (_cooperQueue.length > 1 ? 'S' : '');
+        if (clrBtn) clrBtn.style.display = 'flex';
+        if (camLab) camLab.textContent = '+ OTRA FOTO';
+    }
+
+    window._cooperRemovePhoto = function(id) {
+        _cooperQueue = _cooperQueue.filter(function(p) { return p.id !== id; });
+        _cooperRefreshUI();
+    };
+
+    function _cooperResetModal() {
+        _cooperQueue = [];
+        var inp = document.getElementById('cooper-photo-input');
+        if (inp) inp.value = '';
+        var noteEl = document.getElementById('cooper-note');
+        if (noteEl) noteEl.value = '';
+        _cooperRefreshUI();
+    }
 
     window.openCooperPhoto = function(type) {
         _cooperType = type;
@@ -2995,47 +3733,52 @@ function initApp() {
             title.innerHTML = '<span class="material-symbols-outlined" style="font-size:1.3rem;">upload</span> ENTREGA COOPER';
             title.style.color = '#4CAF50';
         }
-        // Reset
-        document.getElementById('cooper-photo-preview').style.display = 'none';
-        document.getElementById('cooper-photo-preview').src = '';
-        document.getElementById('cooper-photo-input').value = '';
-        document.getElementById('cooper-photo-status').textContent = 'Sin foto';
-        document.getElementById('btn-cooper-send').style.display = 'none';
-        var noteEl = document.getElementById('cooper-note');
-        if (noteEl) noteEl.value = '';
+        _cooperResetModal();
         modal.classList.add('active');
     };
 
-    // Camera button
+    // Camera button → abre cámara nativa (siempre, para acumular fotos)
     document.getElementById('btn-cooper-camera').addEventListener('click', function() {
         document.getElementById('cooper-photo-input').click();
     });
 
-    // Photo selected
+    // Photo selected → añadir a la cola y limpiar input para permitir otra captura
     document.getElementById('cooper-photo-input').addEventListener('change', function(e) {
-        var f = e.target.files[0];
-        if (f) {
-            var reader = new FileReader();
-            reader.onload = function(ev) {
-                document.getElementById('cooper-photo-preview').src = ev.target.result;
-                document.getElementById('cooper-photo-preview').style.display = 'block';
-                document.getElementById('cooper-photo-status').textContent = 'Foto lista';
-                document.getElementById('btn-cooper-send').style.display = 'block';
-            };
-            reader.readAsDataURL(f);
-        }
+        var f = e.target.files && e.target.files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+            _cooperQueue.push({
+                id: ++_cooperUid,
+                file: f,
+                dataUrl: ev.target.result
+            });
+            _cooperRefreshUI();
+            // Limpia el input para que un siguiente disparo de la misma foto vuelva a triggerear 'change'
+            document.getElementById('cooper-photo-input').value = '';
+        };
+        reader.readAsDataURL(f);
+    });
+
+    // Vaciar todo
+    document.getElementById('btn-cooper-clear').addEventListener('click', function() {
+        if (_cooperQueue.length === 0) return;
+        if (!confirm('¿Vaciar las ' + _cooperQueue.length + ' foto(s) en cola?')) return;
+        _cooperQueue = [];
+        _cooperRefreshUI();
     });
 
     // Cancel
     document.getElementById('btn-cooper-cancel').addEventListener('click', function() {
+        if (_cooperQueue.length > 0 && !confirm('Hay ' + _cooperQueue.length + ' foto(s) sin enviar. ¿Descartar?')) return;
         document.getElementById('cooper-modal').classList.remove('active');
         _cooperType = null;
+        _cooperQueue = [];
     });
 
-    // Send photo
+    // Send ALL photos in queue
     document.getElementById('btn-cooper-send').addEventListener('click', async function() {
-        var photoFile = document.getElementById('cooper-photo-input').files[0];
-        if (!photoFile) { showToast('Haz una foto primero', 'error'); return; }
+        if (_cooperQueue.length === 0) { showToast('Haz al menos una foto', 'error'); return; }
 
         if (!navigator.onLine) {
             sendNotification('Sin conexión', 'No hay conexión a internet. Inténtalo cuando recuperes la señal.', 'warning');
@@ -3043,45 +3786,82 @@ function initApp() {
         }
 
         var sendBtn = document.getElementById('btn-cooper-send');
+        var sendLab = document.getElementById('btn-cooper-send-label');
         sendBtn.disabled = true;
-        sendBtn.textContent = 'Comprimiendo...';
+
+        var noteVal = (document.getElementById('cooper-note') ? document.getElementById('cooper-note').value : '').trim();
+        var groupTs = Date.now();
+        var groupId = 'g' + groupTs + '_' + Math.random().toString(36).slice(2, 8);
+        var total = _cooperQueue.length;
+        var uploaded = 0, failed = 0;
 
         try {
-            photoFile = await compressImage(photoFile);
-            sendBtn.textContent = 'Subiendo...';
-            var ts = Date.now();
-            var storagePath = 'cooper/' + _cooperType + '/' + ts + '.jpg';
-            var photoRef = storage.ref(storagePath);
-            await photoRef.put(photoFile, { contentType: photoFile.type });
-            var photoURL = await photoRef.getDownloadURL();
+            for (var i = 0; i < _cooperQueue.length; i++) {
+                var item = _cooperQueue[i];
+                if (sendLab) sendLab.textContent = 'SUBIENDO ' + (i + 1) + '/' + total + '…';
+                try {
+                    var compressed = await compressImage(item.file);
+                    var ts = Date.now() + i; // unique
+                    var storagePath = 'cooper/' + _cooperType + '/' + groupId + '/' + ts + '.jpg';
+                    var photoRef = storage.ref(storagePath);
+                    await photoRef.put(compressed, { contentType: compressed.type });
+                    var photoURL = await photoRef.getDownloadURL();
 
-            // Save record to Firestore
-            var noteVal = (document.getElementById('cooper-note') ? document.getElementById('cooper-note').value : '').trim();
-            await db.collection('cooper_photos').add({
-                type: _cooperType,
-                photoURL: photoURL,
-                storagePath: storagePath,
-                note: noteVal,
-                route: currentRouteLabel || 'Sin ruta',
-                driverName: currentDriverName || 'Desconocido',
-                driverPhone: currentDriverPhone || '',
-                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                timestamp: ts
-            });
+                    await db.collection('cooper_photos').add({
+                        type: _cooperType,
+                        photoURL: photoURL,
+                        storagePath: storagePath,
+                        note: noteVal,
+                        route: currentRouteLabel || 'Sin ruta',
+                        driverName: currentDriverName || 'Desconocido',
+                        driverPhone: currentDriverPhone || '',
+                        groupId: groupId,
+                        groupIndex: i + 1,
+                        groupTotal: total,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        timestamp: ts
+                    });
+                    uploaded++;
+                } catch (errItem) {
+                    console.error('[Cooper] foto fail:', errItem);
+                    failed++;
+                }
+            }
 
-            showToast((_cooperType === 'recogida' ? 'Recogida' : 'Entrega') + ' Cooper registrada', 'success');
-            document.getElementById('cooper-modal').classList.remove('active');
-            _cooperType = null;
-            // Refresh counters and log
+            if (uploaded > 0) {
+                var verb = (_cooperType === 'recogida' ? 'Recogida' : 'Entrega');
+                if (failed === 0) {
+                    showToast(verb + ' Cooper: ' + uploaded + ' foto(s) enviada(s) ✅', 'success');
+                } else {
+                    showToast(verb + ': ' + uploaded + ' OK · ' + failed + ' fallaron', 'warning', 5000);
+                }
+                try { navigator.vibrate && navigator.vibrate([60, 30, 60]); } catch(_) {}
+            } else {
+                showToast('No se pudo enviar ninguna foto', 'error');
+            }
+
+            // Cierra el modal solo si todo fue OK; si hubo fallos, mantén la cola para reintentar
+            if (failed === 0) {
+                document.getElementById('cooper-modal').classList.remove('active');
+                _cooperType = null;
+                _cooperQueue = [];
+                _cooperRefreshUI();
+            } else {
+                // Quita las que se subieron OK del inicio para que el reintento solo procese las que fallaron
+                _cooperQueue = _cooperQueue.slice(uploaded);
+                _cooperRefreshUI();
+            }
+
             cooperUpdateCounters();
-            if (document.getElementById('cooper-log-panel').style.display !== 'none') {
+            var logPanel = document.getElementById('cooper-log-panel');
+            if (logPanel && logPanel.style.display !== 'none') {
                 loadCooperLog();
             }
         } catch(err) {
             showToast('Error: ' + err.message, 'error');
         } finally {
             sendBtn.disabled = false;
-            sendBtn.textContent = 'ENVIAR FOTO';
+            _cooperRefreshUI();
         }
     });
 
@@ -3242,6 +4022,1117 @@ function initApp() {
             cooperUpdateCounters();
         }
     }, 2000);
+
+    // ════════════════════════════════════════════════════════════════
+    //  DISCREPANCIA — corrección de items en recogida con foto obligatoria
+    // ════════════════════════════════════════════════════════════════
+    var _discPhotoDataUrl = null;
+    var _discSenderItems = null; // items de la tarifa del cliente remitente
+
+    // Compresión de foto antes de subir (4G rural friendly)
+    async function _discCompressPhoto(file) {
+        return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function() {
+                var img = new Image();
+                img.onload = function() {
+                    var maxDim = 1280;
+                    var w = img.width, h = img.height;
+                    if (w > maxDim || h > maxDim) {
+                        var scale = Math.min(maxDim / w, maxDim / h);
+                        w = Math.round(w * scale);
+                        h = Math.round(h * scale);
+                    }
+                    var canvas = document.createElement('canvas');
+                    canvas.width = w; canvas.height = h;
+                    var ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    var dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+                    resolve(dataUrl);
+                };
+                img.onerror = reject;
+                img.src = reader.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // Carga los items de la tarifa del remitente (cliente que envía)
+    async function _discLoadSenderTariffItems(ticket) {
+        try {
+            var senderUid = ticket.uid || ticket.senderUid || null;
+            if (!senderUid) return [];
+            var userDoc = await db.collection('users').doc(senderUid).get();
+            if (!userDoc.exists) {
+                // Buscar por clientIdNum
+                if (ticket.clientIdNum) {
+                    var q = await db.collection('users').where('idNum', '==', String(ticket.clientIdNum)).limit(1).get();
+                    if (!q.empty) userDoc = q.docs[0];
+                }
+            }
+            if (!userDoc.exists) return [];
+            var u = userDoc.data();
+            if (!u.tariffId) return [];
+            var tid = String(u.tariffId).trim();
+            var candidates = [tid, 'GLOBAL_' + tid, 'GLOBAL_' + tid + '_v2'];
+            for (var i = 0; i < candidates.length; i++) {
+                try {
+                    var td = await db.collection('tariffs').doc(candidates[i]).get();
+                    if (td.exists) {
+                        var data = td.data() || {};
+                        if (Array.isArray(data.items)) {
+                            return data.items.filter(function(it) { return it && it.mode !== 'flat_monthly'; })
+                                              .map(function(it) { return { id: it.id, name: it.name || it.id }; });
+                        }
+                        if (data.items && typeof data.items === 'object') {
+                            return Object.keys(data.items).map(function(k) { return { id: k, name: k }; });
+                        }
+                    }
+                } catch(e) {}
+            }
+        } catch(e) { console.warn('[disc] tariff load:', e.message); }
+        return [];
+    }
+
+    function _discRenderItemRow(pkg, idx, total) {
+        var optsHtml = '<option value="">— Selecciona artículo —</option>';
+        if (_discSenderItems && _discSenderItems.length) {
+            _discSenderItems.forEach(function(it) {
+                var sel = (pkg.size === it.name || pkg.size === it.id) ? ' selected' : '';
+                optsHtml += '<option value="' + escapeHtml(it.name) + '"' + sel + '>' + escapeHtml(it.name) + '</option>';
+            });
+        }
+        // Por si el item original no está en la tarifa, lo añadimos como custom
+        if (pkg.size && _discSenderItems && !_discSenderItems.find(function(x) { return x.name === pkg.size || x.id === pkg.size; })) {
+            optsHtml += '<option value="' + escapeHtml(pkg.size) + '" selected>' + escapeHtml(pkg.size) + ' (custom)</option>';
+        }
+
+        return '<div class="disc-item-row" data-idx="' + idx + '" style="background:rgba(255,255,255,0.04); border:1px solid #2d2d30; border-radius:8px; padding:10px; margin-bottom:8px; display:grid; grid-template-columns:70px 1fr 36px; gap:6px; align-items:center;">'
+            + '<input type="number" inputmode="numeric" min="1" value="' + (pkg.qty || 1) + '" data-disc-qty style="padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; text-align:center; font-weight:700; font-size:0.95rem;">'
+            + '<select data-disc-size style="padding:8px; background:#0a0a0a; border:1px solid #444; color:#fff; border-radius:6px; font-size:0.85rem;">' + optsHtml + '</select>'
+            + (total > 1 ? '<button type="button" data-disc-del style="background:transparent; border:1px solid #f44; color:#f44; padding:8px; border-radius:6px; cursor:pointer; font-weight:700;">×</button>' : '<span></span>')
+            + '</div>';
+    }
+
+    function _discRenderItems(items) {
+        var wrap = document.getElementById('disc-items-edit');
+        if (!wrap) return;
+        wrap.innerHTML = items.map(function(p, i) { return _discRenderItemRow(p, i, items.length); }).join('');
+        // Wire delete
+        wrap.querySelectorAll('[data-disc-del]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var row = btn.closest('.disc-item-row');
+                if (row) row.remove();
+                // re-render para reactualizar el botón × (si queda 1, ocultarlo)
+                _discRenderItems(_discReadItems());
+            });
+        });
+    }
+
+    function _discReadItems() {
+        var rows = document.querySelectorAll('#disc-items-edit .disc-item-row');
+        var out = [];
+        rows.forEach(function(r) {
+            var qty = parseInt(r.querySelector('[data-disc-qty]').value, 10) || 0;
+            var size = r.querySelector('[data-disc-size]').value;
+            if (qty > 0 && size) out.push({ qty: qty, size: size, weight: 0 });
+        });
+        return out;
+    }
+
+    window._discOpenModal = async function() {
+        if (!currentScanDoc) { showToast('No hay albarán cargado.', 'error'); return; }
+        var d = currentScanDoc;
+        document.getElementById('disc-ticket-id').textContent = d.id || d._id || '?';
+
+        // Mostrar declarado
+        var declared = (d.packagesList && d.packagesList.length) ? d.packagesList : [{ qty: getPackageCount(d), size: d.size || 'Bulto', weight: d.weight || 0 }];
+        document.getElementById('disc-declared').innerHTML = declared.map(function(p) {
+            return (p.qty || 1) + ' × ' + escapeHtml(p.size || 'Bulto') + (p.weight ? ' (' + p.weight + 'kg)' : '');
+        }).join('<br>');
+
+        // Cargar items de la tarifa del remitente
+        showLoading();
+        _discSenderItems = await _discLoadSenderTariffItems(d);
+        hideLoading();
+
+        // Items iniciales = copia de los declarados (el repartidor parte de eso y corrige)
+        var initial = declared.map(function(p) { return { qty: p.qty || 1, size: p.size || 'Bulto', weight: p.weight || 0 }; });
+        _discRenderItems(initial);
+        _discPhotoDataUrl = null;
+        document.getElementById('disc-photo-status').textContent = 'Sin foto';
+        document.getElementById('disc-photo-preview').style.display = 'none';
+        document.getElementById('disc-photo-preview').src = '';
+        document.getElementById('disc-reason').value = '';
+
+        document.getElementById('discrepancy-modal').style.display = 'block';
+    };
+
+    // Wire global (porque el botón se renderiza dinámicamente)
+    document.addEventListener('click', function(e) {
+        if (e.target && e.target.closest && e.target.closest('#btn-open-discrepancy')) {
+            window._discOpenModal();
+        }
+    });
+
+    // Wire modal interno (al estar siempre en el DOM podemos engancharlo una vez)
+    var discCloseBtn = document.getElementById('disc-close');
+    if (discCloseBtn) discCloseBtn.addEventListener('click', function() {
+        document.getElementById('discrepancy-modal').style.display = 'none';
+    });
+
+    var discAddBtn = document.getElementById('disc-add-item');
+    if (discAddBtn) discAddBtn.addEventListener('click', function() {
+        var current = _discReadItems();
+        current.push({ qty: 1, size: '', weight: 0 });
+        _discRenderItems(current);
+    });
+
+    var discTakeBtn = document.getElementById('disc-take-photo');
+    var discPhotoInput = document.getElementById('disc-photo-input');
+    if (discTakeBtn && discPhotoInput) {
+        discTakeBtn.addEventListener('click', function() { discPhotoInput.click(); });
+        discPhotoInput.addEventListener('change', async function(e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file) return;
+            try {
+                showLoading();
+                _discPhotoDataUrl = await _discCompressPhoto(file);
+                document.getElementById('disc-photo-preview').src = _discPhotoDataUrl;
+                document.getElementById('disc-photo-preview').style.display = 'block';
+                document.getElementById('disc-photo-status').textContent = '✓ Foto lista';
+                document.getElementById('disc-photo-status').style.color = '#4CAF50';
+            } catch(err) {
+                showToast('Error procesando foto: ' + err.message, 'error');
+            } finally { hideLoading(); }
+        });
+    }
+
+    var discSaveBtn = document.getElementById('disc-save');
+    if (discSaveBtn) discSaveBtn.addEventListener('click', async function() {
+        if (!currentScanDoc) return;
+        if (!_discPhotoDataUrl) {
+            showToast('La foto es OBLIGATORIA para registrar la discrepancia.', 'error', 5000);
+            return;
+        }
+        var newItems = _discReadItems();
+        if (!newItems.length) {
+            showToast('Añade al menos un artículo recogido.', 'error');
+            return;
+        }
+        var reason = document.getElementById('disc-reason').value || '';
+        discSaveBtn.disabled = true;
+        discSaveBtn.textContent = 'Guardando…';
+        try {
+            var d = currentScanDoc;
+            var docId = d._id;
+            var ref = d._ref || db.collection('tickets').doc(docId);
+
+            // Subir foto a Storage para no inflar el doc Firestore
+            var photoUrl = null;
+            try {
+                var storageRef = firebase.storage().ref('discrepancies/' + docId + '_' + Date.now() + '.jpg');
+                var snap = await storageRef.putString(_discPhotoDataUrl, 'data_url');
+                photoUrl = await snap.ref.getDownloadURL();
+            } catch(uploadErr) {
+                console.warn('[disc] storage upload falló, guardando dataUrl en el doc:', uploadErr.message);
+                // Fallback: guarda como dataUrl en el doc (más pesado pero funciona offline-friendly)
+                photoUrl = _discPhotoDataUrl;
+            }
+
+            // Audit trail completo
+            var update = {
+                declaredPackagesList: d.packagesList || null,  // congelar lo declarado original
+                packagesList: newItems,                          // lo que se factura: lo recogido real
+                discrepancyDetected: true,
+                discrepancyReason: reason,
+                discrepancyPhoto: photoUrl,
+                discrepancyAt: firebase.firestore.FieldValue.serverTimestamp(),
+                discrepancyByPhone: currentDriverPhone,
+                discrepancyByName: currentDriverName,
+                discrepancyRoute: currentRouteLabel || ''
+            };
+            await ref.update(update);
+
+            // Incrementar discrepancyCount del cliente remitente
+            try {
+                var senderUid = d.uid || d.senderUid;
+                if (senderUid) {
+                    await db.collection('users').doc(senderUid).set({
+                        discrepancyCount: firebase.firestore.FieldValue.increment(1),
+                        lastDiscrepancyAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+
+            // Notificación al cliente en SU buzón (user_notifications)
+            // Resolver authUid del cliente — el listener del cliente filtra por
+            // uid == firebase auth uid, no por docId.
+            try {
+                var clientDocIdD = d.uid || d.senderUid || '';
+                if (clientDocIdD) {
+                    var clientAuthUidD = '';
+                    try {
+                        var cliSnapD = await db.collection('users').doc(clientDocIdD).get();
+                        if (cliSnapD.exists) {
+                            var cdD = cliSnapD.data() || {};
+                            clientAuthUidD = cdD.authUid || cdD.uid || '';
+                        }
+                    } catch(_) {}
+                    if (!clientAuthUidD) {
+                        console.warn('[disc] cliente sin authUid — notificación no llegará. docId:', clientDocIdD);
+                    } else {
+                    var notifDataD = {
+                        uid: clientAuthUidD,
+                        clientDocId: clientDocIdD,
+                        type: 'discrepancy',
+                        title: '✏️ Discrepancia en albarán ' + (d.id || docId),
+                        body: 'El repartidor ha registrado una corrección de artículos en la recogida. Motivo: ' + (reason || '(sin motivo)') + '. La factura se emitirá según los items realmente recogidos.',
+                        ticketId: d.id || docId,
+                        docId: docId,
+                        reportedBy: currentDriverName,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        read: false
+                    };
+                    if (photoUrl) notifDataD.photoURL = photoUrl;
+                    await db.collection('user_notifications').add(notifDataD);
+                    }
+                }
+            } catch(ne) { console.warn('No se pudo notificar al cliente:', ne); }
+
+            // Notificación al admin vía mailbox (lo verá en buzón inteligente)
+            try {
+                await db.collection('mailbox').add({
+                    type: 'outgoing_discrepancy',
+                    category: 'discrepancia',
+                    status: 'queued',
+                    direction: 'outgoing',
+                    ticketRef: d.id || docId,
+                    ticketDocId: docId,
+                    clientId: d.uid || null,
+                    clientIdNum: d.clientIdNum || null,
+                    senderName: d.sender || '',
+                    reason: reason,
+                    declaredItems: d.packagesList || null,
+                    verifiedItems: newItems,
+                    photo: photoUrl,
+                    driverPhone: currentDriverPhone,
+                    driverName: currentDriverName,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    note: 'Discrepancia detectada en recogida. La factura se emitirá según los items realmente recogidos.'
+                });
+            } catch(_) {}
+
+            showToast('✅ Discrepancia registrada. Cliente notificado.', 'success', 4000);
+            try { navigator.vibrate && navigator.vibrate([50, 30, 50]); } catch(_) {}
+            document.getElementById('discrepancy-modal').style.display = 'none';
+
+            // Refrescar la card del scan-result con los nuevos datos
+            currentScanDoc.packagesList = newItems;
+            currentScanDoc.declaredPackagesList = update.declaredPackagesList;
+            currentScanDoc.discrepancyDetected = true;
+            await loadTicketForConfirmation(currentScanDoc);
+        } catch(err) {
+            console.error('[disc] save fail:', err);
+            showToast('Error guardando: ' + err.message, 'error', 6000);
+        } finally {
+            discSaveBtn.disabled = false;
+            discSaveBtn.textContent = '✅ GUARDAR DISCREPANCIA';
+        }
+    });
+
+    // ============================================================
+    // RECOGIDA SIN ALBARÁN — Pre-albarán generado por el repartidor
+    // ============================================================
+    // Estado local del modal
+    var _pndPhotoFile = null;
+    var _pndPhotoDataUrl = '';
+    var _pndPickedClient = null;     // remitente { docId, idNum, name, nif, cp, localidad, defaultRoutePhone }
+    var _pndManualMode = false;
+    var _pndRouteClientsCache = null; // array
+    var _pndRouteClientsLoading = false;
+    // Destinatario
+    var _pndPorte = '';               // 'PAGADO' | 'DEBIDO'
+    var _pndDestPicked = null;        // { docId, idNum, name, nif, cp, localidad, address, phone }
+    var _pndDestManualMode = false;
+    var _pndDestCacheHistory = null;  // array (per remitente) — porte PAGADO
+    var _pndDestCacheGlobal = null;   // array — porte DEBIDO
+
+    function _pndCompressPhoto(file) {
+        return new Promise(function(resolve, reject) {
+            try {
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    var img = new Image();
+                    img.onload = function() {
+                        var maxW = 1280;
+                        var scale = Math.min(1, maxW / img.width);
+                        var w = Math.round(img.width * scale);
+                        var h = Math.round(img.height * scale);
+                        var canvas = document.createElement('canvas');
+                        canvas.width = w; canvas.height = h;
+                        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                        resolve(canvas.toDataURL('image/jpeg', 0.72));
+                    };
+                    img.onerror = function() { reject(new Error('No se pudo procesar la imagen')); };
+                    img.src = e.target.result;
+                };
+                reader.onerror = function() { reject(new Error('No se pudo leer el archivo')); };
+                reader.readAsDataURL(file);
+            } catch(err) { reject(err); }
+        });
+    }
+
+    function _pndLoadRouteClients() {
+        if (_pndRouteClientsCache) return Promise.resolve(_pndRouteClientsCache);
+        if (_pndRouteClientsLoading) {
+            // Si ya hay carga en curso, espera con un poll corto
+            return new Promise(function(resolve) {
+                var t = setInterval(function() {
+                    if (_pndRouteClientsCache) { clearInterval(t); resolve(_pndRouteClientsCache); }
+                }, 200);
+            });
+        }
+        _pndRouteClientsLoading = true;
+        var phoneNorm = normalizePhone(currentDriverPhone || '');
+        // Lee del directorio público en /config/route_directories/list/{phoneNorm}
+        // (admin lo mantiene espejando /users sin exponer datos sensibles).
+        // Las reglas Firestore permiten read isAuth() en /config/{parent}/list/{id}.
+        var ref = db.collection('config').doc('route_directories').collection('list').doc(phoneNorm);
+        return ref.get()
+            .then(function(snap) {
+                var list = [];
+                if (snap.exists) {
+                    var data = snap.data() || {};
+                    list = (data.clients || []).slice();
+                }
+                // Fallback: si por algún motivo no existe el doc para este teléfono,
+                // probar por últimos 4 dígitos buscando entre los docs del directorio
+                if (!list.length && phoneNorm) {
+                    var tail = phoneNorm.slice(-4);
+                    return db.collection('config').doc('route_directories').collection('list').get().then(function(allSnap) {
+                        allSnap.forEach(function(s) {
+                            var dp = (s.id || '').replace(/[^0-9]/g, '');
+                            if (dp && dp.slice(-4) === tail) {
+                                var arr = (s.data().clients || []);
+                                list = list.concat(arr);
+                            }
+                        });
+                        list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                        _pndRouteClientsCache = list;
+                        _pndRouteClientsLoading = false;
+                        return list;
+                    }).catch(function(){
+                        _pndRouteClientsCache = list;
+                        _pndRouteClientsLoading = false;
+                        return list;
+                    });
+                }
+                list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+                _pndRouteClientsCache = list;
+                _pndRouteClientsLoading = false;
+                return list;
+            })
+            .catch(function(err) {
+                _pndRouteClientsLoading = false;
+                console.warn('[pnd] route directory load fail:', err);
+                _pndRouteClientsCache = [];
+                return [];
+            });
+    }
+
+    function _pndRenderClientResults(query) {
+        var wrap = document.getElementById('pnd-client-results');
+        if (!wrap) return;
+        var q = (query || '').trim().toLowerCase();
+        if (!q) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+        var list = _pndRouteClientsCache || [];
+        var matches = list.filter(function(c) {
+            var hay = (c.name + ' ' + c.nif + ' ' + c.localidad).toLowerCase();
+            return hay.indexOf(q) !== -1;
+        }).slice(0, 20);
+        if (!matches.length) {
+            wrap.style.display = 'block';
+            wrap.innerHTML = '<div style="padding:10px; font-size:0.78rem; color:#888;">Sin resultados. Usa "introducir manualmente".</div>';
+            return;
+        }
+        wrap.style.display = 'block';
+        wrap.innerHTML = matches.map(function(c) {
+            var nifLine = c.nif ? (' · ' + escapeHtml(c.nif)) : '';
+            var locLine = c.localidad ? (' · ' + escapeHtml(c.localidad)) : '';
+            return '<div class="pnd-client-item" data-docid="' + escapeHtml(c.docId) + '" style="padding:9px 11px; border-bottom:1px solid #2a2a2a; cursor:pointer; font-size:0.85rem;">' +
+                '<div style="font-weight:700; color:#fff;">' + escapeHtml(c.name) + '</div>' +
+                '<div style="font-size:0.7rem; color:#888; margin-top:2px;">' + escapeHtml(c.idNum || '—') + nifLine + locLine + '</div>' +
+            '</div>';
+        }).join('');
+        Array.prototype.forEach.call(wrap.querySelectorAll('.pnd-client-item'), function(el) {
+            el.addEventListener('click', function() {
+                var docId = this.dataset.docid;
+                var found = (_pndRouteClientsCache || []).filter(function(c){ return c.docId === docId; })[0];
+                if (found) _pndPickClient(found);
+            });
+        });
+    }
+
+    function _pndPickClient(c) {
+        _pndPickedClient = c;
+        document.getElementById('pnd-client-search').value = '';
+        document.getElementById('pnd-client-results').style.display = 'none';
+        document.getElementById('pnd-client-results').innerHTML = '';
+        document.getElementById('pnd-client-picked').style.display = 'block';
+        document.getElementById('pnd-client-picked-name').textContent = c.name || '(sin nombre)';
+        var meta = (c.idNum || '—');
+        if (c.nif) meta += ' · ' + c.nif;
+        if (c.localidad) meta += ' · ' + c.localidad;
+        document.getElementById('pnd-client-picked-meta').textContent = meta;
+        // ocultar entrada manual si estaba abierta
+        _pndManualMode = false;
+        document.getElementById('pnd-client-manual-wrap').style.display = 'none';
+        // Invalidar cache historial — al cambiar remitente cambian destinatarios habituales
+        _pndDestCacheHistory = null;
+        // Si ya estaba elegido el porte PAGADO, refrescar la búsqueda
+        if (_pndPorte === 'PAGADO') _pndPreloadDestSource();
+    }
+
+    // ============ DESTINATARIO ============
+
+    // Carga destinatarios habituales del remitente seleccionado (porte PAGADO).
+    // Lee /tickets where senderUid == remitente.docId. Sin orderBy para evitar
+    // requerir índice compuesto. Limite alto y ordenamos por createdAt en JS.
+    function _pndLoadHistoryDestinations() {
+        if (!_pndPickedClient || !_pndPickedClient.docId) return Promise.resolve([]);
+        if (_pndDestCacheHistory) return Promise.resolve(_pndDestCacheHistory);
+
+        function _processSnap(snap) {
+            var seen = {};
+            var arr = [];
+            snap.forEach(function(s) {
+                var t = s.data() || {};
+                var name = t.receiver || t.clientName || '';
+                if (!name) return;
+                var cp = t.cp || t.receiverCp || '';
+                var loc = t.localidad || t.city || '';
+                var key = (name + '|' + cp + '|' + loc).toLowerCase();
+                if (seen[key]) { seen[key].count++; return; }
+                var rec = {
+                    source: 'history',
+                    name: name,
+                    cp: cp,
+                    localidad: loc,
+                    address: t.address || '',
+                    phone: t.phone || t.receiverPhone || '',
+                    nif: t.receiverNif || '',
+                    receiverUid: t.receiverUid || '',
+                    count: 1,
+                    _ts: (t.createdAt && typeof t.createdAt.toMillis === 'function') ? t.createdAt.toMillis() : 0
+                };
+                seen[key] = rec;
+                arr.push(rec);
+            });
+            arr.sort(function(a, b) {
+                // Prioridad: mas usados, luego mas recientes
+                var c = (b.count || 0) - (a.count || 0);
+                if (c !== 0) return c;
+                return (b._ts || 0) - (a._ts || 0);
+            });
+            return arr;
+        }
+
+        // Intento 1: senderUid (campo que escribimos hoy)
+        return db.collection('tickets').where('senderUid', '==', _pndPickedClient.docId).limit(200).get()
+            .then(function(snap) {
+                var arr = _processSnap(snap);
+                if (arr.length) { _pndDestCacheHistory = arr; return arr; }
+                // Intento 2: uid (campo legacy en tickets antiguos)
+                return db.collection('tickets').where('uid', '==', _pndPickedClient.docId).limit(200).get()
+                    .then(function(snap2) {
+                        var arr2 = _processSnap(snap2);
+                        if (arr2.length) { _pndDestCacheHistory = arr2; return arr2; }
+                        // Intento 3: nombre del remitente literal
+                        return db.collection('tickets').where('sender', '==', _pndPickedClient.name).limit(200).get()
+                            .then(function(snap3) {
+                                var arr3 = _processSnap(snap3);
+                                _pndDestCacheHistory = arr3;
+                                return arr3;
+                            });
+                    });
+            })
+            .catch(function(err) {
+                console.warn('[pnd] history dest fail:', err && err.message);
+                // Fallback final: por nombre sender literal
+                return db.collection('tickets').where('sender', '==', _pndPickedClient.name).limit(200).get()
+                    .then(function(snap) {
+                        var arr = _processSnap(snap);
+                        _pndDestCacheHistory = arr;
+                        return arr;
+                    })
+                    .catch(function(){ _pndDestCacheHistory = []; return []; });
+            });
+    }
+
+    // Carga directorio global de clientes (porte DEBIDO).
+    function _pndLoadGlobalClients() {
+        if (_pndDestCacheGlobal) return Promise.resolve(_pndDestCacheGlobal);
+        return db.collection('config').doc('clients_directory').collection('list').doc('all').get()
+            .then(function(snap) {
+                var arr = snap.exists ? (snap.data().clients || []) : [];
+                arr = arr.map(function(c) {
+                    return Object.assign({}, c, { source: 'global' });
+                });
+                _pndDestCacheGlobal = arr;
+                return arr;
+            })
+            .catch(function(err) {
+                console.warn('[pnd] global clients dir fail:', err);
+                _pndDestCacheGlobal = [];
+                return [];
+            });
+    }
+
+    function _pndShowDestStatus(msg, color) {
+        var wrap = document.getElementById('pnd-dest-results');
+        if (!wrap) return;
+        wrap.style.display = 'block';
+        wrap.innerHTML = '<div style="padding:10px; font-size:0.78rem; color:' + (color || '#888') + '; text-align:center;">' + msg + '</div>';
+    }
+
+    function _pndPreloadDestSource() {
+        if (_pndPorte === 'PAGADO') {
+            if (!_pndPickedClient || !_pndPickedClient.docId) {
+                _pndShowDestStatus('Selecciona primero el remitente arriba para ver sus destinatarios habituales.', '#FFB300');
+                return;
+            }
+            _pndShowDestStatus('Cargando destinatarios habituales…', '#5DADE2');
+            _pndLoadHistoryDestinations().then(function(list) {
+                console.log('[pnd] destinatarios habituales:', list.length);
+                if (!list.length) {
+                    _pndShowDestStatus('Sin historial de envíos para ' + (_pndPickedClient.name || 'este remitente') + '. Introduce el destinatario manualmente.', '#FFB300');
+                } else {
+                    _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                }
+            }).catch(function(err) {
+                _pndShowDestStatus('Error cargando historial: ' + (err.message || err), '#E53935');
+            });
+        } else if (_pndPorte === 'DEBIDO') {
+            _pndShowDestStatus('Cargando clientes NOVAPACK…', '#5DADE2');
+            _pndLoadGlobalClients().then(function(list) {
+                console.log('[pnd] clientes globales:', list.length);
+                if (!list.length) {
+                    _pndShowDestStatus('Directorio global vacío. Pídele al admin que pulse "📋 Reconstruir directorios" en Alertas Pickup.', '#FFB300');
+                } else {
+                    _pndRenderDestResults(document.getElementById('pnd-dest-search').value);
+                }
+            }).catch(function(err) {
+                _pndShowDestStatus('Error cargando directorio: ' + (err.message || err), '#E53935');
+            });
+        }
+    }
+
+    function _pndCurrentDestList() {
+        if (_pndPorte === 'PAGADO') return _pndDestCacheHistory || [];
+        if (_pndPorte === 'DEBIDO') return _pndDestCacheGlobal || [];
+        return [];
+    }
+
+    function _pndRenderDestResults(query) {
+        var wrap = document.getElementById('pnd-dest-results');
+        if (!wrap) return;
+        var list = _pndCurrentDestList();
+        var q = (query || '').trim().toLowerCase();
+
+        // Si no hay query: mostrar top 8 sugerencias (habituales)
+        var matches;
+        if (!q) {
+            matches = list.slice(0, 8);
+        } else {
+            matches = list.filter(function(c) {
+                var hay = ((c.name||'') + ' ' + (c.nif||'') + ' ' + (c.localidad||'') + ' ' + (c.cp||'')).toLowerCase();
+                return hay.indexOf(q) !== -1;
+            }).slice(0, 20);
+        }
+
+        if (!matches.length) {
+            // Si la lista origen está vacía, no machacar el mensaje de estado.
+            // Solo mostramos "sin resultados" si hay query y la fuente sí tiene datos.
+            if (!list.length) return;
+            wrap.style.display = !q ? 'none' : 'block';
+            wrap.innerHTML = q ? '<div style="padding:10px; font-size:0.76rem; color:#888;">Sin resultados para "' + _escDest(q) + '". Usa "introducir manualmente".</div>' : '';
+            return;
+        }
+
+        wrap.style.display = 'block';
+        wrap.innerHTML = matches.map(function(c, idx) {
+            var nifLine = c.nif ? (' · ' + _escDest(c.nif)) : '';
+            var locLine = (c.cp || c.localidad) ? (' · ' + _escDest([c.cp, c.localidad].filter(Boolean).join(' '))) : '';
+            var freq = (c.source === 'history' && c.count > 1) ? ' <span style="color:#5DADE2; font-weight:700;">×' + c.count + '</span>' : '';
+            return '<div class="pnd-dest-item" data-idx="' + idx + '" style="padding:9px 11px; border-bottom:1px solid #2a2a2a; cursor:pointer; font-size:0.83rem;">' +
+                '<div style="font-weight:700; color:#fff;">' + _escDest(c.name) + freq + '</div>' +
+                '<div style="font-size:0.68rem; color:#888; margin-top:2px;">' + nifLine.replace(/^ · /, '') + locLine + '</div>' +
+            '</div>';
+        }).join('');
+        Array.prototype.forEach.call(wrap.querySelectorAll('.pnd-dest-item'), function(el) {
+            el.addEventListener('click', function() {
+                var i = parseInt(this.dataset.idx, 10);
+                var c = matches[i];
+                if (c) _pndPickDest(c);
+            });
+        });
+    }
+
+    function _escDest(s) {
+        return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function _pndPickDest(c) {
+        _pndDestPicked = c;
+        document.getElementById('pnd-dest-search').value = '';
+        document.getElementById('pnd-dest-results').style.display = 'none';
+        document.getElementById('pnd-dest-results').innerHTML = '';
+        document.getElementById('pnd-dest-picked').style.display = 'block';
+        document.getElementById('pnd-dest-picked-name').textContent = c.name || '(sin nombre)';
+        var meta = '';
+        if (c.nif) meta += c.nif;
+        var loc = [c.cp, c.localidad].filter(Boolean).join(' ');
+        if (loc) meta += (meta ? ' · ' : '') + loc;
+        if (c.address) meta += (meta ? ' · ' : '') + c.address;
+        document.getElementById('pnd-dest-picked-meta').textContent = meta || '—';
+        // ocultar manual si estaba abierto
+        _pndDestManualMode = false;
+        document.getElementById('pnd-dest-manual-wrap').style.display = 'none';
+    }
+
+    function _pndSetPorte(value) {
+        _pndPorte = value;
+        // toggle visual
+        document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+            var input = el.querySelector('input[name="pnd-porte"]');
+            el.classList.toggle('active', input && input.value === value);
+            if (input) input.checked = (input.value === value);
+        });
+        // mostrar sección destinatario
+        var wrap = document.getElementById('pnd-dest-wrap');
+        if (wrap) wrap.style.display = value ? 'block' : 'none';
+        // textos contextuales
+        var tag = document.getElementById('pnd-dest-mode-tag');
+        var hint = document.getElementById('pnd-dest-hint');
+        if (value === 'PAGADO') {
+            if (tag) tag.textContent = '(opcional · habituales del remitente)';
+            if (hint) hint.textContent = 'Si el remitente te dice a dónde va, anótalo. Sugerencias automáticas de envíos anteriores.';
+        } else if (value === 'DEBIDO') {
+            if (tag) tag.textContent = '(busca en clientes NOVAPACK · paga al recibir)';
+            if (hint) hint.textContent = 'El destinatario paga el porte → es cliente NOVAPACK. Búscalo por nombre o NIF.';
+        }
+        // Limpiar selección previa de destinatario al cambiar porte
+        _pndDestPicked = null;
+        var picked = document.getElementById('pnd-dest-picked'); if (picked) picked.style.display = 'none';
+        var ds = document.getElementById('pnd-dest-search'); if (ds) ds.value = '';
+        var dr = document.getElementById('pnd-dest-results'); if (dr) { dr.style.display = 'none'; dr.innerHTML = ''; }
+        var dmw = document.getElementById('pnd-dest-manual-wrap'); if (dmw) dmw.style.display = 'none';
+        ['pnd-dest-manual-name','pnd-dest-manual-cp','pnd-dest-manual-loc','pnd-dest-manual-addr','pnd-dest-manual-phone'].forEach(function(id){
+            var el = document.getElementById(id); if (el) el.value = '';
+        });
+        _pndDestManualMode = false;
+        // Cargar fuente correspondiente
+        _pndPreloadDestSource();
+    }
+
+    function _pndResetModal() {
+        _pndPhotoFile = null;
+        _pndPhotoDataUrl = '';
+        _pndPickedClient = null;
+        _pndManualMode = false;
+        _pndPorte = '';
+        _pndDestPicked = null;
+        _pndDestManualMode = false;
+        _pndDestCacheHistory = null;
+        var ids = ['pnd-client-search','pnd-client-manual-name','pnd-client-manual-nif','pnd-weight','pnd-note',
+                   'pnd-dest-search','pnd-dest-manual-name','pnd-dest-manual-cp','pnd-dest-manual-loc',
+                   'pnd-dest-manual-addr','pnd-dest-manual-phone'];
+        ids.forEach(function(id){ var el = document.getElementById(id); if (el) el.value=''; });
+        var bul = document.getElementById('pnd-bultos'); if (bul) bul.value = '1';
+        var preview = document.getElementById('pnd-photo-preview'); if (preview) { preview.style.display='none'; preview.src=''; }
+        var status = document.getElementById('pnd-photo-status'); if (status) { status.textContent='Sin foto'; status.style.color='#FF8A50'; }
+        var picked = document.getElementById('pnd-client-picked'); if (picked) picked.style.display='none';
+        var manualWrap = document.getElementById('pnd-client-manual-wrap'); if (manualWrap) manualWrap.style.display='none';
+        var results = document.getElementById('pnd-client-results'); if (results) { results.style.display='none'; results.innerHTML=''; }
+        var destWrap = document.getElementById('pnd-dest-wrap'); if (destWrap) destWrap.style.display='none';
+        var destPick = document.getElementById('pnd-dest-picked'); if (destPick) destPick.style.display='none';
+        var destManual = document.getElementById('pnd-dest-manual-wrap'); if (destManual) destManual.style.display='none';
+        var destRes = document.getElementById('pnd-dest-results'); if (destRes) { destRes.style.display='none'; destRes.innerHTML=''; }
+        document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+            el.classList.remove('active');
+            var inp = el.querySelector('input[name="pnd-porte"]'); if (inp) inp.checked = false;
+        });
+    }
+
+    window._pickupNoDocOpenModal = function() {
+        if (!currentDriverPhone) { showToast('Inicia sesión primero', 'error'); return; }
+        _pndResetModal();
+        document.getElementById('pickup-no-doc-modal').style.display = 'block';
+        // Cargar clientes de la ruta en background
+        _pndLoadRouteClients().then(function(list) {
+            console.log('[pnd] clientes ruta cargados:', list.length);
+        });
+    };
+
+    // Wire eventos del modal (se hace una vez al cargar la app)
+    var pndOpenBtn = document.getElementById('btn-open-pickup-no-doc');
+    if (pndOpenBtn) pndOpenBtn.addEventListener('click', window._pickupNoDocOpenModal);
+
+    var pndCloseBtn = document.getElementById('pnd-close');
+    if (pndCloseBtn) pndCloseBtn.addEventListener('click', function() {
+        document.getElementById('pickup-no-doc-modal').style.display = 'none';
+    });
+
+    var pndSearchInput = document.getElementById('pnd-client-search');
+    if (pndSearchInput) pndSearchInput.addEventListener('input', function() {
+        _pndRenderClientResults(this.value);
+    });
+
+    var pndClearBtn = document.getElementById('pnd-client-clear');
+    if (pndClearBtn) pndClearBtn.addEventListener('click', function() {
+        _pndPickedClient = null;
+        document.getElementById('pnd-client-picked').style.display = 'none';
+        document.getElementById('pnd-client-search').focus();
+    });
+
+    var pndManualBtn = document.getElementById('pnd-client-manual');
+    if (pndManualBtn) pndManualBtn.addEventListener('click', function() {
+        _pndManualMode = !_pndManualMode;
+        document.getElementById('pnd-client-manual-wrap').style.display = _pndManualMode ? 'block' : 'none';
+        if (_pndManualMode) {
+            _pndPickedClient = null;
+            document.getElementById('pnd-client-picked').style.display = 'none';
+            document.getElementById('pnd-client-manual-name').focus();
+        }
+    });
+
+    // ===== DESTINATARIO + PORTE =====
+    document.querySelectorAll('.pnd-porte-opt').forEach(function(el) {
+        el.addEventListener('click', function() {
+            var input = el.querySelector('input[name="pnd-porte"]');
+            if (input) _pndSetPorte(input.value);
+        });
+    });
+
+    var pndDestSearch = document.getElementById('pnd-dest-search');
+    if (pndDestSearch) {
+        pndDestSearch.addEventListener('input', function() { _pndRenderDestResults(this.value); });
+        pndDestSearch.addEventListener('focus', function() { _pndRenderDestResults(this.value); });
+    }
+
+    var pndDestClear = document.getElementById('pnd-dest-clear');
+    if (pndDestClear) pndDestClear.addEventListener('click', function() {
+        _pndDestPicked = null;
+        document.getElementById('pnd-dest-picked').style.display = 'none';
+        var s = document.getElementById('pnd-dest-search'); if (s) s.focus();
+    });
+
+    var pndDestManualBtn = document.getElementById('pnd-dest-manual');
+    if (pndDestManualBtn) pndDestManualBtn.addEventListener('click', function() {
+        _pndDestManualMode = !_pndDestManualMode;
+        document.getElementById('pnd-dest-manual-wrap').style.display = _pndDestManualMode ? 'block' : 'none';
+        if (_pndDestManualMode) {
+            _pndDestPicked = null;
+            document.getElementById('pnd-dest-picked').style.display = 'none';
+            document.getElementById('pnd-dest-manual-name').focus();
+        }
+    });
+
+    var pndTakePhotoBtn = document.getElementById('pnd-take-photo');
+    var pndPhotoInput = document.getElementById('pnd-photo-input');
+    if (pndTakePhotoBtn && pndPhotoInput) {
+        pndTakePhotoBtn.addEventListener('click', function() { pndPhotoInput.click(); });
+        pndPhotoInput.addEventListener('change', function(ev) {
+            var file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            document.getElementById('pnd-photo-status').textContent = 'Procesando…';
+            document.getElementById('pnd-photo-status').style.color = '#FFB300';
+            _pndCompressPhoto(file).then(function(dataUrl) {
+                _pndPhotoFile = file;
+                _pndPhotoDataUrl = dataUrl;
+                var preview = document.getElementById('pnd-photo-preview');
+                preview.src = dataUrl;
+                preview.style.display = 'block';
+                document.getElementById('pnd-photo-status').textContent = '✓ Foto OK';
+                document.getElementById('pnd-photo-status').style.color = '#4CAF50';
+            }).catch(function(err) {
+                document.getElementById('pnd-photo-status').textContent = 'Error foto';
+                document.getElementById('pnd-photo-status').style.color = '#FF3B30';
+                showToast('Error procesando foto: ' + err.message, 'error');
+            });
+        });
+    }
+
+    function _pndGetGPS() {
+        return new Promise(function(resolve) {
+            if (!navigator.geolocation) return resolve(null);
+            var timeout = setTimeout(function() { resolve(null); }, 4000);
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                clearTimeout(timeout);
+                resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+            }, function() { clearTimeout(timeout); resolve(null); }, { enableHighAccuracy: false, timeout: 4000, maximumAge: 60000 });
+        });
+    }
+
+    function _pndGenerateLabel() {
+        var d = new Date();
+        var yy = String(d.getFullYear()).slice(-2);
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+        return 'PR-' + yy + mm + dd + '-' + rnd;
+    }
+
+    var pndSaveBtn = document.getElementById('pnd-save');
+    if (pndSaveBtn) pndSaveBtn.addEventListener('click', async function() {
+        try {
+            // Validaciones
+            if (!_pndPorte) { showToast('Selecciona PAGADO o DEBIDO', 'warning'); return; }
+            var bultos = parseInt(document.getElementById('pnd-bultos').value, 10);
+            if (!bultos || bultos < 1) { showToast('Indica número de bultos', 'warning'); return; }
+            if (!_pndPhotoDataUrl) { showToast('Foto obligatoria', 'warning'); return; }
+
+            var clientInfo = null;
+            if (_pndPickedClient) {
+                clientInfo = {
+                    docId: _pndPickedClient.docId,
+                    idNum: _pndPickedClient.idNum || '',
+                    name: _pndPickedClient.name || '',
+                    nif: _pndPickedClient.nif || '',
+                    cp: _pndPickedClient.cp || '',
+                    localidad: _pndPickedClient.localidad || '',
+                    compId: _pndPickedClient.compId || ''
+                };
+            } else if (_pndManualMode) {
+                var manualName = (document.getElementById('pnd-client-manual-name').value || '').trim();
+                var manualNif = (document.getElementById('pnd-client-manual-nif').value || '').trim();
+                if (!manualName) { showToast('Indica el nombre del remitente', 'warning'); return; }
+                clientInfo = { docId: '', idNum: '', name: manualName, nif: manualNif, cp: '', localidad: '', compId: '', manual: true };
+            } else {
+                showToast('Selecciona o introduce el remitente', 'warning'); return;
+            }
+
+            // Destinatario (opcional excepto si DEBIDO → muy recomendado pero no forzamos)
+            var destInfo = null;
+            if (_pndDestPicked) {
+                destInfo = {
+                    docId: _pndDestPicked.docId || '',
+                    idNum: _pndDestPicked.idNum || '',
+                    name: _pndDestPicked.name || '',
+                    nif: _pndDestPicked.nif || '',
+                    cp: _pndDestPicked.cp || '',
+                    localidad: _pndDestPicked.localidad || '',
+                    address: _pndDestPicked.address || '',
+                    phone: _pndDestPicked.phone || '',
+                    source: _pndDestPicked.source || ''
+                };
+            } else if (_pndDestManualMode) {
+                var dn = (document.getElementById('pnd-dest-manual-name').value || '').trim();
+                if (dn) {
+                    destInfo = {
+                        docId: '',
+                        idNum: '',
+                        name: dn,
+                        nif: '',
+                        cp: (document.getElementById('pnd-dest-manual-cp').value || '').trim(),
+                        localidad: (document.getElementById('pnd-dest-manual-loc').value || '').trim(),
+                        address: (document.getElementById('pnd-dest-manual-addr').value || '').trim(),
+                        phone: (document.getElementById('pnd-dest-manual-phone').value || '').trim(),
+                        source: 'manual'
+                    };
+                }
+            }
+            // Aviso (no bloqueante) si DEBIDO sin destinatario: el receptor paga, sin él la facturación no puede emitirse
+            if (_pndPorte === 'DEBIDO' && !destInfo) {
+                if (!confirm('PORTE DEBIDO sin destinatario.\n\nSin destinatario el sistema no puede facturar el porte (a quién cobrarle).\n\n¿Crear el pre-albarán de todas formas? (el cliente lo completará luego)')) return;
+            }
+
+            pndSaveBtn.disabled = true;
+            pndSaveBtn.textContent = '⏳ Subiendo…';
+
+            // 1) GPS (best effort, no bloqueante)
+            var gps = await _pndGetGPS();
+
+            // 2) Generar label + crear doc previo
+            var label = _pndGenerateLabel();
+            var weightStr = (document.getElementById('pnd-weight').value || '').trim();
+            var note = (document.getElementById('pnd-note').value || '').trim();
+            var nowIso = new Date().toISOString();
+
+            var deadline = new Date(Date.now() + 24*60*60*1000);
+
+            var ticketPayload = {
+                id: label,
+                originType: 'driver_pickup_no_doc',
+                pendingClientCompletion: true,
+                status: 'pending_client_completion',
+
+                // Remitente (origen — quien envía)
+                uid: clientInfo.docId || null,
+                senderUid: clientInfo.docId || null,
+                clientIdNum: clientInfo.idNum || '',
+                sender: clientInfo.name || '',
+                senderNif: clientInfo.nif || '',
+                senderCp: clientInfo.cp || '',
+                senderLocalidad: clientInfo.localidad || '',
+                compId: clientInfo.compId || '',
+                clientManualEntry: !!clientInfo.manual,
+
+                // Porte (obligatorio)
+                paymentType: _pndPorte,          // 'PAGADO' | 'DEBIDO'
+                portePagadoBy: _pndPorte === 'DEBIDO' ? 'receiver' : 'sender',
+
+                // Destinatario (puede estar incompleto si el cliente lo completa después)
+                receiver: destInfo ? destInfo.name : '',
+                receiverNif: destInfo ? destInfo.nif : '',
+                receiverUid: destInfo ? destInfo.docId : '',
+                receiverIdNum: destInfo ? destInfo.idNum : '',
+                cp: destInfo ? destInfo.cp : '',
+                localidad: destInfo ? destInfo.localidad : '',
+                address: destInfo ? destInfo.address : '',
+                phone: destInfo ? destInfo.phone : '',
+                receiverSource: destInfo ? destInfo.source : '',
+
+                // Datos de recogida (pre-albarán)
+                pickupBy: currentDriverName || '',
+                pickupByPhone: currentDriverPhone || '',
+                pickupRoute: currentRouteLabel || '',
+                pickupBultos: bultos,
+                pickupWeight: weightStr ? parseFloat(weightStr) : null,
+                pickupNote: note,
+                pickupGPS: gps || null,
+                pickupAtIso: nowIso,
+                impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+
+                packagesList: [],
+                declaredPackagesList: [],
+
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdBy: 'driver_app_pickup_no_doc'
+            };
+
+            // 3) Crear el ticket — guardamos para obtener docId, luego subimos foto y actualizamos
+            var newDocRef = await db.collection('tickets').add(ticketPayload);
+            var newDocId = newDocRef.id;
+
+            // 4) Subir foto a Storage
+            var photoUrl = '';
+            try {
+                if (firebase.storage && _pndPhotoDataUrl) {
+                    var storage = firebase.storage();
+                    var ref = storage.ref('pickup_no_doc/' + newDocId + '_' + Date.now() + '.jpg');
+                    var snap = await ref.putString(_pndPhotoDataUrl, 'data_url');
+                    photoUrl = await snap.ref.getDownloadURL();
+                    await newDocRef.update({ pickupPhoto: photoUrl });
+                }
+            } catch(uerr) {
+                console.warn('[pnd] photo upload fail:', uerr);
+                // No bloqueamos: queda registro sin URL final (data_url no se guarda en firestore por tamaño)
+            }
+
+            // 5) Notificación al cliente (user_notifications)
+            // CRÍTICO: el listener del cliente filtra por uid == firebase auth uid,
+            // NO por docId de Firestore. Resolvemos el authUid del cliente y lo
+            // usamos como uid de la notificación.
+            try {
+                if (clientInfo.docId) {
+                    var clientAuthUid = '';
+                    try {
+                        var cliSnap = await db.collection('users').doc(clientInfo.docId).get();
+                        if (cliSnap.exists) {
+                            var cd = cliSnap.data() || {};
+                            clientAuthUid = cd.authUid || cd.uid || '';
+                        }
+                    } catch(authErr) { console.warn('[pnd] no se pudo leer authUid:', authErr); }
+
+                    if (!clientAuthUid) {
+                        console.warn('[pnd] cliente sin authUid — la notificación no llegará a su buzón. docId:', clientInfo.docId);
+                    } else {
+                        var bodyParts = ['El repartidor ha recogido ' + bultos + ' bulto(s) sin albarán.'];
+                        bodyParts.push('Porte: ' + _pndPorte + '.');
+                        if (destInfo) bodyParts.push('Destinatario apuntado: ' + destInfo.name + (destInfo.localidad ? ' (' + destInfo.localidad + ')' : '') + '.');
+                        else bodyParts.push('Sin destinatario — complétalo desde tu app.');
+                        bodyParts.push('Plazo de 24h para completar/impugnar.');
+                        var notif = {
+                            uid: clientAuthUid,
+                            clientDocId: clientInfo.docId,
+                            type: 'pickup_no_albaran',
+                            title: '⚠️ Recogida sin albarán — completa en 24h',
+                            body: bodyParts.join(' '),
+                            ticketId: label,
+                            docId: newDocId,
+                            reportedBy: currentDriverName || '',
+                            bultos: bultos,
+                            paymentType: _pndPorte,
+                            impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                            read: false
+                        };
+                        if (photoUrl) notif.photoURL = photoUrl;
+                        await db.collection('user_notifications').add(notif);
+                    }
+                }
+            } catch(ne) { console.warn('[pnd] user notif fail:', ne); }
+
+            // 6) Entrada en /mailbox del admin
+            try {
+                var mailDoc = {
+                    type: 'driver_pickup_no_doc',
+                    category: 'pickup_sin_albaran',
+                    status: 'queued',
+                    direction: 'outgoing',
+                    ticketRef: label,
+                    ticketDocId: newDocId,
+                    clientId: clientInfo.docId || null,
+                    clientIdNum: clientInfo.idNum || null,
+                    senderName: clientInfo.name || '',
+                    senderNif: clientInfo.nif || '',
+                    senderManual: !!clientInfo.manual,
+                    paymentType: _pndPorte,
+                    receiver: destInfo ? destInfo.name : '',
+                    receiverNif: destInfo ? destInfo.nif : '',
+                    receiverUid: destInfo ? destInfo.docId : '',
+                    receiverCp: destInfo ? destInfo.cp : '',
+                    receiverLocalidad: destInfo ? destInfo.localidad : '',
+                    receiverSource: destInfo ? destInfo.source : '',
+                    bultos: bultos,
+                    weight: weightStr ? parseFloat(weightStr) : null,
+                    note: note,
+                    driverPhone: currentDriverPhone || '',
+                    driverName: currentDriverName || '',
+                    driverRoute: currentRouteLabel || '',
+                    gps: gps || null,
+                    impugnationDeadline: firebase.firestore.Timestamp.fromDate(deadline),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                if (photoUrl) mailDoc.photo = photoUrl;
+                await db.collection('mailbox').add(mailDoc);
+            } catch(me) { console.warn('[pnd] mailbox fail:', me); }
+
+            // 7) Incrementar contador en el cliente (si existe)
+            try {
+                if (clientInfo.docId) {
+                    await db.collection('users').doc(clientInfo.docId).set({
+                        noAlbaranCount: firebase.firestore.FieldValue.increment(1),
+                        lastPickupNoDocAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+
+            showToast('✅ Pre-albarán creado: ' + label, 'success', 5000);
+            try { navigator.vibrate && navigator.vibrate([50, 30, 50, 30, 80]); } catch(_) {}
+            document.getElementById('pickup-no-doc-modal').style.display = 'none';
+            _pndResetModal();
+        } catch(err) {
+            console.error('[pnd] save fail:', err);
+            showToast('Error creando pre-albarán: ' + err.message, 'error', 6000);
+        } finally {
+            pndSaveBtn.disabled = false;
+            pndSaveBtn.textContent = '✅ CREAR PRE-ALBARÁN';
+        }
+    });
 
 } // END initApp
 })();

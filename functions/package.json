@@ -1,0 +1,15 @@
+{
+  "name": "novapack-functions",
+  "description": "Cloud Functions de NOVAPACK — procesado servidor de la cola SMTP y otros",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.0.1",
+    "nodemailer": "^6.9.15"
+  },
+  "devDependencies": {},
+  "private": true
+}

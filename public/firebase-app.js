@@ -6,6 +6,42 @@ function escapeHtml(str) {
     if (str == null) return '';
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
+
+// Atomic sequential counter via Firestore transaction. Use for invoice/journal/etc.
+// numbering to prevent collisions when multiple admins act concurrently.
+//   counterPath: e.g. 'sequence_counters/invoices_2026' or 'sequence_counters/journal'
+//   seedFn (optional): async () => number, returns the highest existing seq when
+//                      the counter doc doesn't exist yet (one-time bootstrap).
+// Returns the freshly reserved next integer.
+window.allocSequentialNumber = async function allocSequentialNumber(counterPath, seedFn) {
+    if (!counterPath || typeof counterPath !== 'string') throw new Error('counterPath required');
+    const ref = db.doc(counterPath);
+    return await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        let next;
+        if (snap.exists && typeof snap.data().currentMax === 'number') {
+            next = snap.data().currentMax + 1;
+        } else {
+            const seed = (typeof seedFn === 'function') ? await seedFn() : 0;
+            next = (parseInt(seed, 10) || 0) + 1;
+        }
+        tx.set(ref, {
+            currentMax: next,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        return next;
+    });
+};
+
+// Canonicalize a Spanish phone number to its 9-digit form.
+// Tolerates +34, 0034, spaces, dashes, parentheses. MUST stay in sync with reparto.js.
+window.normalizePhone = function normalizePhone(p) {
+    var d = (p == null ? '' : p).toString().replace(/\D/g, '');
+    if (d.length > 9 && d.indexOf('0034') === 0) d = d.slice(4);
+    else if (d.length > 9 && d.indexOf('34') === 0) d = d.slice(2);
+    if (d.length > 9) d = d.slice(-9);
+    return d;
+};
 const DEBUG_MODE = location.hostname === 'localhost';
 
 // --- RATE LIMITER: client-side throttle for critical operations ---
@@ -45,11 +81,18 @@ window.addEventListener('unhandledrejection', function(event) {
 window.getOperatorStamp = function() {
     var user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
     var identity = sessionStorage.getItem('adminActiveIdentity') || (user && user.email) || 'sistema';
-    return {
+    var stamp = {
         _operadoPor: identity,
         _operadoAt: new Date().toISOString(),
         _operadorUid: user ? user.uid : null
     };
+    // Audit: when super-admin is impersonating a client, tag the write so we
+    // can trace it back. Visible in any ticket / company / destination doc.
+    if (window._adminImpersonating) {
+        stamp._actingAsClient = window._adminImpersonating;
+        stamp._actingByAdmin = user ? user.email : 'admin';
+    }
+    return stamp;
 };
 // ======================================================
 
@@ -83,7 +126,40 @@ setTimeout(() => { if (typeof hideLoading === 'function') hideLoading(); }, 8000
 
 const DEFAULT_SIZES = "Pequeño, Mediano, Grande, Sobre, Palet, BATERIA 45AH, BATERIA 75AH, BATERIA 100AH, BATERIA CAMION, TAMBOR CAMION, CALIPER DE CAMION, CAJAS DE ACEITE O AGUA, GARRAFAS ADBLUE";
 
+// --- QR HELPER (local primero, fallback API externa) ---
+// Genera el QR usando qrcode.min.js cargado localmente. Si por alguna razón
+// la lib no está disponible o falla, cae al endpoint externo de qrserver.com.
+// Usar SIEMPRE este helper en vez de URLs directas hardcoded de qrserver.
+//
+// PARÁMETROS de qrcode.createDataURL(cellSize, margin):
+//   - cellSize = pixels por módulo. 6 → render alta resolución (impresión nítida)
+//   - margin   = módulos de "quiet zone" alrededor del QR. 4 es el mínimo del
+//                estándar ISO 18004 — sin esto los escáneres móviles fallan
+//                aunque el QR esté técnicamente bien.
+window.npGenerateQrUrl = function(data, fallbackSize) {
+    fallbackSize = fallbackSize || 400;
+    try {
+        if (typeof qrcode !== 'undefined') {
+            // 'M' error correction (~15%) — equilibrio entre tamaño y tolerancia
+            // a manchas/dobleces. Suficiente para impresión normal.
+            var qr = qrcode(0, 'M');
+            qr.addData(data);
+            qr.make();
+            return qr.createDataURL(6, 4);  // cell 6px + quiet zone 4 módulos
+        }
+    } catch (e) {
+        console.warn('[QR] local fail, fallback API:', e.message);
+    }
+    return 'https://api.qrserver.com/v1/create-qr-code/?size=' + fallbackSize + 'x' + fallbackSize + '&data=' + encodeURIComponent(data) + '&qzone=4';
+};
+
 // --- PRINT HELPERS ---
+// Fuerza el formato a la impresora del cliente (cada navegador/driver pinta como
+// le da la gana — neutralizamos sus defaults). Esta versión es AGRESIVA:
+//   • @page con margen 0 + tamaño exacto
+//   • Esconde todo el resto de la página al imprimir
+//   • Color-exact (background, bordes, gradientes)
+//   • Bloquea escalado del navegador
 function setPrintPageSize(size) {
     let s = document.getElementById('print-page-size');
     if (!s) {
@@ -91,9 +167,69 @@ function setPrintPageSize(size) {
         s.id = 'print-page-size';
         document.head.appendChild(s);
     }
-    // "auto" forces the browser to adopt the user's printer hardware settings
     const parsedSize = size === "101.6mm 152.4mm" ? "auto" : size;
-    s.innerHTML = `@media print { @page { size: ${parsedSize}; margin: 0; } }`;
+    // Dimensiones físicas según size (para forzar el body)
+    let bodyW = '210mm', bodyH = 'auto';
+    if (parsedSize === 'A4 portrait' || parsedSize === 'A4') { bodyW = '210mm'; bodyH = 'auto'; }
+    else if (parsedSize === 'A4 landscape') { bodyW = '297mm'; bodyH = 'auto'; }
+    else if (parsedSize === 'A5 portrait' || parsedSize === 'A5') { bodyW = '148mm'; bodyH = 'auto'; }
+
+    s.innerHTML = `
+        @media print {
+            @page {
+                size: ${parsedSize} !important;
+                margin: 0 !important;
+                marks: none !important;
+            }
+            html, body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: white !important;
+                width: ${bodyW} !important;
+                height: ${bodyH} !important;
+                min-height: 0 !important;
+                max-width: ${bodyW} !important;
+                /* Forzar render exacto de colores/fondos/bordes — neutraliza
+                   el "ahorro de tinta" que algunos drivers aplican */
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+                overflow: hidden !important;
+            }
+            /* Esconder TODO menos print-area — neutraliza sidebars, headers,
+               nav, modals abiertos, etc. de la página padre */
+            body > *:not(#print-area) { display: none !important; }
+            body > #print-area {
+                display: block !important;
+                visibility: visible !important;
+                position: static !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: ${bodyW} !important;
+                background: white !important;
+            }
+            #print-area, #print-area * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
+            /* Bloquear el reajuste de tamaño que algunos browsers aplican */
+            #print-area > * {
+                box-sizing: border-box !important;
+                page-break-after: always !important;
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+            #print-area > *:last-child {
+                page-break-after: auto !important;
+            }
+            /* Asegurar que las imágenes (QR) salen en máxima calidad */
+            #print-area img {
+                image-rendering: pixelated !important;
+                max-width: 100% !important;
+            }
+        }
+    `;
 }
 
 // Global reference to current afterprint handler so we can remove stale listeners
@@ -107,6 +243,11 @@ function cleanPrintArea() {
         window.removeEventListener('afterprint', _currentAfterPrintHandler);
         _currentAfterPrintHandler = null;
     }
+    // Quita la regla @page inyectada para que un Ctrl+P posterior fuera
+    // del flujo no herede un tamaño concreto. Cada print job vuelve a
+    // declarar el suyo en setPrintPageSize().
+    const styleEl = document.getElementById('print-page-size');
+    if (styleEl) styleEl.remove();
 }
 
 function registerAfterPrint(handler) {
@@ -162,7 +303,7 @@ auth.onAuthStateChanged(async (user) => {
         let profile = null;
         // 1. Buscar si hay algún documento en la colección 'users' con este email (creado por el Admin)
         if (user.email) {
-            console.log("Buscando cuenta maestra por Email...", user.email);
+            if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.log("Buscando cuenta maestra por Email...", user.email);
             try {
                 // Fetch all matching docs, remove limit(1) to prevent race conditions with the clone
                 const emailSnap = await db.collection('users').where('email', '==', user.email.toLowerCase()).get();
@@ -181,7 +322,26 @@ auth.onAuthStateChanged(async (user) => {
             }
         }
 
-        // 2. Fallback: Si no se encontró por email, leer documento del UID propio
+        // 2a. Fallback: si el login es un email sintético (clientes con
+        // sucursales comparten email real, así que el admin les creó un
+        // loginEmail único @novapack.com), busca por authUid.
+        if (!profile) {
+            try {
+                const authUidSnap = await db.collection('users').where('authUid', '==', user.uid).limit(1).get();
+                if (!authUidSnap.empty) {
+                    const masterDoc = authUidSnap.docs[0];
+                    profile = { id: masterDoc.id, ...masterDoc.data() };
+                    profile.isLinked = true;
+                    // Clona al docId del uid para acelerar futuros logins
+                    await db.collection('users').doc(user.uid).set({ ...profile, authUid: user.uid }, { merge: true });
+                }
+            } catch(err) {
+                console.warn('Fallo búsqueda where authUid:', err.message);
+            }
+        }
+
+        // 2b. Fallback: leer documento del UID propio (caso normal de
+        // cliente cuya cuenta auth se creó con su email real).
         if (!profile) {
              let userDoc = await db.collection('users').doc(user.uid).get();
              if (userDoc.exists) {
@@ -216,9 +376,64 @@ auth.onAuthStateChanged(async (user) => {
         }
 
         userData = profile;
+
+        // ───── Acceso bloqueado por admin ─────
+        // Si la ficha tiene accessActive === false, el admin ha desactivado
+        // el acceso. Se le muestra al cliente un mensaje claro y se le saca.
+        // (Solo aplica si NO estamos en modo super-admin impersonando.)
+        try {
+            const _urlAA = new URLSearchParams(window.location.search).get('adminAs');
+            if (!_urlAA && profile && profile.accessActive === false) {
+                hideLoading();
+                await new Promise(r => setTimeout(r, 200));
+                alert('⛔ Acceso desactivado por administración.\n\nTu cuenta está marcada como INACTIVA. Contacta con NOVAPACK para reactivarla.');
+                try { await auth.signOut(); } catch(e) {}
+                window.location.href = 'index.html';
+                return;
+            }
+        } catch(e) { console.warn('accessActive check:', e); }
+
         // CRITICAL FIX: effectiveStorageUid MUST be the user.uid to comply with Firestore security rules.
         // It cannot be the email, otherwise the user is denied permission to save their own companies and tariffs.
         effectiveStorageUid = user.uid;
+
+        // ───── SUPER-ADMIN: modo "Entrar como cliente" ─────
+        // El admin abre app.html?adminAs={docId}. Verificamos que el user
+        // actual sea el admin del sistema (config/admin.uid) y, si todo cuadra,
+        // re-escribimos userData y effectiveStorageUid apuntando al cliente
+        // objetivo. El resto del código carga sus albaranes, sedes, agenda y
+        // tarifa como si fuera él.
+        try {
+            const _urlAA = new URLSearchParams(window.location.search).get('adminAs');
+            if (_urlAA) {
+                const _adminCheck = await db.collection('config').doc('admin').get();
+                const isCurrentAdmin = _adminCheck.exists && _adminCheck.data().uid === user.uid;
+                if (!isCurrentAdmin) {
+                    alert('No tienes permisos para usar el modo super-admin.');
+                } else {
+                    const _targetDoc = await db.collection('users').doc(_urlAA).get();
+                    if (!_targetDoc.exists) {
+                        alert('Cliente no encontrado: ' + _urlAA);
+                    } else {
+                        userData = { id: _targetDoc.id, ..._targetDoc.data() };
+                        effectiveStorageUid = userData.authUid || _targetDoc.id;
+                        window._adminImpersonating = userData.id;
+                        // Banner naranja persistente
+                        const _bnr = document.createElement('div');
+                        _bnr.id = 'admin-impersonate-banner';
+                        _bnr.style.cssText = 'position:fixed; top:0; left:0; right:0; background:linear-gradient(90deg,#FF9F0A,#FF6B00); color:#000; text-align:center; padding:8px 16px; z-index:99999; font-weight:800; font-size:0.85rem; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+                        _bnr.innerHTML = '👁️ SUPER-ADMIN — actuando como <strong>' + (userData.name || userData.id) + '</strong> (#' + (userData.idNum || '?') + ') · <a href="#" onclick="window.close();return false;" style="color:#000;text-decoration:underline;">Cerrar pestaña</a>';
+                        document.body.appendChild(_bnr);
+                        // Empuja el cuerpo hacia abajo para no tapar contenido
+                        document.body.style.paddingTop = (document.body.style.paddingTop || '0px');
+                        document.body.style.marginTop = '36px';
+                        console.warn('[SUPER-ADMIN] Impersonando a', userData.id, userData.name);
+                    }
+                }
+            }
+        } catch(e) { console.warn('SUPER-ADMIN setup error:', e.message); }
+        // ───── fin super-admin ─────
+
         console.log("[SYNC] Effective Storage UID set to:", effectiveStorageUid);
 
         if (userData) {
@@ -317,16 +532,25 @@ async function loadActiveTariff() {
 
     try {
         let tariffData = null;
-        // 1. Try Global Tariff if assigned
+
+        // 1. Tarifa global asignada — probar varias formas del docId
+        //    porque tariffId puede venir como 'GLOBAL_X_v2', 'X', etc.
         if (userData && userData.tariffId) {
-            const globalDoc = await db.collection('tariffs').doc("GLOBAL_" + userData.tariffId).get();
-            if (globalDoc.exists) {
-                tariffData = globalDoc.data();
-                console.log("Cargando Tarifa Global:", userData.tariffId);
+            const tid = String(userData.tariffId).trim();
+            const candidates = [tid, 'GLOBAL_' + tid, 'GLOBAL_' + tid + '_v2'];
+            for (const c of candidates) {
+                try {
+                    const d = await db.collection('tariffs').doc(c).get();
+                    if (d.exists) {
+                        tariffData = d.data();
+                        console.log("Cargando Tarifa Global:", c);
+                        break;
+                    }
+                } catch(e) {}
             }
         }
 
-        // 2. Fallback to Specific User Tariff
+        // 2. Fallback: tarifa específica del usuario (por su uid)
         if (!tariffData) {
             const userDoc = await db.collection('tariffs').doc(currentUser.uid).get();
             if (userDoc.exists) {
@@ -335,10 +559,31 @@ async function loadActiveTariff() {
             }
         }
 
-        if (tariffData && tariffData.items) {
+        if (!tariffData || !tariffData.items) return;
+
+        // ─── Extraer artículos según versión de la tarifa ───
+        if (Array.isArray(tariffData.items)) {
+            // V2: items es un array de objetos { id, name, mode, basePrice, ... }
+            let items = tariffData.items.slice();
+            // Aplicar overrides del cliente (precios/exclusiones personalizadas)
+            if (userData && userData.tariffOverrides && typeof window.pricingEngine !== 'undefined') {
+                try {
+                    const resolved = window.pricingEngine.resolveTariff(tariffData, userData.tariffOverrides);
+                    if (resolved && Array.isArray(resolved.items)) items = resolved.items;
+                } catch(e) { console.warn('resolveTariff falló, uso items base:', e.message); }
+            }
+            // El cliente NO elige "cuota mensual" como tipo de bulto → filtrar flat_monthly.
+            // Mostramos el NOMBRE del artículo (lo que el cliente entiende).
+            activeTariffArticles = items
+                .filter(it => it && it.mode !== 'flat_monthly')
+                .map(it => (it.name || it.id || '').toString().trim())
+                .filter(Boolean);
+        } else if (typeof tariffData.items === 'object') {
+            // V1 legacy: items es un objeto { "nombre artículo": precio }
             activeTariffArticles = Object.keys(tariffData.items);
-            console.log("Artículos de Tarifa activos:", activeTariffArticles);
         }
+
+        console.log("Artículos de Tarifa activos (" + activeTariffArticles.length + "):", activeTariffArticles);
     } catch (e) {
         console.warn("Error al cargar tarifa activa:", e);
     }
@@ -564,14 +809,50 @@ async function initTicketListener(retryCount = 0) {
             idVariants.push(n.toString().padStart(4, '0'));
         }
 
-        // Unión de todas las identidades posibles para búsqueda universal, asegurando que TODO sea String
-        const finalVariantsRaw = [...new Set([...idVariants, ...identityIds])].filter(v => v !== null && v !== undefined && v !== "");
-        const finalVariants = finalVariantsRaw.map(v => String(v).trim()).slice(0, 10);
+        // ─── Consolidado padre + sucursales ───
+        // Si este usuario es PADRE (tiene clientes con parentClientId apuntando a él),
+        // añadimos las identidades de sus sucursales al listener. Así el padre ve
+        // de un vistazo todos los albaranes de sus sedes en su panel online.
+        // Las sucursales NO ven a otros — solo los suyos.
+        //
+        // IMPORTANTE: estamos DENTRO de un `new Promise((resolve, reject) => {...})`
+        // cuyo executor NO es async. Por eso NO podemos usar `await` aquí —
+        // hacerlo rompía el parse de TODO firebase-app.js (Autocristal vio cero
+        // botones funcionando). Usamos .then() y arrancamos el listener tras
+        // resolver la búsqueda (o inmediatamente si el usuario es sucursal).
+        let branchIdentities = [];
+        const branchPromise = userData.parentClientId
+            ? Promise.resolve()
+            : db.collection('users')
+                .where('parentClientId', '==', userData.id || currentUser.uid)
+                .limit(20)
+                .get()
+                .then(childSnap => {
+                    childSnap.forEach(doc => {
+                        const d = doc.data();
+                        if (d.idNum) branchIdentities.push(d.idNum.toString());
+                        if (d.authUid) branchIdentities.push(d.authUid);
+                    });
+                    if (branchIdentities.length > 0) {
+                        console.log('[SYNC-LINEA] Consolidando ' + childSnap.size + ' sucursales:', branchIdentities);
+                    }
+                })
+                .catch(e => { console.warn('[SYNC-LINEA] No pude cargar sucursales:', e.message); });
 
-        console.log(`[SYNC-LINEA] Escuchando Albaranes por UID/Alias:`, finalVariants);
-        
         let mergedTickets = new Map();
         let q1Fired = false, q2Fired = false;
+        let unsub1 = () => {}, unsub2 = () => {};
+
+        branchPromise.then(() => {
+        // Unión de todas las identidades posibles para búsqueda universal, asegurando que TODO sea String
+        const finalVariantsRaw = [...new Set([...idVariants, ...identityIds, ...branchIdentities])].filter(v => v !== null && v !== undefined && v !== "");
+        // Firestore "in" se limita a 10 valores. Si hay más, prima identidades propias.
+        const finalVariants = finalVariantsRaw.map(v => String(v).trim()).slice(0, 10);
+        if (finalVariantsRaw.length > 10) {
+            console.warn('[SYNC-LINEA] Más de 10 identidades (' + finalVariantsRaw.length + '). Truncando a las primeras 10. Las sucursales por encima de ese límite no se mostrarán en el consolidado.');
+        }
+
+        console.log(`[SYNC-LINEA] Escuchando Albaranes por UID/Alias:`, finalVariants);
 
         const processMapAndRender = () => {
             let raw = Array.from(mergedTickets.values());
@@ -593,23 +874,38 @@ async function initTicketListener(retryCount = 0) {
         const q1 = db.collection('tickets').where('uid', 'in', finalVariants).limit(3000);
         const q2 = db.collection('tickets').where('clientIdNum', 'in', finalVariants).limit(3000);
 
-        const unsub1 = q1.onSnapshot(snap => {
+        // Helper: mostrar UN solo toast no bloqueante por error de listener.
+        // Antes hacíamos alert() que bloqueaba la UI repetidamente y dejaba al
+        // cliente sin poder pulsar botones.
+        let _ticketsErrorShown = false;
+        function _ticketsListenerErrorToast(label, err) {
+            console.error('[SYNC-LINEA] Error ' + label, err);
+            if (_ticketsErrorShown) return;
+            _ticketsErrorShown = true;
+            try {
+                const banner = document.createElement('div');
+                banner.style.cssText = 'position:fixed; top:10px; right:10px; max-width:340px; background:#7a2727; color:#fff; padding:10px 14px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.4); font-size:0.82rem; z-index:99999;';
+                banner.innerHTML = '<strong>⚠️ Sincronización limitada</strong><br>No hemos podido cargar todos los albaranes en tiempo real (' + (err && err.code ? err.code : 'error') + '). Refresca la página si no ves tus envíos. Los botones siguen activos.';
+                document.body.appendChild(banner);
+                setTimeout(() => { try { banner.remove(); } catch(e){} }, 8000);
+            } catch(_) {}
+        }
+
+        unsub1 = q1.onSnapshot(snap => {
             snap.forEach(doc => mergedTickets.set(doc.id, { ...doc.data(), docId: doc.id, docRef: doc }));
             q1Fired = true;
             processMapAndRender();
         }, err => {
-            alert("Error GRAVE Q1 en Escucha de Albaranes: " + err.message);
-            console.warn("Error Q1", err);
+            _ticketsListenerErrorToast('Q1', err);
             q1Fired = true; processMapAndRender();
         });
 
-        const unsub2 = q2.onSnapshot(snap => {
+        unsub2 = q2.onSnapshot(snap => {
             snap.forEach(doc => mergedTickets.set(doc.id, { ...doc.data(), docId: doc.id, docRef: doc }));
             q2Fired = true;
             processMapAndRender();
         }, err => {
-            alert("Error GRAVE Q2 en Escucha de Albaranes: " + err.message);
-            console.warn("Error Q2", err);
+            _ticketsListenerErrorToast('Q2', err);
             q2Fired = true; processMapAndRender();
         });
 
@@ -617,6 +913,7 @@ async function initTicketListener(retryCount = 0) {
         setTimeout(() => { if (isFirstLoad) { isFirstLoad = false; resolve(); } }, 3000);
 
         ticketListener = () => { unsub1(); unsub2(); };
+        }); // cierre de branchPromise.then
     });
 }
 
@@ -866,6 +1163,8 @@ window.initUserNotifications = function(uid) {
                 else if (data.type === 'campaign') { typeIcon = '📢'; typeLabel = 'Comunicación'; accentColor = '#E91E63'; }
                 else if (data.type === 'incident') { typeIcon = '⚠️'; typeLabel = 'Incidencia'; accentColor = '#F44336'; }
                 else if (data.type === 'incident_resolved') { typeIcon = '✅'; typeLabel = 'Incidencia Resuelta'; accentColor = '#4CAF50'; }
+                else if (data.type === 'discrepancy') { typeIcon = '✏️'; typeLabel = 'Discrepancia'; accentColor = '#FF9800'; }
+                else if (data.type === 'pickup_no_albaran') { typeIcon = '🚚'; typeLabel = 'Recogida sin albarán'; accentColor = '#E53935'; }
 
                 const item = document.createElement('div');
                 item.style.cssText = 'padding:16px 20px; border-radius:10px; border-left:4px solid ' + (data.read ? 'var(--border-glass)' : accentColor) + '; background:rgba(255,255,255,' + (data.read ? '0.02' : '0.05') + '); transition:background 0.2s;';
@@ -2042,13 +2341,9 @@ async function handleFormSubmit(e) {
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
         };
 
-        function normalizePhoneUtil(phone) {
-            if(!phone) return '';
-            return phone.toString().replace(/\D/g, '').replace(/^34/, '');
-        }
-
-        if(targetDriverPhone) {
-            data.driverPhone = normalizePhoneUtil(targetDriverPhone);
+        // resolveDriverPhone already returns the canonical 9-digit form
+        if (targetDriverPhone) {
+            data.driverPhone = window.normalizePhone(targetDriverPhone);
         }
 
         if (editingId) {
@@ -3189,6 +3484,57 @@ const clientPickerResults = document.getElementById('client-picker-results');
 let agendaCache = null;
 let agendaSearchTimer = null;
 
+// /contacts cache — directorio UNIFICADO Gesco + NOVAPACK (Fase 2 migración 2026-05-16)
+// Una sola fuente de verdad, no más dedup en cliente.
+let contactsCache = null;
+let contactsCacheLoading = false;
+// Helper para invalidar cache desde otros módulos (admin tras edit/delete)
+window.invalidateContactsCache = function() {
+    contactsCache = null;
+    contactsCacheLoading = false;
+    console.log('[CONTACTS] cache invalidada — próxima búsqueda re-cargará');
+};
+
+async function _loadContactsCache() {
+    if (contactsCache) return contactsCache;
+    if (contactsCacheLoading) {
+        return new Promise(function(resolve) {
+            var t = setInterval(function(){
+                if (contactsCache) { clearInterval(t); resolve(contactsCache); }
+            }, 200);
+        });
+    }
+    contactsCacheLoading = true;
+    try {
+        const snap = await db.collection('contacts').get();
+        contactsCache = [];
+        snap.forEach(d => contactsCache.push({ _docId: d.id, ...d.data() }));
+        console.log('[CONTACTS] cargados', contactsCache.length, 'contactos del directorio unificado');
+    } catch (err) {
+        console.warn('[CONTACTS] no se pudo cargar:', err && err.message);
+        contactsCache = [];
+    }
+    contactsCacheLoading = false;
+    return contactsCache;
+}
+
+function _searchContacts(query, limit) {
+    if (!contactsCache) return [];
+    const q = (query || '').toLowerCase().trim();
+    if (!q) return [];
+    var matches = [];
+    for (var i = 0; i < contactsCache.length && matches.length < (limit || 15); i++) {
+        var c = contactsCache[i];
+        var hay = ((c.name || '') + ' ' + (c.nif || '') + ' ' + (c.localidad || '') + ' ' + (c.cp || '') + ' ' + (c.idNum || '')).toLowerCase();
+        if (hay.indexOf(q) !== -1) matches.push(c);
+    }
+    return matches;
+}
+
+// --- LEGACY (mantenido por seguridad — devuelve vacío si /contacts está al día) ---
+async function _loadNovapackGlobalDirectory() { return []; }
+function _searchNovapackGlobal() { return []; }
+
 if (clientPickerInput) {
     clientPickerInput.oninput = () => {
     if (agendaSearchTimer) clearTimeout(agendaSearchTimer);
@@ -3231,29 +3577,46 @@ if (clientPickerInput) {
         });
 
         // ----------------------------------------------------
-        // INYECTAR DIRECTORIO GLOBAL (FANTASMA)
+        // DIRECTORIO UNIFICADO /contacts (Fase 2 migración 2026-05-16)
+        // Una sola fuente — fusiona Gesco + NOVAPACK. Sin dedup en cliente.
+        // Si coincide con uno de "Mi Agenda" → ENRIQUECE (preserva tu agenda).
         // ----------------------------------------------------
-        if (typeof window.searchPhantomDirectory === 'function') {
-            const phantomResults = window.searchPhantomDirectory(q);
-            phantomResults.forEach(pc => {
-                // Verificar que no sea un duplicado exacto por Nombre localmente
-                const existsLocally = matches.some(m => m.name.toLowerCase() === (pc.name || '').toLowerCase());
-                if (!existsLocally) {
+        try {
+            await _loadContactsCache();
+            const cResults = _searchContacts(q, 15);
+            cResults.forEach(c => {
+                const existing = matches.find(m => (m.name || '').toLowerCase() === (c.name || '').toLowerCase());
+                if (existing) {
+                    // Enriquecer la entrada de Mi Agenda con campos faltantes
+                    if (!existing.nif && c.nif)              existing.nif = c.nif;
+                    if (!existing.phone && c.phone)          existing.phone = c.phone;
+                    if (!existing.cp && c.cp)                existing.cp = c.cp;
+                    if (!existing.localidad && c.localidad)  existing.localidad = c.localidad;
+                    if (!existing.address && c.address)      existing.address = c.address;
+                    if (!existing.street && c.address)       existing.street = c.address;
+                    if (!existing.province && c.province)    existing.province = c.province;
+                    if (!existing.idNum && c.idNum)          existing.idNum = c.idNum;
+                    existing._enrichedFrom = 'contacts';
+                    existing.isNovapack = !!c.novapackUid;   // marca verde si en su origen es cliente NOVAPACK
+                } else {
                     matches.push({
-                        name: pc.name || '',
-                        phone: pc.senderPhone || '',
-                        nif: pc.nif || '',
-                        address: pc.street || '',
-                        street: pc.street || '',
+                        name: c.name || '',
+                        phone: c.phone || '',
+                        nif: c.nif || '',
+                        address: c.address || '',
+                        street: c.address || '',
                         number: '',
-                        localidad: pc.localidad || '',
-                        cp: pc.cp || '',
-                        province: pc.province || '',
-                        isGlobal: true
+                        localidad: c.localidad || '',
+                        cp: c.cp || '',
+                        province: c.province || '',
+                        idNum: c.idNum || '',
+                        docId: c.novapackUid || c._docId || '',
+                        isGlobal: true,
+                        isNovapack: !!c.novapackUid
                     });
                 }
             });
-        }
+        } catch(cErr) { console.warn('[contacts] search fail:', cErr); }
 
         if (matches.length > 0) {
             clientPickerResults.innerHTML = '';
@@ -3263,21 +3626,74 @@ if (clientPickerInput) {
                 div.className = 'suggestion-item';
                 div.style = "padding:10px; border-bottom:1px solid var(--border-glass); cursor:pointer;";
                 
-                const badge = m.isGlobal ? `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">🌐 Global</span>` : `<span style="font-size:0.65rem; background:rgba(76,175,80,0.2); padding:2px 6px; border-radius:4px; margin-left:8px; color:#4CAF50; border:1px solid #4CAF50;">👤 Mi Agenda</span>`;
+                // Badge distintivo: NOVAPACK cliente (verde) > Directorio (gris) > Mi Agenda (azul)
+                let badge;
+                if (m.isNovapack) {
+                    badge = `<span style="font-size:0.65rem; background:rgba(76,175,80,0.25); padding:2px 6px; border-radius:4px; margin-left:8px; color:#4CAF50; border:1px solid #4CAF50; font-weight:700;">✓ NOVAPACK</span>`;
+                } else if (m.isGlobal) {
+                    badge = `<span style="font-size:0.65rem; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:4px; margin-left:8px; color:#aaa; border:1px solid #555;">📒 Directorio</span>`;
+                } else {
+                    badge = `<span style="font-size:0.65rem; background:rgba(33,150,243,0.2); padding:2px 6px; border-radius:4px; margin-left:8px; color:#5DADE2; border:1px solid #5DADE2;">👤 Mi Agenda</span>`;
+                }
+                // Indicador NIF (verde tick si presente)
+                const nifBadge = m.nif ? `<span style="font-size:0.62rem; color:#4CAF50; margin-left:6px;" title="NIF: ${escapeHtml(m.nif)}">🆔 NIF ✓</span>` : '';
                 
-                div.innerHTML = `<strong>${escapeHtml(m.name)}</strong> ${badge}<br><span style="font-size:0.8rem; color:#888;">${escapeHtml(m.address)} - ${escapeHtml(m.localidad)}</span>`;
+                div.innerHTML = `<strong>${escapeHtml(m.name)}</strong> ${badge}${nifBadge}<br><span style="font-size:0.8rem; color:#888;">${escapeHtml(m.address || '')}${m.localidad ? ' - ' + escapeHtml(m.localidad) : ''}${m.cp ? ' (' + escapeHtml(m.cp) + ')' : ''}</span>`;
                 div.onclick = () => {
-                    document.getElementById('ticket-receiver').value = m.name;
-                    document.getElementById('ticket-address').value = m.street || m.address;
+                    // DEBUG: log completo del objeto seleccionado
+                    console.log('[client-picker] selected match:', JSON.parse(JSON.stringify(m)));
+
+                    document.getElementById('ticket-receiver').value = m.name || '';
+                    document.getElementById('ticket-address').value = m.street || m.address || '';
                     document.getElementById('ticket-number').value = m.number || '';
                     document.getElementById('ticket-localidad').value = m.localidad || '';
                     document.getElementById('ticket-cp').value = m.cp || '';
                     document.getElementById('ticket-phone').value = m.phone || '';
                     document.getElementById('ticket-province').value = m.province || '';
+
+                    // NIF — búsqueda defensiva en varios nombres de campo posibles
                     var nifInput = document.getElementById('ticket-receiver-nif');
-                    if (nifInput && m.nif) { nifInput.value = m.nif; var nifBox = document.getElementById('box-receiver-nif'); if (nifBox) nifBox.style.display = 'block'; }
+                    var nifBox = document.getElementById('box-receiver-nif');
+                    var nifVal = (m.nif || m.cif || m.NIF || m.CIF || m.receiverNif || m.senderNif || '').toString().trim();
+
+                    if (nifInput) {
+                        // SIEMPRE mostramos el box al seleccionar un cliente — aunque sea Pagados,
+                        // si el cliente tiene NIF útil para reusar después.
+                        if (nifBox) nifBox.style.display = 'block';
+                        if (nifVal) {
+                            nifInput.value = nifVal.toUpperCase();
+                            console.log('[client-picker] NIF rellenado:', nifVal);
+                        } else {
+                            // Aviso explícito al user: no había NIF en la fuente
+                            console.log('[client-picker] sin NIF en el cliente seleccionado:', m.name);
+                        }
+                    }
+
                     clientPickerInput.value = '';
                     clientPickerResults.classList.add('hidden');
+
+                    // Mini-aviso visual de feedback (no depende de toast global)
+                    try {
+                        var feedbackId = '_client-picker-feedback';
+                        var fb = document.getElementById(feedbackId);
+                        if (!fb) {
+                            fb = document.createElement('div');
+                            fb.id = feedbackId;
+                            fb.style.cssText = 'position:fixed; top:80px; left:50%; transform:translateX(-50%); padding:10px 18px; border-radius:8px; font-weight:700; font-size:0.85rem; z-index:99999; box-shadow:0 4px 12px rgba(0,0,0,0.4); transition:opacity 0.3s;';
+                            document.body.appendChild(fb);
+                        }
+                        if (nifVal) {
+                            fb.style.background = '#4CAF50';
+                            fb.style.color = '#fff';
+                            fb.textContent = '✓ Cliente seleccionado · NIF: ' + nifVal;
+                        } else {
+                            fb.style.background = '#FF9800';
+                            fb.style.color = '#000';
+                            fb.textContent = '⚠ Cliente seleccionado sin NIF en su ficha. Rellénalo a mano.';
+                        }
+                        fb.style.opacity = '1';
+                        setTimeout(function(){ fb.style.opacity = '0'; }, 3500);
+                    } catch(_) {}
                 };
                 clientPickerResults.appendChild(div);
             });
@@ -3633,133 +4049,190 @@ function generateQRCode(text, size = 512) {
 
 function generateTicketHTML(t, footerLabel) {
     const ts = (t.createdAt && typeof t.createdAt.toDate === 'function') ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : new Date());
-    const validDateStr = !isNaN(ts.getTime()) ? (ts.toLocaleDateString() + " " + ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "Fecha pendiente";
+    const validDateStr = !isNaN(ts.getTime())
+        ? (ts.toLocaleDateString('es-ES') + " " + ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+        : "Fecha pendiente";
 
-    // Company name for header (use client's company, fallback to NOVAPACK)
-    const _comp = (typeof companies !== 'undefined' && typeof currentCompanyId !== 'undefined') ? companies.find(c => c.id === currentCompanyId) : null;
-    const companyName = (_comp && _comp.name) ? _comp.name : (t.compName || t.sender || 'NOVAPACK');
-    const companyEmail = (_comp && _comp.email) ? _comp.email : (t.senderEmail || 'administracion@novapack.info');
+    // ── Empresa facturadora ──
+    // Prioriza t.compId del ticket (la empresa REAL a la que va la factura),
+    // no currentCompanyId (la del admin que está navegando).
+    const _comp = (typeof companies !== 'undefined' && Array.isArray(companies))
+        ? companies.find(c => c.id === (t.compId || t.compID))
+          || companies.find(c => c.id === (typeof currentCompanyId !== 'undefined' ? currentCompanyId : null))
+        : null;
+    const billingName  = (_comp && _comp.name)  ? _comp.name  : (t.compName  || 'NOVAPACK Logística');
+    const billingNif   = (_comp && _comp.nif)   ? _comp.nif   : (t.compNif   || '');
+    const billingEmail = (_comp && _comp.email) ? _comp.email : (t.compEmail || t.senderEmail || 'administracion@novapack.info');
 
-    // Grouped Package List Logic (One line per UI row)
-    let displayList = [];
+    // ── Auto-agrupar items por size+peso ──
+    let rawList = [];
     if (t.packagesList && t.packagesList.length > 0) {
-        displayList = t.packagesList;
+        rawList = t.packagesList;
     } else {
-        // Legacy support
-        displayList = [{
+        rawList = [{
             qty: parseInt(t.packages) || 1,
-            weight: t.weight,
-            size: t.size
+            weight: parseFloat(t.weight) || 0,
+            size: t.size || 'Bulto'
         }];
     }
+    const groupMap = {};
+    rawList.forEach((p) => {
+        const qty    = parseInt(p.qty) || 1;
+        const weight = parseFloat(p.weight) || 0;
+        const size   = p.size || 'Bulto';
+        const key    = size + '|' + weight;
+        if (!groupMap[key]) groupMap[key] = { qty: 0, weight: weight, size: size };
+        groupMap[key].qty += qty;
+    });
+    const grouped = Object.values(groupMap);
 
-    // Check if COD (Reembolso) exists and is not zero
+    // Totales
+    const totalBultos = grouped.reduce((s, p) => s + p.qty, 0);
+    const totalPeso   = grouped.reduce((s, p) => s + (p.weight * p.qty), 0);
+    const anyWeight   = grouped.some(p => p.weight > 0);
+    // Umbral a 4 (no 6) para que no se desborde la media-página A4
+    const manyLines   = grouped.length > 4;
+
+    // Reembolso
     const hasCod = t.cod && t.cod.toString().trim() !== '' && t.cod.toString() !== '0';
 
-    let rowsHtml = '';
-    displayList.forEach((p) => {
-        // Handle "10 kg" string vs "10" number
-        let w = p.weight;
-        if (typeof w === 'number') w = w + " kg";
-        if (typeof w === 'string' && !w.includes('kg')) w = w + " kg";
+    // Pre-albarán (sello discreto B&N)
+    const isPrealbaran = (t.originType === 'driver_pickup_no_doc') || (t.status === 'pending_client_completion');
 
-        const qty = p.qty || 1;
+    // Porte
+    const porteLabel = t.shippingType === 'Debidos' ? 'DEBIDOS' : 'PAGADOS';
+    const paymentType = t.paymentType || (t.shippingType === 'Debidos' ? 'DEBIDO' : 'PAGADO');
+    const portePagadoBy = t.portePagadoBy || (paymentType === 'DEBIDO' ? 'receiver' : 'sender');
 
-        rowsHtml += `
-            <tr>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(qty)}</td>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(w)}</td>
-               <td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(p.size || 'Bulto')}</td>
-               ${hasCod ? `<td style="border: 1px solid #000; padding: 1px 3px; text-align: center; font-size: 8pt;">${escapeHtml(t.cod)} €</td>` : ''}
-            </tr>
-        `;
-    });
+    // QR enriquecido — incluye PAY/PAYBY/COMP para auto-completar el formulario de facturación al escanear en oficina
+    const qrData =
+        `ID:${t.id || ''}` +
+        `|DEST:${t.receiver || ''}` +
+        `|ADDR:${t.address || ''}` +
+        `|PROV:${t.province || ''}` +
+        `|TEL:${t.phone || ''}` +
+        `|COD:${t.cod || 0}` +
+        `|BULTOS:${totalBultos}` +
+        `|PESO:${anyWeight ? totalPeso.toFixed(0) : 0}` +
+        `|OBS:${(t.notes || '').substring(0, 80)}` +
+        `|CLI:${t.clientIdNum || ''}` +
+        `|NIF:${t.receiverNif || ''}` +
+        `|PAY:${paymentType}` +
+        `|PAYBY:${portePagadoBy}` +
+        `|COMP:${t.compId || ''}`;
+
+    // QR local (sin dependencia externa) vía helper compartido
+    const qrUrl = window.npGenerateQrUrl(qrData, 400);
+
+    // Bandas (cada artículo agrupado) — compactas para caber en media página A4
+    const bandsHtml = grouped.map((p) => {
+        const w = (p.weight > 0)
+            ? `<div style="padding:2px 7px; font-size:7pt; color:#555; background:#f5f5f5; display:flex; align-items:center; border-left:1px dashed #999; font-weight:600;">${(p.weight * p.qty).toFixed(0)} kg</div>`
+            : '';
+        return `<div style="display:flex; align-items:stretch; border:1px solid #000;">` +
+            `<div style="background:#000; color:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:10pt; padding:1px 8px; min-width:28px; text-align:center; display:flex; align-items:center; justify-content:center; line-height:1;">${p.qty}</div>` +
+            `<div style="flex:1; padding:1px 8px; font-weight:800; font-size:8.5pt; display:flex; align-items:center; text-transform:uppercase;">${escapeHtml(p.size)}</div>` +
+            w +
+        `</div>`;
+    }).join('');
+
+    const bandsContainerStyle = manyLines
+        ? 'display:grid; grid-template-columns:1fr 1fr; gap:2px;'
+        : 'display:grid; gap:2px;';
+
+    // Sello pre-albarán (B&N, discreto)
+    const preStamp = isPrealbaran
+        ? `<div style="display:inline-block; margin-top:4px; padding:2px 8px; border:2px solid #000; background:#fff; font-family:'Outfit',sans-serif; font-weight:900; font-size:7pt; letter-spacing:1px; line-height:1.2;">PRE-ALBARÁN<span style="display:block; font-size:5.5pt; font-weight:700; letter-spacing:0; margin-top:1px;">Completar 24h</span></div>`
+        : '';
 
     return `
-    <div style="font-family: Arial, sans-serif; padding: 4px; border: 2px solid #000; min-height: 100mm; max-height: 130mm; position: relative; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; background: white;">
-        <!-- Watermark (Province/Zone) -->
-        ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:4.5rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width: 100%; text-align: center; font-family: 'Arial Black', sans-serif; opacity: 0.04; text-transform: uppercase;">${escapeHtml(t.province)}</div>` : ''}
-        
-        <div style="z-index: 2;">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 5px; position:relative;">
-                <!-- Left: Logo -->
-                <div style="flex: 0 0 auto; max-width: 130px;">
-                    <div style="font-family: 'Xenotron', sans-serif; font-size: 14pt; color: #FF6600; line-height: 1;">NOVAPACK<span style="color:#FF3B30; font-weight:900; font-family:sans-serif;">&#10148;</span></div>
-                    <div style="font-size: 0.6rem; letter-spacing: 0.3px; color:#333; margin-top: 2px;">${escapeHtml(companyEmail)}</div>
-                </div>
+    <div style="font-family:'Inter',Arial,sans-serif; padding:3mm 5mm; border:1.5px solid #000; height:132mm; max-height:132mm; position:relative; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; background:white; color:#000;">
+        <!-- Marca de agua provincia (intacta) -->
+        ${t.province ? `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) rotate(-25deg); font-size:6rem; color:#000; font-weight:900; white-space:nowrap; z-index:0; pointer-events:none; width:100%; text-align:center; font-family:'Arial Black',sans-serif; opacity:0.05; text-transform:uppercase;">${escapeHtml(t.province)}</div>` : ''}
 
-                 <!-- Center: Zona Reparto -->
-                <div style="flex: 1; text-align: center; padding: 0 10px;">
-                     <div style="padding: 5px; background:#FFF; display: inline-block; min-width: 140px;">
-                        <div style="font-size: 0.9rem; font-weight: bold; color: #000; margin-bottom: 5px;">
-                            PORTES ${t.shippingType === 'Debidos' ? 'DEBIDOS' : 'PAGADOS'}
-                        </div>
-                        <div style="font-size: 1.6rem; font-weight: 900; color: #FF6600; text-transform:uppercase; line-height: 1.1;">
-                            ${t.province ? escapeHtml(t.province) : '&nbsp;'}
-                        </div>
-                            ${t.timeSlot ? `<div style="font-size: 0.9rem; font-weight: 900; background: #EEE; color: #000; text-align: center; padding: 3px 5px; margin-top: 4px; border-radius: 4px;">TURNO: ${escapeHtml(t.timeSlot)}</div>` : ''}
-                            ${hasCod ? `<div style="font-size: 1.1rem; font-weight: 900; color: #FF3B30; margin-top: 5px; border-top: 1px solid #FF6600; padding-top:4px;">REEMBOLSO: ${escapeHtml(t.cod)} €</div>` : ''}
-                         </div>
-                    </div>
-
-                     <!-- Right: Ticket ID & QR -->
-                    <div style="flex: 1; text-align: right; display: flex; flex-direction: row-reverse; gap: 10px; align-items: start;">
-                         <div style="text-align: right;">
-                              <div style="font-size: 1rem; font-weight: bold; margin-bottom: 5px;">${validDateStr}</div>
-                              <div style="font-size: 0.75rem; color: #555; text-transform:uppercase; font-weight: 800;">Albarán Nº</div>
-                              <div style="font-family: 'Outfit', sans-serif; font-size: 1.28rem; color: #000; font-weight: 800; letter-spacing: -1px;">${escapeHtml(t.id)}</div>
-                         </div>
-                         <div style="background: white; padding: 2px; border: 1px solid #eee;">
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${t.packages || 1}|PESO:${t.weight || 0}|OBS:${t.notes || ''}|CLI:${t.clientIdNum || ''}|NIF:${t.receiverNif || ''}`)}" 
-                                 alt="QR Albaran" style="display: block; width: 110px; height: 110px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges;">
-                         </div>
-                    </div>
+        <!-- ── CABECERA (compacta para caber en 132mm) ── -->
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:3px; margin-bottom:4px; position:relative; z-index:2;">
+            <!-- Logo + empresa facturadora -->
+            <!-- Xenotron es una fuente MUY ancha por diseño; ajustamos tamaño
+                 y quitamos letter-spacing extra, además de overflow:hidden +
+                 nowrap como red de seguridad para que jamás invada el bloque
+                 central, da igual cómo renderice la impresora. -->
+            <div style="flex:0 0 32%; max-width:32%; min-width:0; overflow:hidden;">
+                <div style="font-family:'Xenotron','Outfit',sans-serif; font-weight:900; font-size:13pt; color:#FF6600; line-height:1; letter-spacing:0; white-space:nowrap; overflow:hidden;">NOVAPACK<span style="color:#FF3B30; font-family:sans-serif; font-weight:900; margin-left:1px;">►</span></div>
+                <div style="margin-top:3px; font-size:7pt; line-height:1.3; color:#333;">
+                    ${escapeHtml(billingEmail)}<br>
+                    ${billingNif ? `<span style="font-weight:700; color:#000;">NIF: ${escapeHtml(billingNif)}</span><br>` : ''}
+                    <span style="color:#777; font-size:6.5pt;">${escapeHtml(billingName)}</span>
                 </div>
-            
-            <div style="margin-top: 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; position:relative;">
-                <div style="border: 1px solid #ccc; padding: 5px; font-size: 0.8rem;">
-                    <strong>REMITENTE:</strong><br>
-                    ${escapeHtml(t.sender)}<br>
-                    ${escapeHtml(t.senderAddress || '')}<br>
-                    ${t.senderPhone ? `Telf: ${escapeHtml(t.senderPhone)}` : ''}
-                </div>
-                <div style="border: 1px solid #000; padding: 5px; font-size: 10pt;">
-                    <strong>DESTINATARIO:</strong><br>
-                    <div style="font-weight:bold; font-size:1.1em;">${escapeHtml(t.receiver)}</div>
-                    ${escapeHtml(t.address)}
-                </div>
+                ${preStamp}
             </div>
 
-            <table style="width: 100%; margin-top: 5px; border-collapse: collapse; border: 1px solid #ccc;">
-                <thead>
-                    <tr style="border-bottom: 1px solid #ccc; color: #000;">
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">BULTOS</th>
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">PESO</th>
-                        <th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">MEDIDA</th>
-                        ${hasCod ? '<th style="border: 1px solid #ccc; padding: 1px; font-size: 0.7rem;">REEMBOLSO</th>' : ''}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rowsHtml}
-                </tbody>
-            </table>
-
-            <!-- Total Summary -->
-            <div style="margin-top: 5px; border: 1px solid #ccc; padding: 5px; background:transparent; display:flex; justify-content:space-around; font-weight:bold; font-size:1rem;">
-                <span>TOTAL BULTOS: ${displayList.reduce((sum, p) => sum + (parseInt(p.qty) || 1), 0)}</span>
-                <span>TOTAL PESO: ${displayList.reduce((sum, p) => sum + ((parseFloat(p.weight) || 0) * (parseInt(p.qty) || 1)), 0).toFixed(2)} kg</span>
+            <!-- Centro: bloque protagonista compacto -->
+            <div style="flex:1; padding:0 6px; text-align:center;">
+                <div style="font-family:'Outfit',sans-serif; font-size:13pt; font-weight:900; line-height:1; color:#000; padding:2px 0; border-top:1px solid #000; border-bottom:1px solid #000; background:#f0f0f0; letter-spacing:1px;">PORTES ${porteLabel}</div>
+                <div style="margin-top:3px; padding:2px 6px; border:2.5px solid #000; font-family:'Outfit',sans-serif; font-weight:900; font-size:18pt; line-height:1.1; letter-spacing:-0.5px;">${escapeHtml(t.id || '')}</div>
+                ${t.province ? `<div style="margin-top:2px; font-family:'Outfit',sans-serif; font-weight:900; font-size:10pt; text-transform:uppercase; letter-spacing:1.5px;">→ ${escapeHtml(t.province)} ←</div>` : ''}
+                ${(t.timeSlot || hasCod) ? `<div style="margin-top:2px; font-size:7.5pt; font-weight:700; color:#000;">${t.timeSlot ? `TURNO: ${escapeHtml(t.timeSlot)}` : ''}${hasCod ? `<span style="display:inline-block; padding:1px 5px; border:1.5px solid #000; margin-left:5px; font-weight:900;">REEMB: ${escapeHtml(t.cod)} €</span>` : ''}</div>` : ''}
             </div>
 
-             <div style="margin-top: 4px; border: 1px solid #ccc; padding: 2px 5px; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word; overflow: hidden; max-height: 50px;">
-                <strong>Observaciones:</strong> ${escapeHtml(t.notes)}
+            <!-- Derecha: Fecha + QR (~30mm físicos para escaneo móvil fiable) -->
+            <div style="flex:0 0 115px; text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+                <div style="font-size:7pt; font-weight:700; margin-bottom:2px; color:#000;">${validDateStr}</div>
+                <div style="width:113px; height:113px; background:#fff; display:flex; align-items:center; justify-content:center;">
+                    <img src="${qrUrl}" alt="QR" style="display:block; width:100%; height:100%; image-rendering:pixelated;">
+                </div>
             </div>
         </div>
 
-        <div style="margin-top: 5px; font-size: 0.7rem; width: 100%; display: flex; justify-content: flex-end; padding-right: 10px;">
-            <div style="text-align:right;">
-                <span>Firma y Sello:</span><br>
-                <span style="font-weight: bold; text-transform: uppercase;">${escapeHtml(footerLabel)}</span>
+        <!-- ── REMITENTE / DESTINATARIO (compacto) ── -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:4px; position:relative; z-index:2;">
+            <div style="border:1px solid #999; padding:3px 6px; font-size:8.5pt; line-height:1.25;">
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#555;">Remitente</h4>
+                <div style="font-weight:700; font-size:9.5pt;">${escapeHtml(t.sender || '')}</div>
+                ${escapeHtml(t.senderAddress || '')}
+                ${t.senderPhone ? `<span style="color:#555; font-size:7.5pt;"> · Tel: ${escapeHtml(t.senderPhone)}</span>` : ''}
             </div>
+            <div style="border:1.5px solid #000; padding:3px 6px; font-size:8.5pt; line-height:1.25;">
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Destinatario</h4>
+                <div style="font-weight:900; font-size:10pt;">${escapeHtml(t.receiver || '')}</div>
+                ${escapeHtml([t.address, t.cp, t.localidad].filter(Boolean).join(' · '))}
+                ${t.phone ? `<span style="color:#555; font-size:7.5pt;"> · Tel: ${escapeHtml(t.phone)}</span>` : ''}
+            </div>
+        </div>
+
+        <!-- ── ARTÍCULOS (Hero compacto + bandas) ── -->
+        <div style="margin-bottom:4px; position:relative; z-index:2;">
+            <div style="border:3px solid #000; text-align:center; padding:3px 8px 5px; margin-bottom:4px;">
+                <div style="display:flex; justify-content:center; align-items:baseline; gap:8px;">
+                    <span style="font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:2px; color:#555;">TOTAL</span>
+                    <span style="font-family:'Outfit',sans-serif; font-weight:900; font-size:32pt; line-height:1; letter-spacing:-1.5px;">${totalBultos}</span>
+                    <span style="font-size:10pt; font-weight:800; text-transform:uppercase; letter-spacing:2px;">Bultos</span>
+                    ${anyWeight ? `<span style="font-size:8pt; font-weight:700; color:#555; letter-spacing:1px; border-left:1px dashed #999; padding-left:8px;">${totalPeso.toFixed(0)} KG</span>` : ''}
+                </div>
+            </div>
+            <div style="${bandsContainerStyle}">${bandsHtml}</div>
+        </div>
+
+        <!-- ── OBSERVACIONES (max 2 líneas, recorta limpio) ── -->
+        ${t.notes ? `<div style="border:1px solid #ccc; padding:3px 7px; font-size:8pt; margin-bottom:4px; position:relative; z-index:2; line-height:1.3; max-height:9mm; overflow:hidden;">
+            <strong style="font-size:6.5pt; text-transform:uppercase; letter-spacing:1px; color:#555;">Obs:</strong> ${escapeHtml(t.notes)}
+        </div>` : ''}
+
+        <!-- ── FIRMA SIMPLIFICADA (cajas más bajas) ── -->
+        <div style="margin-top:auto; display:grid; grid-template-columns:1fr 1.4fr; gap:8px; border-top:1.5px solid #000; padding-top:3px; position:relative; z-index:2;">
+            <div>
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">DNI / Sello</h4>
+                <div style="border-bottom:1px solid #000; height:13mm;"></div>
+            </div>
+            <div>
+                <h4 style="margin:0 0 1px; font-size:6.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000;">Firma</h4>
+                <div style="border:1px solid #000; height:15mm;"></div>
+            </div>
+        </div>
+
+        <!-- Ejemplar -->
+        <div style="margin-top:4px; text-align:right; font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#666; position:relative; z-index:2;">
+            ${escapeHtml(footerLabel || '')}
         </div>
     </div>
     `;
@@ -3768,7 +4241,24 @@ function generateTicketHTML(t, footerLabel) {
 async function printTicket(t) {
     cleanPrintArea();
     const area = document.getElementById('print-area');
-    setPrintPageSize('A4');
+    setPrintPageSize('A4 portrait');
+
+    // Aviso de configuración de impresión (solo 1ª vez por sesión)
+    try {
+        if (!sessionStorage.getItem('printTipShown')) {
+            sessionStorage.setItem('printTipShown', '1');
+            alert(
+                'AVISO ÚNICO — configuración de impresión\n\n' +
+                'Para que el albarán salga EXACTO en cualquier impresora:\n\n' +
+                '  1. Márgenes: NINGUNO (no Por defecto)\n' +
+                '  2. Encabezados y pies de página: DESACTIVADOS\n' +
+                '  3. Escala: 100% (no Ajustar)\n\n' +
+                'Estos 3 ajustes están en el diálogo "Imprimir" del navegador,\n' +
+                'normalmente en "Más ajustes" / "Más opciones".\n\n' +
+                'Configúralo una vez y el navegador lo recordará.'
+            );
+        }
+    } catch(_) {}
 
     const includeManifest = confirm("¿Deseas imprimir también el Manifiesto para este albarán?");
 
@@ -4127,9 +4617,9 @@ function generateLabelHTML(t, index, total, weightStr, isA4 = false) {
                 ${t.province ? `<div style="font-size: 22pt; font-weight:900; text-transform:uppercase; color: #FF6600; margin-top: 4px;">${t.province}</div>` : ''}
                 ${t.notes ? `<div style="font-size: 0.8rem; font-weight: bold; color: #333; margin-top: 10px; border-top: 1px dotted #ccc; padding-top: 5px; white-space: pre-wrap; word-break: break-word; overflow: hidden; line-height: 1.2;">OBS: ${t.notes}</div>` : ''}
                 
-                <!-- Label QR -->
+                <!-- Label QR (local) -->
                 <div style="position: absolute; bottom: 0; right: 0;">
-                     <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${total}|PESO:${t.weight || 0}|PKG:${index+1}/${total}`)}&t=${Date.now()}" 
+                     <img src="${window.npGenerateQrUrl(`ID:${t.id}|DEST:${t.receiver || ''}|ADDR:${t.address || ''}|PROV:${t.province || ''}|TEL:${t.phone || ''}|COD:${t.cod || 0}|BULTOS:${total}|PESO:${t.weight || 0}|PKG:${index+1}/${total}`, 250)}"
                          style="width: 100px !important; height: 100px !important; display: block; background: white; padding: 4px; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; max-width: none !important; max-height: none !important; min-width: 100px !important; min-height: 100px !important;">
                 </div>
             </div>
@@ -4189,13 +4679,16 @@ async function printLabelShiftBatch(slot) {
             const area = document.getElementById('print-area');
             window.printingTickets = tickets;
             
-            if (paperMode === 'a4') {
+            if (paperMode === 'a4' || paperMode === 'pdf') {
                 setPrintPageSize('A4 portrait');
             } else {
                 setPrintPageSize('60mm 90mm');
             }
-            
-            const isA4 = (paperMode === 'a4');
+
+            // PDF reusa el mismo renderizado que A4 (grid 2x2) — sale como
+            // PDF descargable que el cliente abre en su visor preferido y
+            // donde sí puede afinar exactamente el tamaño desde Adobe/Edge.
+            const isA4 = (paperMode === 'a4' || paperMode === 'pdf');
 
             let labelsHtml = [];
             tickets.forEach(t => {
@@ -4203,7 +4696,7 @@ async function printLabelShiftBatch(slot) {
                 for (let i = 0; i < totalPkgs; i++) labelsHtml.push(generateLabelHTML(t, i, totalPkgs, null, isA4));
             });
 
-            renderLabelsInA4Grid(area, labelsHtml, paperMode);
+            renderLabelsInA4Grid(area, labelsHtml, isA4 ? 'a4' : 'label');
 
             document.body.classList.add('printing-labels');
 
@@ -4215,7 +4708,24 @@ async function printLabelShiftBatch(slot) {
             });
             renderTicketsList();
 
-            setTimeout(() => {
+            setTimeout(async () => {
+                if (paperMode === 'pdf' && typeof html2pdf === 'function') {
+                    try {
+                        await html2pdf().from(area).set({
+                            margin: 0,
+                            filename: 'Etiquetas_' + slot + '_' + new Date().toISOString().slice(0,10) + '.pdf',
+                            image: { type: 'jpeg', quality: 0.95 },
+                            html2canvas: { scale: 2, useCORS: true, allowTaint: true },
+                            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                        }).save();
+                    } catch(e) {
+                        alert('Error generando PDF: ' + e.message + '\nUsando impresión normal como fallback.');
+                        window.print();
+                    } finally {
+                        cleanPrintArea();
+                    }
+                    return;
+                }
                 const handleAfterPrint = () => {
                     cleanPrintArea();
                 };
@@ -4279,38 +4789,68 @@ function renderLabelsInA4Grid(container, labelsHtml, paperMode) {
 function showPaperSelectModal(callback) {
     let modal = document.getElementById('modal-paper-select');
     if (modal) modal.remove();
-    
+
+    // Recordamos la última elección del usuario para reducir clics y para
+    // recordar a la impresora de oficinas distintas su configuración.
+    const lastChoice = (function() {
+        try { return localStorage.getItem('paperLastChoice') || ''; } catch(e) { return ''; }
+    })();
+
     modal = document.createElement('div');
     modal.id = 'modal-paper-select';
     modal.style = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; display:flex; justify-content:center; align-items:center; padding:20px;';
     modal.innerHTML = `
-        <div style="background:#1e1e1e; border:1px solid #444; border-radius:16px; padding:30px; max-width:500px; width:100%; text-align:center;">
-            <h3 style="color:var(--brand-primary, #FF4D00); margin-top:0; font-size:1.2rem;">🖨️ SELECCIONAR TIPO DE PAPEL</h3>
-            <p style="color:#888; font-size:0.85rem; margin-bottom:25px;">Elige el formato según tu impresora:</p>
-            
-            <div style="display:flex; gap:15px; justify-content:center; flex-wrap:wrap;">
-                <button id="btn-paper-label" style="flex:1; min-width:180px; padding:25px 15px; background:#2d2d30; border:2px solid #555; cursor:pointer; border-radius:12px; text-align:center; transition: all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='#555'">
-                    <div style="font-size:2.5rem; margin-bottom:8px;">🏷️</div>
-                    <div style="color:#d4d4d4; font-weight:900; font-size:1rem;">ETIQUETADORA</div>
-                    <div style="color:#888; font-size:0.75rem; margin-top:5px;">6 × 9 cm aprox.</div>
-                    <div style="color:#666; font-size:0.65rem; margin-top:3px;">Una etiqueta por hoja</div>
+        <div style="background:#1e1e1e; border:1px solid #444; border-radius:16px; padding:30px; max-width:560px; width:100%; text-align:center;">
+            <h3 style="color:var(--brand-primary, #FF4D00); margin-top:0; font-size:1.2rem;">🖨️ FORMATO DE IMPRESIÓN</h3>
+            <p style="color:#888; font-size:0.85rem; margin-bottom:6px;">Elige según tu impresora. Tu última elección se recuerda.</p>
+            ${lastChoice ? `<p style="color:#FF9F0A; font-size:0.72rem; margin:0 0 16px;">Último uso: <strong>${lastChoice === 'label' ? 'Etiquetadora' : (lastChoice === 'a4' ? 'A4' : 'PDF')}</strong></p>` : '<div style="margin-bottom:14px;"></div>'}
+
+            <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button id="btn-paper-label" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='label'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='label'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='label'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">🏷️</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">ETIQUETADORA</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">60 × 90 mm</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">1 etiqueta / hoja</div>
                 </button>
-                
-                <button id="btn-paper-a4" style="flex:1; min-width:180px; padding:25px 15px; background:#2d2d30; border:2px solid #555; cursor:pointer; border-radius:12px; text-align:center; transition: all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='#555'">
-                    <div style="font-size:2.5rem; margin-bottom:8px;">📄</div>
-                    <div style="color:#d4d4d4; font-weight:900; font-size:1rem;">A4</div>
-                    <div style="color:#888; font-size:0.75rem; margin-top:5px;">4 etiquetas por hoja</div>
-                    <div style="color:#666; font-size:0.65rem; margin-top:3px;">Grid 2×2 con márgenes</div>
+
+                <button id="btn-paper-a4" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='a4'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='a4'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='a4'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">📄</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">A4</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">210 × 297 mm</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">4 etiquetas / hoja</div>
+                </button>
+
+                <button id="btn-paper-pdf" style="flex:1; min-width:150px; padding:22px 12px; background:${lastChoice==='pdf'?'rgba(255,77,0,0.10)':'#2d2d30'}; border:2px solid ${lastChoice==='pdf'?'#FF4D00':'#555'}; cursor:pointer; border-radius:12px; text-align:center; transition:all 0.2s;" onmouseover="this.style.borderColor='#FF4D00'" onmouseout="this.style.borderColor='${lastChoice==='pdf'?'#FF4D00':'#555'}'">
+                    <div style="font-size:2.2rem; margin-bottom:6px;">📥</div>
+                    <div style="color:#d4d4d4; font-weight:900; font-size:0.95rem;">PDF</div>
+                    <div style="color:#888; font-size:0.72rem; margin-top:4px;">Descargar archivo</div>
+                    <div style="color:#666; font-size:0.62rem; margin-top:3px;">Imprime desde el visor</div>
                 </button>
             </div>
-            
-            <button onclick="document.getElementById('modal-paper-select').remove();" style="margin-top:20px; background:none; border:1px solid #555; color:#888; padding:8px 30px; cursor:pointer; border-radius:6px; font-size:0.8rem;">Cancelar</button>
+
+            <div style="margin-top:18px; background:rgba(255,159,10,0.08); border:1px solid rgba(255,159,10,0.25); border-radius:8px; padding:10px 14px; font-size:0.72rem; color:#FF9F0A; text-align:left; line-height:1.45;">
+                <strong>💡 Importante:</strong> en el diálogo de impresión que aparecerá después, verifica que:
+                <ul style="margin:4px 0 0 18px; padding:0;">
+                    <li>Tamaño de papel = el que elegiste arriba</li>
+                    <li>Márgenes = <strong>Ninguno</strong> o <strong>None</strong></li>
+                    <li>Escala = <strong>100 %</strong> (no "ajustar a página")</li>
+                </ul>
+                <span style="color:#888;">Si tu impresora no acepta el formato, prueba con <strong>PDF</strong> y abrirlo desde el visor de Windows.</span>
+            </div>
+
+            <button onclick="document.getElementById('modal-paper-select').remove();" style="margin-top:16px; background:none; border:1px solid #555; color:#888; padding:8px 30px; cursor:pointer; border-radius:6px; font-size:0.8rem;">Cancelar</button>
         </div>
     `;
     document.body.appendChild(modal);
-    
-    document.getElementById('btn-paper-label').onclick = () => { modal.remove(); callback('label'); };
-    document.getElementById('btn-paper-a4').onclick = () => { modal.remove(); callback('a4'); };
+
+    function pick(mode) {
+        try { localStorage.setItem('paperLastChoice', mode); } catch(e) {}
+        modal.remove();
+        callback(mode);
+    }
+    document.getElementById('btn-paper-label').onclick = () => pick('label');
+    document.getElementById('btn-paper-a4').onclick = () => pick('a4');
+    document.getElementById('btn-paper-pdf').onclick = () => pick('pdf');
 }
 
 async function printLabel(t) {
@@ -4318,19 +4858,19 @@ async function printLabel(t) {
     showPaperSelectModal(async (paperMode) => {
         cleanPrintArea();
         const area = document.getElementById('print-area');
-        
-        if (paperMode === 'a4') {
+
+        if (paperMode === 'a4' || paperMode === 'pdf') {
             setPrintPageSize('A4 portrait');
         } else {
             setPrintPageSize('60mm 90mm');
         }
-        
+
         const totalPkgs = t.packagesList ? t.packagesList.reduce((s, p) => s + (parseInt(p.qty) || 1), 0) : 1;
         let labelsHtml = [];
-        const isA4 = (paperMode === 'a4');
+        const isA4 = (paperMode === 'a4' || paperMode === 'pdf');
         for (let i = 0; i < totalPkgs; i++) labelsHtml.push(generateLabelHTML(t, i, totalPkgs, null, isA4));
 
-        renderLabelsInA4Grid(area, labelsHtml, paperMode);
+        renderLabelsInA4Grid(area, labelsHtml, isA4 ? 'a4' : 'label');
 
         document.body.classList.add('printing-labels');
 
@@ -4349,9 +4889,26 @@ async function printLabel(t) {
         const handleAfterPrint = () => {
             cleanPrintArea();
         };
-        registerAfterPrint(handleAfterPrint);
 
-        setTimeout(() => {
+        setTimeout(async () => {
+            if (paperMode === 'pdf' && typeof html2pdf === 'function') {
+                try {
+                    await html2pdf().from(area).set({
+                        margin: 0,
+                        filename: 'Etiqueta_' + (t.id || t.docId || 'NP') + '.pdf',
+                        image: { type: 'jpeg', quality: 0.95 },
+                        html2canvas: { scale: 2, useCORS: true, allowTaint: true },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    }).save();
+                } catch(e) {
+                    alert('Error generando PDF: ' + e.message + '\nUsando impresión normal como fallback.');
+                    window.print();
+                } finally {
+                    cleanPrintArea();
+                }
+                return;
+            }
+            registerAfterPrint(handleAfterPrint);
             window.print();
             setTimeout(() => { if (area.innerHTML.length > 0) cleanPrintArea(); }, 60000);
         }, 800);
@@ -5616,7 +6173,8 @@ async function resolveDriverPhone(cp, localidad, province) {
         }
         // Priority 3: single route default
         if (!target && routeList.length === 1) { target = routeList[0].number; targetLabel = routeList[0].label; }
-        return { driverPhone: target, routeLabel: targetLabel };
+        // Always return the canonical 9-digit form so all consumers compare equal.
+        return { driverPhone: window.normalizePhone(target), routeLabel: targetLabel };
     } catch(e) {
         console.error('resolveDriverPhone error:', e);
         return { driverPhone: '', routeLabel: '' };

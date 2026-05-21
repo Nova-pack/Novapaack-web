@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seguimiento — Novapack</title>
+    <meta name="description" content="Seguimiento público de envío Novapack">
+    <meta name="theme-color" content="#FF4D00">
+    <link rel="icon" href="icon_new.png">
+    <link rel="apple-touch-icon" href="icon_new.png">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e8e8e8;
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+        a { color: #FF8A50; }
+
+        header {
+            background: linear-gradient(135deg, #161616 0%, #0a0a0a 100%);
+            border-bottom: 1px solid rgba(255,77,0,0.2);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        header img { width: 40px; height: 40px; border-radius: 8px; }
+        header h1 {
+            font-size: 1rem;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: #FF4D00;
+        }
+
+        main {
+            max-width: 560px;
+            margin: 0 auto;
+            padding: 24px 16px 40px;
+        }
+
+        .lookup {
+            background: #161616;
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            padding: 18px;
+            margin-bottom: 18px;
+        }
+        .lookup label {
+            font-size: 0.75rem;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            display: block;
+        }
+        .lookup-row { display: flex; gap: 8px; }
+        .lookup input {
+            flex: 1;
+            background: #0a0a0a;
+            border: 1px solid rgba(255,255,255,0.10);
+            color: #fff;
+            padding: 12px 14px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-family: monospace;
+            text-transform: uppercase;
+        }
+        .lookup button {
+            background: #FF4D00;
+            color: #000;
+            border: 0;
+            padding: 0 18px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .panel {
+            background: #161616;
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            padding: 22px;
+            margin-bottom: 16px;
+        }
+        .panel.hidden { display: none; }
+
+        .ticket-id {
+            font-family: monospace;
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: #FF4D00;
+            letter-spacing: 2px;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+        .ticket-receiver { font-size: 1.1rem; font-weight: 600; color: #fff; }
+        .ticket-route {
+            font-size: 0.85rem;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 100px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-top: 10px;
+            text-transform: uppercase;
+        }
+        .status-pending     { background: rgba(255,159,10,0.15);  color: #FF9F0A; }
+        .status-in_transit  { background: rgba(10,132,255,0.15); color: #5DADE2; }
+        .status-delivered   { background: rgba(52,199,89,0.18);  color: #34C759; }
+        .status-cancelled   { background: rgba(120,120,120,0.20); color: #aaa; }
+        .status-returned    { background: rgba(255,159,10,0.15);  color: #FF9F0A; }
+        .status-incident    { background: rgba(255,59,48,0.18);   color: #FF3B30; }
+
+        .timeline {
+            margin-top: 22px;
+            position: relative;
+            padding-left: 28px;
+        }
+        .timeline::before {
+            content: "";
+            position: absolute;
+            left: 9px; top: 0; bottom: 0;
+            width: 2px;
+            background: rgba(255,255,255,0.10);
+        }
+        .step {
+            position: relative;
+            padding-bottom: 18px;
+        }
+        .step:last-child { padding-bottom: 0; }
+        .step::before {
+            content: "";
+            position: absolute;
+            left: -22px; top: 4px;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: #2a2a2a;
+            border: 2px solid #444;
+        }
+        .step.done::before { background: #34C759; border-color: #34C759; }
+        .step.active::before {
+            background: #FF4D00;
+            border-color: #FF4D00;
+            box-shadow: 0 0 0 4px rgba(255,77,0,0.2);
+        }
+        .step .label { font-weight: 700; color: #fff; font-size: 0.92rem; }
+        .step.future .label { color: #777; }
+        .step .meta { font-size: 0.78rem; color: #999; margin-top: 2px; }
+
+        .destination {
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .destination .row {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: #ccc;
+        }
+        .destination .row::before {
+            content: "📍";
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+
+        .info-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        .info-state .icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+            display: block;
+        }
+        .error { color: #FF3B30; }
+
+        .footer {
+            text-align: center;
+            color: #555;
+            font-size: 0.7rem;
+            padding: 24px;
+        }
+
+        @media (prefers-color-scheme: light) {
+            body { background: #f8f8f8; color: #222; }
+            header { background: #fff; }
+            .lookup, .panel { background: #fff; border-color: rgba(0,0,0,0.08); }
+            .lookup input { background: #f8f8f8; color: #222; border-color: rgba(0,0,0,0.10); }
+            .ticket-receiver { color: #111; }
+            .step .label { color: #111; }
+            .timeline::before { background: rgba(0,0,0,0.10); }
+            .destination .row { color: #444; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <img src="icon_new.png" alt="Novapack">
+        <h1>NOVAPACK · Seguimiento</h1>
+    </header>
+
+    <main>
+        <div class="lookup">
+            <label>Número de albarán</label>
+            <form id="lookup-form" class="lookup-row" autocomplete="off">
+                <input type="text" id="lookup-input" placeholder="NP-12345" required>
+                <button type="submit">Buscar</button>
+            </form>
+        </div>
+
+        <div id="panel-loading" class="panel info-state hidden">
+            <span class="icon">⏳</span>
+            Cargando seguimiento…
+        </div>
+
+        <div id="panel-not-found" class="panel info-state hidden">
+            <span class="icon">🔍</span>
+            <div style="font-weight:700; color:#fff; margin-bottom:6px;">Albarán no encontrado</div>
+            <div style="font-size:0.85rem;">Comprueba el número que te facilitaron. Si crees que es correcto, contacta con quien te envió el paquete.</div>
+        </div>
+
+        <div id="panel-error" class="panel info-state hidden">
+            <span class="icon error">⚠️</span>
+            <div id="error-msg" class="error" style="font-weight:700;">Error</div>
+        </div>
+
+        <div id="panel-ticket" class="panel hidden">
+            <div class="ticket-id" id="t-id"></div>
+            <div class="ticket-receiver" id="t-receiver"></div>
+            <div class="ticket-route" id="t-route"></div>
+            <div class="status-badge" id="t-status"></div>
+
+            <div class="timeline" id="t-timeline"></div>
+
+            <div class="destination">
+                <div class="row" id="t-destination"></div>
+            </div>
+        </div>
+    </main>
+
+    <p class="footer">© Novapack · Esta página se actualiza en tiempo real.</p>
+
+    <!-- Firebase v9 compat — only what we need for a public read -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    <script>
+        // Inline init — track.html does NOT include firebase-auth, so we can't
+        // share firebase-config.js (which calls firebase.auth()).
+        firebase.initializeApp({
+            apiKey: "AIzaSyCHIqqwPtx5SFzf5d-cb6H0VSwX5eP_5lE",
+            authDomain: "novapack-68f05.firebaseapp.com",
+            projectId: "novapack-68f05"
+        });
+    </script>
+    <script src="track.js"></script>
+</body>
+</html>

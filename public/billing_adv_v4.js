@@ -703,31 +703,35 @@ document.getElementById('btn-adv-save').onclick = async () => {
         const invYear = finalDate.getFullYear();
         const invYY = String(invYear).slice(-2);
 
-        // Year-based invoice numbering: FAC-YY-SEQ, resets each year
-        const yearStart = new Date(invYear, 0, 1);
-        const yearEnd = new Date(invYear + 1, 0, 1);
-        const invSnap = await db.collection('invoices')
-            .where('date', '>=', yearStart)
-            .where('date', '<', yearEnd)
-            .orderBy('date', 'desc')
-            .limit(10000)
-            .get();
-        let nextNum = 0;
-        invSnap.forEach(doc => {
-            const d = doc.data();
-            const iid = d.invoiceId || '';
-            const match = iid.match(/^FAC-\d{2}-(\d+)$/);
-            if (match) {
-                const seq = parseInt(match[1], 10);
-                if (!isNaN(seq) && seq >= nextNum) nextNum = seq + 1;
-            }
-        });
-        // Fallback: also check the global number field
-        if (nextNum === 0 && !invSnap.empty) {
+        // Atomic invoice number: prevents collisions when two admins emit at once.
+        const _seedInvFromHistory = async () => {
+            const yearStart = new Date(invYear, 0, 1);
+            const yearEnd = new Date(invYear + 1, 0, 1);
+            const invSnap = await db.collection('invoices')
+                .where('date', '>=', yearStart)
+                .where('date', '<', yearEnd)
+                .orderBy('date', 'desc')
+                .limit(10000)
+                .get();
+            let max = 0;
             invSnap.forEach(doc => {
-                const n = doc.data().number || 0;
-                if (n >= nextNum) nextNum = n + 1;
+                const d = doc.data();
+                const iid = d.invoiceId || '';
+                const m = iid.match(/^FAC-\d{2}-(\d+)$/);
+                if (m) {
+                    const seq = parseInt(m[1], 10);
+                    if (!isNaN(seq) && seq > max) max = seq;
+                }
+                const n = d.number || 0;
+                if (n > max) max = n;
             });
+            return max;
+        };
+        let nextNum;
+        if (typeof window.allocSequentialNumber === 'function') {
+            nextNum = await window.allocSequentialNumber('sequence_counters/invoices_' + invYear, _seedInvFromHistory);
+        } else {
+            nextNum = (await _seedInvFromHistory()) + 1;
         }
 
         // Extraer tickets afectados
@@ -760,13 +764,37 @@ document.getElementById('btn-adv-save').onclick = async () => {
             finalSenderData = Object.assign({}, window.invCompanyData);
         }
 
+        // VALIDACIÓN NIF (Sprint 2 §2.3) — sin NIF la factura es legalmente nula
+        const _clientFiscalId = ((advCurrentClient.cif || advCurrentClient.nif || '') + '').trim().toUpperCase();
+        if (!_clientFiscalId || _clientFiscalId === 'N/A' || _clientFiscalId === '-') {
+            alert('🔒 NO PERMITIDO\n\nEl cliente "' + (advCurrentClient.name || advCurrentClient.id) + '" no tiene NIF/CIF en su ficha.\n\nUna factura sin NIF es FORMALMENTE NULA (RD 1619/2012 art. 6.1.d) y no deducible para el receptor.\n\nCompleta el NIF en su ficha de cliente y vuelve a intentarlo.');
+            if (typeof hideLoading === 'function') hideLoading();
+            return;
+        }
+
+        // fechaDevengo (Sprint 2 §2.3): cuándo se devenga el IVA. Para facturas
+        // manuales, asumimos que se devenga el día de emisión salvo que advCurrentTickets
+        // exista — en cuyo caso es la fecha del último ticket incluido.
+        let _fechaDevengo = finalDate;
+        try {
+            if (Array.isArray(window.advCurrentTickets) && window.advCurrentTickets.length > 0) {
+                let maxTs = 0;
+                window.advCurrentTickets.forEach(t => {
+                    const d = t.createdAt && t.createdAt.toDate ? t.createdAt.toDate() : (t.date ? new Date(t.date) : null);
+                    if (d && !isNaN(d.getTime()) && d.getTime() > maxTs) maxTs = d.getTime();
+                });
+                if (maxTs > 0) _fechaDevengo = new Date(maxTs);
+            }
+        } catch(_) {}
+
         const invoiceData = {
             number: nextNum,
             invoiceId: `FAC-${invYY}-${nextNum}`,
-            date: finalDate,
+            date: finalDate,           // fecha EXPEDICIÓN
+            fechaDevengo: _fechaDevengo, // fecha OPERACIÓN (devengo IVA)
             clientId: advCurrentClient.id,
             clientName: advCurrentClient.name,
-            clientCIF: advCurrentClient.nif || advCurrentClient.idNum || 'N/A',
+            clientCIF: _clientFiscalId,
             subtotal: advCurrentCalculations.subtotal,
             iva: advCurrentCalculations.iva,
             ivaRate: advGridRows.length > 0 ? advGridRows[0].iva : 21, // Simplified avg if mixed
@@ -846,8 +874,17 @@ if(btnPay) {
         if(!advCurrentInvoiceId) { alert("Primero debes guardar la factura."); return; }
         if(confirm("¿Marcar esta factura como COBRADA?")) {
             try {
-                await db.collection('invoices').doc(advCurrentInvoiceId).update({ paid: true, paidDate: new Date(), ...(typeof getOperatorStamp === 'function' ? getOperatorStamp() : {}) });
-                alert("✅ Factura marcada como cobrada exitosamente.");
+                const paidPatch = { paid: true, paidDate: new Date(), ...(typeof getOperatorStamp === 'function' ? getOperatorStamp() : {}) };
+                await db.collection('invoices').doc(advCurrentInvoiceId).update(paidPatch);
+                // Propagar a TODAS las vistas de facturas: central, cartera, ficha cliente
+                if (typeof window._invalidateAllInvoiceCaches === 'function') {
+                    try { window._invalidateAllInvoiceCaches(advCurrentInvoiceId, paidPatch); } catch(_) {}
+                }
+                if (typeof window.showToast === 'function') {
+                    window.showToast('Factura marcada como cobrada', 'success');
+                } else {
+                    alert("✅ Factura marcada como cobrada exitosamente.");
+                }
                 document.getElementById('btn-adv-pay').style.display = 'none';
             } catch(e) {
                 alert("Error: " + e.message);
@@ -892,37 +929,60 @@ if(btnCredit) {
     btnCredit.addEventListener('click', async () => {
         if(!advCurrentInvoiceId) { alert("Debes guardar o cargar una factura primero."); return; }
         if(!confirm("¿Deseas generar una FACTURA RECTIFICATIVA (Abono) idéntica pero en negativo para esta factura?")) return;
-        
+
+        // LEGAL: capturar motivo de rectificación (RD 1619/2012 art. 15)
+        const _causas = [
+            { codigo: 'R1', texto: 'Error fundado en derecho (datos identificativos, importes, tipo IVA, etc.)' },
+            { codigo: 'R2', texto: 'Modificación BI: descuento/bonificación posterior a la emisión' },
+            { codigo: 'R3', texto: 'Anulación total de la operación' },
+            { codigo: 'R4', texto: 'Devolución de mercancías o envases' },
+            { codigo: 'R5', texto: 'Impago judicialmente declarado (concurso, art. 80.3 LIVA)' },
+            { codigo: 'R6', texto: 'Modificación BI por sentencia firme o resolución administrativa' },
+            { codigo: 'R7', texto: 'Otro motivo legal (especificar)' }
+        ];
+        const _listaCausas = _causas.map((c, i) => `  ${i+1}. ${c.codigo} — ${c.texto}`).join('\n');
+        const _sel = prompt('MOTIVO DE LA RECTIFICACIÓN (obligatorio - RD 1619/2012 art. 15)\n\n' + _listaCausas + '\n\nEscribe el número (1-7):');
+        if (_sel === null) return;
+        const _idx = parseInt(_sel, 10) - 1;
+        if (isNaN(_idx) || _idx < 0 || _idx >= _causas.length) { alert('Causa no válida.'); return; }
+        let _causa = _causas[_idx];
+        if (_causa.codigo === 'R7') {
+            const _t = prompt('Especifica el motivo:');
+            if (!_t || !_t.trim()) return;
+            _causa = { codigo: 'R7', texto: _t.trim() };
+        }
+
         if(typeof showLoading === 'function') showLoading();
         try {
             const doc = await db.collection('invoices').doc(advCurrentInvoiceId).get();
             if(!doc.exists) throw new Error("La factura original ya no existe.");
             const orig = doc.data();
-            
-            // Year-based numbering for credit note: ABO-YY-SEQ
+
+            // Numeración atómica con serie R independiente (Fix legal-sprint1 #2)
             const aboYear = new Date().getFullYear();
             const aboYY = String(aboYear).slice(-2);
-            const aboYrStart = new Date(aboYear, 0, 1);
-            const aboYrEnd = new Date(aboYear + 1, 0, 1);
-            const invSnapAbo = await db.collection('invoices')
-                .where('date', '>=', aboYrStart)
-                .where('date', '<', aboYrEnd)
-                .orderBy('date', 'desc')
-                .get();
-            let nextNum = 0;
-            invSnapAbo.forEach(doc => {
-                const iid = doc.data().invoiceId || '';
-                const match = iid.match(/^(?:FAC|ABO)-\d{2}-(\d+)$/);
-                if (match) {
-                    const seq = parseInt(match[1], 10);
-                    if (!isNaN(seq) && seq >= nextNum) nextNum = seq + 1;
-                }
+            const counterPath = 'sequence_counters/credits_' + aboYear;
+
+            const nextNum = await window.allocSequentialNumber(counterPath, async () => {
+                const yrStart = new Date(aboYear, 0, 1);
+                const yrEnd = new Date(aboYear + 1, 0, 1);
+                const snap = await db.collection('invoices')
+                    .where('date', '>=', yrStart).where('date', '<', yrEnd)
+                    .limit(20000).get();
+                let max = 0;
+                snap.forEach(d => {
+                    const iid = d.data().invoiceId || '';
+                    const m = iid.match(/^R-\d{2}-(\d+)$/);
+                    if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+                });
+                return max;
             });
 
             const abonoData = {
                 ...orig,
                 number: nextNum,
-                invoiceId: `ABO-${aboYY}-${nextNum}`,
+                invoiceId: `R-${aboYY}-${nextNum}`,
+                serie: 'R',
                 date: new Date(),
                 subtotal: -orig.subtotal,
                 iva: -orig.iva,
@@ -930,8 +990,13 @@ if(btnCredit) {
                 total: -orig.total,
                 isAbono: true,
                 rectificaA: orig.invoiceId,
-                paid: true, // usually a credit note is considered balanced
-                advancedGrid: (orig.advancedGrid || []).map(r => ({...r, qty: -r.qty, total: -r.total}))
+                rectificaDocId: advCurrentInvoiceId,
+                rectificaDate: orig.date || null,
+                motivoRectificacion: _causa.codigo,
+                motivoRectificacionTexto: _causa.texto,
+                paid: false,  // pendiente devolver/compensar
+                advancedGrid: (orig.advancedGrid || []).map(r => ({...r, qty: -r.qty, total: -r.total})),
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
             };
             
             if (abonoData.ticketsDetail) {
@@ -1273,6 +1338,11 @@ window.showTariffTab = (tab) => {
         if(el) el.style.display = (t === tab) ? 'block' : 'none';
     });
     // Load data when switching
+    if(tab === 'global') {
+        // Cards-based view (rediseño 2026-05-14)
+        if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+        if (typeof populateGlobalTariffsDatalist === 'function') populateGlobalTariffsDatalist();
+    }
     if(tab === 'articles') {
         loadArticlesPRO();
         loadArticlesCount();
@@ -1422,17 +1492,74 @@ window.promptCreateGlobalTariff = async () => {
 };
 
 window.deleteCurrentGlobalTariff = async () => {
-    if (!window.currentTariffUID || !window.currentTariffUID.startsWith('GLOBAL_')) return;
-    const name = window.currentTariffUID.replace('GLOBAL_', '');
-    if (!confirm('¿Eliminar la tarifa global #' + name + ' y todos sus artículos?')) return;
+    if (!window.currentTariffUID) {
+        alert('No hay tarifa cargada para eliminar.\n\nCarga primero una tarifa con el botón "Cargar" y luego pulsa Eliminar.');
+        return;
+    }
+    if (!window.currentTariffUID.startsWith('GLOBAL_')) {
+        alert('Solo se pueden eliminar tarifas globales desde aquí (la actual: ' + window.currentTariffUID + ').');
+        return;
+    }
+    return window.deleteTariffById(window.currentTariffUID);
+};
+
+// Borrado directo de una tarifa por su docId (lo usan las cards v1 y v2).
+window.deleteTariffById = async (tariffDocId) => {
+    if (!tariffDocId) { alert('ID de tarifa vacío.'); return; }
+
+    // Contar clientes que la usan
+    let usingCount = 0;
+    let usingList = [];
     try {
-        await db.collection('tariffs').doc(window.currentTariffUID).delete();
-        document.getElementById('tariff-editor-area').style.display = 'none';
-        document.getElementById('btn-delete-global-tariff').style.display = 'none';
-        document.getElementById('tariff-global-id').value = '';
+        if (window.userMap) {
+            Object.values(window.userMap).forEach(u => {
+                if (!u.tariffId) return;
+                const tid = String(u.tariffId);
+                if (tid === tariffDocId || ('GLOBAL_' + tid) === tariffDocId || tariffDocId === ('GLOBAL_' + tid)) {
+                    usingCount++;
+                    if (usingList.length < 5) usingList.push((u.name || ('#' + (u.idNum || u.id))));
+                }
+            });
+        }
+    } catch(_) {}
+
+    let msg = '¿Eliminar la tarifa "' + tariffDocId + '"?\n\n';
+    if (usingCount > 0) {
+        msg += '⚠️ ATENCIÓN: ' + usingCount + ' cliente' + (usingCount === 1 ? '' : 's') + ' la tiene' + (usingCount === 1 ? '' : 'n') + ' asignada:\n';
+        msg += '  ' + usingList.join('\n  ');
+        if (usingCount > usingList.length) msg += '\n  ... y ' + (usingCount - usingList.length) + ' más';
+        msg += '\n\nTras eliminar quedarán SIN tarifa asignada.\n\n';
+    }
+    msg += 'Esta acción NO se puede deshacer. ¿Continuar?';
+
+    if (!confirm(msg)) return;
+
+    if (usingCount > 0) {
+        const confirmText = prompt('Para confirmar, escribe exactamente: ELIMINAR');
+        if (confirmText !== 'ELIMINAR') {
+            alert('Cancelado.');
+            return;
+        }
+    }
+
+    try {
+        await db.collection('tariffs').doc(tariffDocId).delete();
+        // Limpiar UI legacy si estaba abierta
+        const editorArea = document.getElementById('tariff-editor-area');
+        if (editorArea) editorArea.style.display = 'none';
+        const delBtn = document.getElementById('btn-delete-global-tariff');
+        if (delBtn) delBtn.style.display = 'none';
+        const inp = document.getElementById('tariff-global-id');
+        if (inp) inp.value = '';
+        window.currentTariffUID = null;
+        // Refrescar listados
         if (typeof populateGlobalTariffsDatalist === 'function') populateGlobalTariffsDatalist();
-        console.log('Tarifa eliminada:', window.currentTariffUID);
-    } catch(e) { console.error('Error eliminando tarifa:', e); }
+        if (typeof window.renderTariffCards === 'function') window.renderTariffCards();
+        alert('✅ Tarifa eliminada: ' + tariffDocId);
+    } catch(e) {
+        console.error('Error eliminando tarifa:', e);
+        alert('Error al eliminar: ' + e.message);
+    }
 };
 
 window.promptNewArticlePRO = () => {

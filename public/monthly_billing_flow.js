@@ -250,6 +250,22 @@
                 _mbGrouped[fid].tickets.push({ ...t, docId: doc.id });
             });
 
+            // Añadir clientes con cuota plana que NO tienen tickets este mes
+            // — se les debe facturar la cuota igualmente. Iteramos userMap
+            // buscando los que tengan flat (vía v2 flat_monthly o legacy)
+            // y no estén ya en _mbGrouped.
+            if (window.userMap && typeof window.getMonthlyFlatAmount === 'function') {
+                Object.values(window.userMap).forEach(u => {
+                    if (!u || !u.id) return;
+                    if (u.parentClientId) return; // sucursales NO cobran cuota plana propia
+                    if (_mbGrouped[u.id]) return; // ya está
+                    const flat = window.getMonthlyFlatAmount(u.id) || 0;
+                    if (flat > 0) {
+                        _mbGrouped[u.id] = { clientInfo: u, tickets: [], subtotal: 0, iva: 0, irpf: 0, total: 0 };
+                    }
+                });
+            }
+
             // Calculate totals per client
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             Object.values(_mbGrouped).forEach(g => {
@@ -262,13 +278,23 @@
                     t._price = price;
                     g.subtotal += price;
                 });
+                // ─── Cuota plana mensual ─────────────────────────────
+                // Si el cliente tiene cuota plana (v2 flat_monthly o legacy
+                // isFlatRate), añadimos la cuota como línea adicional. Sucursales
+                // skipped (la cuota vive en el padre, getMonthlyFlatAmount lo gestiona).
+                g.flatMonthly = 0;
+                if (typeof window.getMonthlyFlatAmount === 'function') {
+                    g.flatMonthly = window.getMonthlyFlatAmount(g.clientInfo.id) || 0;
+                }
+                g.extrasSubtotal = g.subtotal;        // tickets reales (paletizados, etc.)
+                g.subtotal = g.extrasSubtotal + g.flatMonthly; // total = extras + cuota
                 g.iva = g.subtotal * (ivaRate / 100);
                 const irpfRate = parseFloat(g.clientInfo.irpf) || 0;
                 g.irpf = g.subtotal * (irpfRate / 100);
                 g.total = g.subtotal + g.iva - g.irpf;
             });
 
-            // Remove zero-value clients
+            // Remove zero-value clients (ningún ticket Y sin cuota plana)
             Object.keys(_mbGrouped).forEach(k => {
                 if (_mbGrouped[k].subtotal <= 0) delete _mbGrouped[k];
             });
@@ -503,31 +529,36 @@
             // Get next invoice number
             const currentYear = new Date().getFullYear();
             const currentYY = String(currentYear).slice(-2);
-            const yearStart = new Date(currentYear, 0, 1);
-            const yearEnd = new Date(currentYear + 1, 0, 1);
-            const invYearSnap = await db.collection('invoices')
-                .where('date', '>=', yearStart)
-                .where('date', '<', yearEnd)
-                .orderBy('date', 'desc')
-                .get();
-            let currentInvNumber = 0;
-            invYearSnap.forEach(doc => {
-                const iid = doc.data().invoiceId || '';
-                const match = iid.match(/^FAC-\d{2}-(\d+)$/);
-                if (match) {
-                    const seq = parseInt(match[1], 10);
-                    if (!isNaN(seq) && seq >= currentInvNumber) currentInvNumber = seq + 1;
-                }
-            });
-            if (currentInvNumber === 0 && !invYearSnap.empty) {
-                invYearSnap.forEach(doc => {
+
+            // Atomic per-year invoice counter. Seeds from highest existing FAC-YY-N
+            // on first use, then increments transactionally for every invoice we add.
+            const _invCounterPath = 'sequence_counters/invoices_' + currentYear;
+            const _seedInvFromHistory = async () => {
+                const yearStart = new Date(currentYear, 0, 1);
+                const yearEnd = new Date(currentYear + 1, 0, 1);
+                const snap = await db.collection('invoices')
+                    .where('date', '>=', yearStart)
+                    .where('date', '<', yearEnd)
+                    .orderBy('date', 'desc')
+                    .get();
+                let max = 0;
+                snap.forEach(doc => {
+                    const iid = doc.data().invoiceId || '';
+                    const m = iid.match(/^FAC-\d{2}-(\d+)$/);
+                    if (m) {
+                        const seq = parseInt(m[1], 10);
+                        if (!isNaN(seq) && seq > max) max = seq;
+                    }
                     const n = doc.data().number || 0;
-                    if (n >= currentInvNumber) currentInvNumber = n + 1;
+                    if (n > max) max = n;
                 });
-            }
+                return max;
+            };
 
             const ivaRate = window.invCompanyData ? (window.invCompanyData.iva || 21) : 21;
             const invoiceDate = new Date();
+            const failures = [];  // clientes saltados (sin NIF, etc.) — Sprint 2 §2.3
+            let _quarterMismatches = 0;  // facturas con devengo y emisión en trimestres distintos — Sprint 3 §5.4
 
             for (let i = 0; i < clientIds.length; i++) {
                 const cid = clientIds[i];
@@ -537,7 +568,8 @@
 
                 updateProgress(i + 1, `${client.name || 'Cliente ' + (i+1)}...`);
 
-                if (tkts.length === 0 || group.subtotal <= 0) continue;
+                // Mantener clientes con cuota plana incluso sin tickets este mes.
+                if (group.subtotal <= 0) continue;
 
                 const ticketsIdArray = [];
                 const ticketsDetailArray = [];
@@ -552,16 +584,72 @@
                     });
                 });
 
+                // ─── Añadir línea de Cuota Plana Mensual si aplica ────
+                // Se factura encima de los albaranes (que son extras como
+                // paletizados, urgentes...). Es la cuota fija acordada.
+                if (group.flatMonthly && group.flatMonthly > 0) {
+                    const flatAmt = Number(group.flatMonthly) || 0;
+                    const monthLabel = invoiceDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+                    advancedGrid.push({
+                        description: `Cuota plana mensual — ${monthLabel}`,
+                        qty: 1, price: flatAmt, discount: 0, iva: ivaRate, total: flatAmt, ticketId: null
+                    });
+                }
+
                 const irpfRate = parseFloat(client.irpf) || 0;
-                const invoiceIdStr = `FAC-${currentYY}-${currentInvNumber}`;
+
+                // AVISO TRIMESTRE (Sprint 3 §5.4): si la factura va a salir en un
+                // trimestre distinto del trimestre del devengo, avisamos UNA VEZ
+                // por sesión para que admin sepa que el IVA puede ir al trimestre
+                // equivocado. (El cálculo correcto del IVA usa fechaDevengo en el
+                // 303 — esto es un aviso preventivo.)
+                // (la comprobación se hace UNA sola vez por sesión de facturación)
+
+                // VALIDACIÓN NIF (Sprint 2 — hallazgo §2.3)
+                // Factura sin NIF cliente es FORMALMENTE INVÁLIDA (RD 1619/2012 art. 6.1.d).
+                // No deducible para el cliente + sanción para emisor si AEAT lo detecta.
+                const clientFiscalId = (client.cif || client.nif || '').toString().trim().toUpperCase();
+                if (!clientFiscalId || clientFiscalId === 'N/A' || clientFiscalId === '-') {
+                    failures.push({ name: client.name || client.id, reason: 'Sin NIF/CIF fiscal — factura no se puede emitir (RD 1619/2012 art. 6.1.d)' });
+                    continue;
+                }
+
+                // Reserve next number atomically for THIS invoice only.
+                let nextInvNumber;
+                if (typeof window.allocSequentialNumber === 'function') {
+                    nextInvNumber = await window.allocSequentialNumber(_invCounterPath, _seedInvFromHistory);
+                } else {
+                    nextInvNumber = (await _seedInvFromHistory()) + 1;
+                }
+                const invoiceIdStr = `FAC-${currentYY}-${nextInvNumber}`;
+
+                // FECHA DE DEVENGO (Sprint 2 §2.3) — el IVA se devenga cuando se
+                // presta el servicio (fecha del último albarán del grupo), NO cuando
+                // se emite la factura. Si facturamos el 5 junio los albaranes de mayo,
+                // el IVA debe declararse en 1T (mayo) no en 2T (junio).
+                let fechaDevengo = invoiceDate;
+                try {
+                    let maxTs = 0;
+                    tkts.forEach(t => {
+                        const d = t.createdAt && t.createdAt.toDate ? t.createdAt.toDate() : (t.date ? new Date(t.date) : null);
+                        if (d && !isNaN(d.getTime()) && d.getTime() > maxTs) maxTs = d.getTime();
+                    });
+                    if (maxTs > 0) fechaDevengo = new Date(maxTs);
+                } catch(_) { /* keep invoiceDate */ }
+                // Detectar cambio de trimestre devengo↔expedición (Sprint 3 §5.4)
+                if (Math.floor(fechaDevengo.getMonth()/3) !== Math.floor(invoiceDate.getMonth()/3) ||
+                    fechaDevengo.getFullYear() !== invoiceDate.getFullYear()) {
+                    _quarterMismatches++;
+                }
 
                 const invoiceData = {
-                    number: currentInvNumber,
+                    number: nextInvNumber,
                     invoiceId: invoiceIdStr,
-                    date: invoiceDate,
+                    date: invoiceDate,           // fecha EXPEDICIÓN (cuándo se emite)
+                    fechaDevengo: fechaDevengo,  // fecha OPERACIÓN (cuándo se devenga IVA)
                     clientId: client.id,
                     clientName: client.name || 'Sin nombre',
-                    clientCIF: client.idNum || client.nif || 'N/A',
+                    clientCIF: clientFiscalId,
                     subtotal: group.subtotal,
                     iva: group.iva,
                     ivaRate: ivaRate,
@@ -595,8 +683,17 @@
                     total: group.total,
                     senderData: _mbSenderData
                 });
+                // (No manual increment: each iteration calls allocSequentialNumber.)
+            }
 
-                currentInvNumber++;
+            // Avisar de clientes saltados por validaciones legales (NIF, etc.)
+            if (failures.length > 0) {
+                const txt = failures.map(f => `  • ${f.name} → ${f.reason}`).join('\n');
+                alert('⚠️ ' + failures.length + ' cliente(s) NO se facturaron:\n\n' + txt + '\n\nCompleta sus datos fiscales y vuelve a ejecutar la facturación.');
+            }
+            // Aviso de cambio de trimestre devengo↔expedición (Sprint 3 §5.4)
+            if (_quarterMismatches > 0) {
+                alert('ℹ️ ' + _quarterMismatches + ' factura(s) tienen FECHA DE DEVENGO en un trimestre distinto a la fecha de expedición.\n\nEsto es habitual si facturas en los primeros días del mes los albaranes del mes anterior. El sistema usará fechaDevengo para los modelos AEAT (303/390), no fecha de expedición.\n\nSi quieres que estas facturas se imputen al trimestre de expedición, edita su fechaDevengo a mano.');
             }
 
             // Done — go to SEPA step
@@ -709,7 +806,10 @@
 
             <div style="display:flex; justify-content:space-between; margin-top:20px; flex-wrap:wrap; gap:8px;">
                 <button onclick="document.getElementById('${MODAL_ID}').remove(); if(typeof window._facRefresh === 'function') window._facRefresh();" style="padding:10px 24px; background:#3c3c3c; border:none; color:#ccc; border-radius:8px; cursor:pointer; font-size:0.85rem;">Cerrar</button>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button onclick="window._mbSendAllInvoiceEmails()" style="padding:10px 24px; background:linear-gradient(135deg,#FF6600,#E55300); border:none; color:#fff; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem; box-shadow:0 2px 8px rgba(255,102,0,0.4); display:flex; align-items:center; gap:6px;">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">mail</span> 📧 Enviar TODAS por email
+                    </button>
                     <button onclick="window._mbDownloadSEPA()" ${hasBank ? '' : 'disabled'} style="padding:10px 24px; background:${hasBank ? 'linear-gradient(135deg,#1565C0,#1E88E5)' : '#555'}; border:none; color:#fff; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.85rem; box-shadow:0 2px 8px rgba(21,101,192,0.4); display:flex; align-items:center; gap:6px;">
                         <span class="material-symbols-outlined" style="font-size:1rem;">account_balance</span> Descargar XML SEPA
                     </button>
@@ -718,6 +818,21 @@
         </div>`;
     }
 
+    // Enviar TODAS las facturas generadas en esta sesión por email.
+    // Sprint email-automation: usa window.enqueueInvoicesMass (admin.html)
+    window._mbSendAllInvoiceEmails = async function() {
+        if (!Array.isArray(_mbGeneratedInvoices) || _mbGeneratedInvoices.length === 0) {
+            alert('No hay facturas generadas en esta sesión para enviar.');
+            return;
+        }
+        if (typeof window.enqueueInvoicesMass !== 'function') {
+            alert('La función de envío masivo no está disponible. Recarga la página.');
+            return;
+        }
+        const docIds = _mbGeneratedInvoices.map(i => i.invoiceDocId || i.docId || i.id).filter(Boolean);
+        await window.enqueueInvoicesMass(docIds);
+    };
+
     window._mbToggleSEPA = function(checked) {
         document.querySelectorAll('.mb-sepa-check:not(:disabled)').forEach(cb => { cb.checked = checked; });
     };
@@ -725,7 +840,7 @@
     // ============================================================
     //  SEPA XML Generation + Download
     // ============================================================
-    window._mbDownloadSEPA = function() {
+    window._mbDownloadSEPA = async function() {
         const checkboxes = document.querySelectorAll('.mb-sepa-check:checked');
         const selectedInvoices = [];
         checkboxes.forEach(cb => {
@@ -744,74 +859,141 @@
             alert('La empresa emisora no tiene IBAN configurado. Configúralo en Datos Fiscales.'); return;
         }
 
-        // Build SEPA PAIN.008.001.02 XML
+        // SEPA pain.008.001.02 — Sprint 2 fix legal aplicado:
+        //  • Escape XML real (no eliminación)
+        //  • Validación IBAN MOD-97 (rechaza inválidos)
+        //  • Creditor Identifier desde company.creditorId (no autocalculado)
+        //  • DbtrAgt + ChrgBr SLEV añadidos
+        //  • Mandato SEPA OBLIGATORIO (rechaza si no hay sepaRef firmado)
+        function _xmlEscape(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+        }
+        function _validateIBAN(iban) {
+            if (typeof window.validateIBAN === 'function') return window.validateIBAN(iban);
+            const clean = String(iban||'').replace(/\s/g,'').toUpperCase();
+            if (clean.length < 15 || clean.length > 34) return false;
+            if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(clean)) return false;
+            const rearranged = clean.slice(4) + clean.slice(0, 4);
+            let numeric = '';
+            for (const ch of rearranged) {
+                const code = ch.charCodeAt(0);
+                numeric += (code >= 48 && code <= 57) ? ch : (code - 55).toString();
+            }
+            let remainder = 0;
+            for (let i = 0; i < numeric.length; i += 7) {
+                remainder = parseInt(String(remainder) + numeric.substring(i, i+7), 10) % 97;
+            }
+            return remainder === 1;
+        }
+
+        if (!company.bank) { alert('Falta IBAN de empresa emisora.'); return; }
+        if (!_validateIBAN(company.bank)) { alert('IBAN de empresa emisora NO válido (check MOD-97 falló).'); return; }
+        if (!company.creditorId) {
+            alert('Falta el IDENTIFICADOR DE ACREEDOR SEPA (campo creditorId en datos fiscales).\n\nLo asigna tu banco. NO se autocalcula.\n\nFormato: ES + 2 dígitos check + 3 dígitos suffix + NIF (9).');
+            return;
+        }
+
         const msgId = 'MSG' + Date.now();
         const creationDate = new Date().toISOString().split('.')[0];
-        const totalAmount = selectedInvoices.reduce((sum, inv) => sum + inv.total, 0).toFixed(2);
         const numTrans = selectedInvoices.length;
-        const creditorIBAN = company.bank.replace(/\s/g, '');
-        const creditorCIF = (company.cif || '').replace(/[^A-Z0-9]/gi, '');
-        const creditorName = (company.name || 'NOVAPACK').substring(0, 70).replace(/[&<>"]/g, '');
-        const sepaId = company.sepaId || '000';
-        const creditorId = `ES${creditorIBAN.substring(2, 4)}${sepaId}${creditorCIF}`;
-        const collectionDate = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
+        const creditorIBAN = company.bank.replace(/\s/g, '').toUpperCase();
+        const creditorName = (company.name || 'NOVAPACK').substring(0, 70);
+        const creditorId = company.creditorId.trim();
+        const collectionDate = new Date(Date.now() + 86400000 * 6).toISOString().split('T')[0];
 
         let transactions = '';
-        let skipped = 0;
+        const skipped = [];
+        const validInvs = [];
         selectedInvoices.forEach(inv => {
             const client = window.userMap ? window.userMap[inv.clientId] : null;
-            if (!client) { skipped++; return; }
-            const clientIBAN = (client.iban || '').replace(/\s/g, '');
-            if (clientIBAN.length < 20) { skipped++; return; }
-            const clientName = (client.name || inv.clientName).substring(0, 70).replace(/[&<>"]/g, '');
-            const mandateId = client.sepaRef || ('MANDATO-' + (inv.clientId || '').substring(0, 8));
+            if (!client) { skipped.push({inv: inv.invoiceId, reason: 'cliente no encontrado'}); return; }
+            const clientIBAN = (client.iban || '').replace(/\s/g, '').toUpperCase();
+            if (!clientIBAN) { skipped.push({inv: inv.invoiceId, reason: 'sin IBAN'}); return; }
+            if (!_validateIBAN(clientIBAN)) { skipped.push({inv: inv.invoiceId, reason: 'IBAN inválido (MOD-97)'}); return; }
+            if (!client.sepaRef) { skipped.push({inv: inv.invoiceId, reason: 'sin mandato SEPA firmado'}); return; }
+            const clientName = (client.name || inv.clientName || '').substring(0, 70);
+            const mandateId = client.sepaRef;
             const mandateDate = client.sepaDate || new Date().toISOString().split('T')[0];
+            validInvs.push(inv);
 
             transactions += `
         <DrctDbtTxInf>
-            <PmtId><EndToEndId>${inv.invoiceId}</EndToEndId></PmtId>
+            <PmtId><EndToEndId>${_xmlEscape(inv.invoiceId)}</EndToEndId></PmtId>
             <InstdAmt Ccy="EUR">${inv.total.toFixed(2)}</InstdAmt>
             <DrctDbtTx>
                 <MndtRltdInf>
-                    <MndtId>${mandateId}</MndtId>
-                    <DtOfSgntr>${mandateDate}</DtOfSgntr>
+                    <MndtId>${_xmlEscape(mandateId)}</MndtId>
+                    <DtOfSgntr>${_xmlEscape(mandateDate)}</DtOfSgntr>
                 </MndtRltdInf>
             </DrctDbtTx>
-            <Dbtr><Nm>${clientName}</Nm></Dbtr>
-            <DbtrAcct><Id><IBAN>${clientIBAN}</IBAN></Id></DbtrAcct>
-            <RmtInf><Ustrd>Factura ${inv.invoiceId}</Ustrd></RmtInf>
+            <DbtrAgt><FinInstnId><Othr><Id>NOTPROVIDED</Id></Othr></FinInstnId></DbtrAgt>
+            <Dbtr><Nm>${_xmlEscape(clientName)}</Nm></Dbtr>
+            <DbtrAcct><Id><IBAN>${_xmlEscape(clientIBAN)}</IBAN></Id></DbtrAcct>
+            <RmtInf><Ustrd>${_xmlEscape('Factura ' + inv.invoiceId)}</Ustrd></RmtInf>
         </DrctDbtTxInf>`;
         });
 
-        const actualTrans = numTrans - skipped;
-        if (actualTrans === 0) {
-            alert('Ninguna factura seleccionada tiene IBAN válido.'); return;
+        if (validInvs.length === 0) {
+            const txt = skipped.map(s => `  • ${s.inv}: ${s.reason}`).join('\n');
+            alert('No quedan facturas válidas para la remesa.\n\nRechazadas:\n' + txt); return;
         }
+        if (skipped.length > 0) {
+            const txt = skipped.map(s => `  • ${s.inv}: ${s.reason}`).join('\n');
+            if (!confirm('⚠️ ' + skipped.length + ' facturas RECHAZADAS:\n\n' + txt + '\n\n¿Generar remesa solo con las ' + validInvs.length + ' válidas?')) return;
+        }
+        const totalAmount = validInvs.reduce((sum, inv) => sum + inv.total, 0).toFixed(2);
+        const actualTrans = validInvs.length;
 
         const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02">
     <CstmrDrctDbtInitn>
         <GrpHdr>
-            <MsgId>${msgId}</MsgId>
+            <MsgId>${_xmlEscape(msgId)}</MsgId>
             <CreDtTm>${creationDate}</CreDtTm>
             <NbOfTxs>${actualTrans}</NbOfTxs>
             <CtrlSum>${totalAmount}</CtrlSum>
-            <InitgPty><Nm>${creditorName}</Nm></InitgPty>
+            <InitgPty><Nm>${_xmlEscape(creditorName)}</Nm></InitgPty>
         </GrpHdr>
         <PmtInf>
-            <PmtInfId>${msgId}-INF</PmtInfId>
+            <PmtInfId>${_xmlEscape(msgId)}-INF</PmtInfId>
             <PmtMtd>DD</PmtMtd>
             <NbOfTxs>${actualTrans}</NbOfTxs>
             <CtrlSum>${totalAmount}</CtrlSum>
             <PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl><LclInstrm><Cd>CORE</Cd></LclInstrm><SeqTp>RCUR</SeqTp></PmtTpInf>
             <ReqdColltnDt>${collectionDate}</ReqdColltnDt>
-            <Cdtr><Nm>${creditorName}</Nm></Cdtr>
-            <CdtrAcct><Id><IBAN>${creditorIBAN}</IBAN></Id></CdtrAcct>
+            <Cdtr><Nm>${_xmlEscape(creditorName)}</Nm></Cdtr>
+            <CdtrAcct><Id><IBAN>${_xmlEscape(creditorIBAN)}</IBAN></Id></CdtrAcct>
             <CdtrAgt><FinInstnId><Othr><Id>NOTPROVIDED</Id></Othr></FinInstnId></CdtrAgt>
-            <CdtrSchmeId><Id><PrvtId><Othr><Id>${creditorId}</Id><SchmeNm><Prtry>SEPA</Prtry></SchmeNm></Othr></PrvtId></Id></CdtrSchmeId>${transactions}
+            <ChrgBr>SLEV</ChrgBr>
+            <CdtrSchmeId><Id><PrvtId><Othr><Id>${_xmlEscape(creditorId)}</Id><SchmeNm><Prtry>SEPA</Prtry></SchmeNm></Othr></PrvtId></Id></CdtrSchmeId>${transactions}
         </PmtInf>
     </CstmrDrctDbtInitn>
 </Document>`;
+
+        // REGISTRAR en /sepa_mandate_log cada cargo para que futuras remesas
+        // detecten correctamente FRST (1er cargo) vs RCUR (recurrente).
+        try {
+            const logBatch = db.batch();
+            const now = firebase.firestore.FieldValue.serverTimestamp();
+            for (const inv of validInvs) {
+                const client = window.userMap ? window.userMap[inv.clientId] : null;
+                if (!client || !client.sepaRef) continue;
+                const logRef = db.collection('sepa_mandate_log').doc();
+                logBatch.set(logRef, {
+                    mandateId: client.sepaRef,
+                    clientId: inv.clientId,
+                    invoiceId: inv.invoiceId,
+                    invoiceDocId: inv.docId || inv.id,
+                    amount: inv.total,
+                    collectedAt: collectionDate,
+                    createdAt: now,
+                    msgId: msgId
+                });
+            }
+            await logBatch.commit();
+        } catch(logErr) { console.warn('[sepa] no se pudo registrar mandate_log:', logErr); }
 
         // Download
         const blob = new Blob([xml], { type: 'application/xml' });

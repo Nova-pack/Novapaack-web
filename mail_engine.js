@@ -9,16 +9,44 @@
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 const { JSDOM } = require('jsdom');
+const nodemailer = require('nodemailer');
 const firebase = require('firebase/compat/app');
 require('firebase/compat/auth');
 require('firebase/compat/firestore');
+const path = require('path');
+const fs = require('fs');
 
-// ============ CONFIG ============
+// Load .env if present (no external dotenv dep)
+(function loadDotEnv() {
+    const envPath = path.join(__dirname, '.env');
+    if (!fs.existsSync(envPath)) return;
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+        const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+        if (!m) continue;
+        const key = m[1];
+        let val = m[2];
+        if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+        if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+        if (process.env[key] === undefined) process.env[key] = val;
+    }
+})();
+
+function requireEnv(name) {
+    const v = process.env[name];
+    if (!v) {
+        console.error('[MAIL ENGINE] Missing env var: ' + name + '. Configure it in .env or system env. See .env.example.');
+        process.exit(1);
+    }
+    return v;
+}
+
+// ============ CONFIG (from environment) ============
 const IMAP_CONFIG = {
-    user: 'administracion@novapack.info',
-    password: 'MAJUPACLA',
-    host: 'imap.ionos.es',
-    port: 993,
+    user: requireEnv('IMAP_USER'),
+    password: requireEnv('IMAP_PASS'),
+    host: process.env.IMAP_HOST || 'imap.ionos.es',
+    port: parseInt(process.env.IMAP_PORT || '993', 10),
     tls: true,
     tlsOptions: { rejectUnauthorized: false },
     connTimeout: 30000,
@@ -26,10 +54,13 @@ const IMAP_CONFIG = {
 };
 
 const FIREBASE_CONFIG = {
-    apiKey: "AIzaSyCHIqqwPtx5SFzf5d-cb6H0VSwX5eP_5lE",
-    authDomain: "novapack-68f05.firebaseapp.com",
-    projectId: "novapack-68f05"
+    apiKey: requireEnv('FIREBASE_API_KEY'),
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN || 'novapack-68f05.firebaseapp.com',
+    projectId: process.env.FIREBASE_PROJECT_ID || 'novapack-68f05'
 };
+
+const FIREBASE_AUTH_USER = requireEnv('FIREBASE_ADMIN_EMAIL');
+const FIREBASE_AUTH_PASS = requireEnv('FIREBASE_ADMIN_PASS');
 
 // How many days back to scan for emails
 const DAYS_BACK = 3;
@@ -238,6 +269,212 @@ async function lookupTicketPOD(db, ticketRef) {
         console.error(`[MAIL ENGINE] POD lookup error for ${ticketRef}:`, e.message);
         return { ready: false, reason: 'error_consulta' };
     }
+}
+
+// ============================================================
+// ENVÍO SALIENTE (SMTP) — procesa la cola /mailbox status:'queued'
+// ============================================================
+// Configuración SMTP opcional: si faltan SMTP_USER/PASS, sólo se loguea y
+// no se procesa nada. Así el motor IMAP sigue funcionando aunque el admin
+// no haya configurado todavía las credenciales SMTP.
+const SMTP_CONFIG_OK = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.ionos.es';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465', 10);
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const SMTP_BCC  = process.env.SMTP_BCC  || SMTP_USER; // copia oculta al admin
+const SMTP_FROM_NAME = process.env.SMTP_FROM_NAME || 'NOVAPACK';
+// Tope por ejecución para no saturar IONOS ni Firestore en un único disparo.
+const OUTGOING_BATCH_MAX = parseInt(process.env.OUTGOING_BATCH_MAX || '20', 10);
+
+let _smtpTransporter = null;
+function getSmtpTransporter() {
+    if (!SMTP_CONFIG_OK) return null;
+    if (_smtpTransporter) return _smtpTransporter;
+    _smtpTransporter = nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_PORT === 465,   // SSL para 465, STARTTLS para 587
+        auth: { user: SMTP_USER, pass: SMTP_PASS },
+        tls: { rejectUnauthorized: false }
+    });
+    return _smtpTransporter;
+}
+
+// Detecta si un cuerpo es HTML o texto plano (heurística simple)
+function looksLikeHtml(s) {
+    if (!s) return false;
+    return /<\/?(html|body|p|div|br|table|a|strong|b|i|ul|ol|li|h[1-6])\b/i.test(s);
+}
+
+/**
+ * Procesa la cola de salida una vez. Lee /mailbox docs con status:'queued'
+ * (o legacy 'outgoing'), los marca 'sending' para evitar doble envío si
+ * dos procesos coinciden, intenta enviarlos por SMTP y los marca 'sent'
+ * (con sentAt + messageId) o 'failed' (con errorMessage + errorCode).
+ */
+async function processOutgoingQueue(db) {
+    if (!SMTP_CONFIG_OK) {
+        console.log('[MAIL ENGINE] SMTP no configurado (faltan SMTP_USER/SMTP_PASS en .env) → salto cola saliente.');
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+    const transporter = getSmtpTransporter();
+    if (!transporter) return { sent: 0, failed: 0, skipped: 0 };
+
+    // Verificar conexión SMTP una vez por ejecución
+    try {
+        await transporter.verify();
+        console.log('[MAIL ENGINE] SMTP connected ✅ (' + SMTP_HOST + ':' + SMTP_PORT + ' as ' + SMTP_USER + ')');
+    } catch(e) {
+        console.error('[MAIL ENGINE] SMTP verify FAILED:', e.message);
+        console.error('[MAIL ENGINE] Revisa credenciales SMTP_HOST / SMTP_USER / SMTP_PASS en .env.');
+        return { sent: 0, failed: 0, skipped: 0, error: e.message };
+    }
+
+    // Cargar cola: status === 'queued' (nuevo) o status === 'outgoing' (legacy)
+    let queueDocs = [];
+    try {
+        const q1 = await db.collection('mailbox').where('status', '==', 'queued').limit(OUTGOING_BATCH_MAX).get();
+        q1.forEach(d => queueDocs.push({ id: d.id, ref: d.ref, ...d.data() }));
+        if (queueDocs.length < OUTGOING_BATCH_MAX) {
+            const q2 = await db.collection('mailbox').where('status', '==', 'outgoing').limit(OUTGOING_BATCH_MAX - queueDocs.length).get();
+            q2.forEach(d => queueDocs.push({ id: d.id, ref: d.ref, ...d.data() }));
+        }
+    } catch(e) {
+        console.error('[MAIL ENGINE] No pude leer la cola de salientes:', e.message);
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+
+    if (!queueDocs.length) {
+        console.log('[MAIL ENGINE] Cola saliente vacía.');
+        return { sent: 0, failed: 0, skipped: 0 };
+    }
+    console.log('[MAIL ENGINE] Procesando ' + queueDocs.length + ' correos salientes…');
+
+    let sent = 0, failed = 0, skipped = 0;
+    for (const doc of queueDocs) {
+        const id = doc.id;
+        const to = (doc.to || '').trim();
+        const subject = (doc.subject || '(sin asunto)').trim();
+        const body = doc.body || '';
+
+        if (!to || !to.includes('@')) {
+            console.warn('[MAIL ENGINE] Skip ' + id + ' — destinatario inválido: "' + to + '"');
+            await doc.ref.update({
+                status: 'failed',
+                errorMessage: 'Destinatario inválido o vacío',
+                errorCode: 'BAD_RECIPIENT',
+                failedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(()=>{});
+            failed++;
+            continue;
+        }
+
+        // Marca 'sending' (anti doble envío). Si ya está en 'sending' por otro
+        // proceso, lo saltamos.
+        try {
+            const fresh = await doc.ref.get();
+            const st = (fresh.exists && fresh.data().status) || '';
+            if (st !== 'queued' && st !== 'outgoing') {
+                skipped++;
+                continue;
+            }
+            await doc.ref.update({
+                status: 'sending',
+                sendingAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        } catch(e) {
+            console.warn('[MAIL ENGINE] No pude marcar sending ' + id + ':', e.message);
+            skipped++;
+            continue;
+        }
+
+        // Construir mensaje
+        const isHtml = looksLikeHtml(body);
+        const mailOpts = {
+            from: '"' + SMTP_FROM_NAME + '" <' + SMTP_USER + '>',
+            to: to,
+            subject: subject,
+            bcc: SMTP_BCC && SMTP_BCC !== to ? SMTP_BCC : undefined
+        };
+        if (isHtml) mailOpts.html = body;
+        else mailOpts.text = body;
+
+        // ADJUNTOS — nodemailer descarga URLs HTTPS automáticamente cuando se le
+        // pasa { path: <url> }. Esto permite enviar facturas PDF subidas a Storage.
+        if (Array.isArray(doc.attachments) && doc.attachments.length > 0) {
+            mailOpts.attachments = doc.attachments.map(a => {
+                if (!a) return null;
+                if (a.contentBase64) {
+                    // Modo embebido (limitado por tamaño doc Firestore ~1MB)
+                    return {
+                        filename: a.filename || 'adjunto',
+                        content: Buffer.from(a.contentBase64, 'base64'),
+                        contentType: a.contentType || 'application/octet-stream'
+                    };
+                }
+                if (a.url) {
+                    return {
+                        filename: a.filename || 'adjunto.pdf',
+                        path: a.url,  // nodemailer descarga la URL
+                        contentType: a.contentType || 'application/pdf'
+                    };
+                }
+                return null;
+            }).filter(Boolean);
+            if (mailOpts.attachments.length > 0) {
+                console.log('[MAIL ENGINE] ' + id + ' lleva ' + mailOpts.attachments.length + ' adjunto(s)');
+            }
+        }
+
+        try {
+            const info = await transporter.sendMail(mailOpts);
+            await doc.ref.update({
+                status: 'sent',
+                sentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                smtpMessageId: info.messageId || null,
+                smtpResponse: (info.response || '').toString().slice(0, 500),
+                sentVia: 'smtp_engine'
+            });
+            // Si el doc tenía clientId, marcamos también el doc del cliente
+            // como welcomeSentAt para que el chip se actualice de "queued" a
+            // "sent" en el listado de clientes.
+            try {
+                if (doc.clientId && (doc.type === 'outgoing_welcome' || doc.type === 'outgoing_pod')) {
+                    await db.collection('users').doc(doc.clientId).set({
+                        welcomeDeliveredAt: firebase.firestore.FieldValue.serverTimestamp()
+                    }, { merge: true });
+                }
+            } catch(_) {}
+
+            // FACTURAS: marcar la factura como emailSentAt
+            try {
+                if (doc.type === 'invoice_email' && doc.invoiceDocId) {
+                    await db.collection('invoices').doc(doc.invoiceDocId).update({
+                        emailSentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        emailSentTo: to,
+                        emailSmtpId: info.messageId || null
+                    });
+                }
+            } catch(_) {}
+            console.log('[MAIL ENGINE] Sent ' + (doc.type || 'mail') + ' → ' + to + ' ✅ ' + (info.messageId || ''));
+            sent++;
+        } catch(e) {
+            const code = e.code || e.responseCode || 'SEND_FAIL';
+            const msg = (e.message || '').slice(0, 500);
+            console.error('[MAIL ENGINE] FAIL → ' + to + ' :: ' + code + ' :: ' + msg);
+            await doc.ref.update({
+                status: 'failed',
+                errorMessage: msg,
+                errorCode: String(code),
+                failedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(()=>{});
+            failed++;
+        }
+    }
+
+    console.log('[MAIL ENGINE] Saliente: ' + sent + ' enviados · ' + failed + ' fallidos · ' + skipped + ' saltados');
+    return { sent, failed, skipped };
 }
 
 async function run() {
@@ -490,6 +727,54 @@ async function run() {
     });
 }
 
+// ============================================================
+// MODOS DE EJECUCIÓN
+// ============================================================
+// One-shot (default):  ejecuta una pasada IMAP + cola SMTP y sale.
+//                      Útil para cron / programador de tareas.
+// Watch mode (--watch): IMAP cada IMAP_INTERVAL_MIN minutos +
+//                      escucha Firestore EN TIEMPO REAL para
+//                      enviar emails salientes al instante (1-2s)
+//                      cuando aparecen con status:'queued'.
+const WATCH_MODE = process.argv.includes('--watch') || process.env.WATCH_MODE === 'true';
+const IMAP_INTERVAL_MIN = parseInt(process.env.IMAP_INTERVAL_MIN || '5', 10);
+
+// Anti doble-procesado de la cola: si hay un envío en curso y llegan
+// más cambios, no lanzamos múltiples procesos en paralelo (evita rate
+// limits de IONOS y race conditions sobre el doc).
+let _processingOutgoing = false;
+async function tryProcessOutgoing(db) {
+    if (_processingOutgoing) return;
+    _processingOutgoing = true;
+    try {
+        await processOutgoingQueue(db);
+    } catch(e) {
+        console.error('[MAIL ENGINE] Error cola saliente (watch):', e.message);
+    } finally {
+        _processingOutgoing = false;
+    }
+}
+
+// Ejecuta una pasada IMAP completa con retries (lo que antes hacía main
+// en una sola tirada). Reutilizable en watch mode.
+async function runImapOnce() {
+    let lastError = null;
+    for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
+        try {
+            console.log(`[MAIL ENGINE] IMAP attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
+            await run();
+            return null;
+        } catch(e) {
+            lastError = e;
+            console.error(`[MAIL ENGINE] IMAP attempt ${attempt} failed: ${e.message}`);
+            if (attempt < IMAP_MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
+            }
+        }
+    }
+    return lastError;
+}
+
 // Run and handle Firebase auth
 async function main() {
     // Init Firebase
@@ -503,7 +788,7 @@ async function main() {
         // Read admin UID from environment or hardcode for this script
         // The Firestore rules require auth, so we need a valid user
         const accounts = [
-            { email: 'administracion@novapack.info', pass: 'novapack' },
+            { email: FIREBASE_AUTH_USER, pass: FIREBASE_AUTH_PASS },
         ];
 
         let authed = false;
@@ -533,26 +818,124 @@ async function main() {
         console.error('[MAIL ENGINE] Auth setup error:', e.message);
     }
 
-    let lastError = null;
-    for (let attempt = 1; attempt <= IMAP_MAX_RETRIES; attempt++) {
-        try {
-            console.log(`[MAIL ENGINE] Attempt ${attempt}/${IMAP_MAX_RETRIES}...`);
-            await run();
-            lastError = null;
-            break;
-        } catch(e) {
-            lastError = e;
-            console.error(`[MAIL ENGINE] Attempt ${attempt} failed: ${e.message}`);
-            if (attempt < IMAP_MAX_RETRIES) {
-                console.log(`[MAIL ENGINE] Retrying in ${IMAP_RETRY_DELAY_MS / 1000}s...`);
-                await new Promise(r => setTimeout(r, IMAP_RETRY_DELAY_MS));
-            }
+    // ── Flags de pausa (managed from admin UI) ──
+    // - config/admin.mailEngineEnabled === false → pausa la LECTURA IMAP
+    //   (no procesamos correos entrantes). La cola SALIENTE sigue activa.
+    // - config/admin.mailEngineOutgoingEnabled === false → pausa también
+    //   la cola saliente (flag opcional, por defecto true).
+    let skipImap = false;
+    let skipOutgoing = false;
+    try {
+        const cfgDoc = await firebase.firestore().collection('config').doc('admin').get();
+        const cfg = cfgDoc.exists ? cfgDoc.data() : {};
+        if (cfg.mailEngineEnabled === false) {
+            skipImap = true;
+            console.log('[MAIL ENGINE] 🟠 IMAP pausado por admin (mailEngineEnabled=false). Saltando lectura entrante.');
         }
+        if (cfg.mailEngineOutgoingEnabled === false) {
+            skipOutgoing = true;
+            console.log('[MAIL ENGINE] 🟠 Cola saliente pausada por admin (mailEngineOutgoingEnabled=false).');
+        }
+    } catch(e) {
+        console.warn('[MAIL ENGINE] No pude leer flag de pausa:', e.message);
     }
 
-    if (lastError) {
-        console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
-        console.error('[MAIL ENGINE] ⚠️  ALERTA: El buzón no se ha podido sincronizar. Revisa la conexión IMAP o las credenciales.');
+    let lastError = null;
+
+    // ════════════════════════════════════════════════════════════
+    //  WATCH MODE — vive eternamente, escucha Firestore en tiempo real
+    // ════════════════════════════════════════════════════════════
+    if (WATCH_MODE) {
+        console.log('[MAIL ENGINE] 🟢 MODO WATCH — quedo escuchando cambios en tiempo real');
+        console.log('[MAIL ENGINE]    IMAP cada ' + IMAP_INTERVAL_MIN + ' min · SMTP al instante via Firestore listener');
+        const db = firebase.firestore();
+
+        // 1) Pasada inicial IMAP (si no está pausado)
+        if (!skipImap) {
+            await runImapOnce();
+        } else {
+            console.log('[MAIL ENGINE] IMAP saltado por pausa de admin.');
+        }
+
+        // 2) Pasada inicial cola saliente (procesa lo que estuviera ya pendiente)
+        if (!skipOutgoing) {
+            await tryProcessOutgoing(db);
+        }
+
+        // 3) Listener en tiempo real sobre la cola saliente
+        if (!skipOutgoing) {
+            console.log('[MAIL ENGINE] 📡 Suscripción Firestore a status="queued" activa.');
+            db.collection('mailbox').where('status', '==', 'queued')
+                .onSnapshot(snap => {
+                    const newOnes = snap.docChanges().filter(c => c.type === 'added' || c.type === 'modified');
+                    if (newOnes.length === 0) return;
+                    console.log('[MAIL ENGINE] 🔔 ' + newOnes.length + ' email(s) saliente(s) detectado(s) en tiempo real');
+                    tryProcessOutgoing(db);
+                }, err => {
+                    console.error('[MAIL ENGINE] Listener Firestore error:', err.message);
+                });
+            // También vigilamos el legacy status='outgoing'
+            db.collection('mailbox').where('status', '==', 'outgoing')
+                .onSnapshot(snap => {
+                    const newOnes = snap.docChanges().filter(c => c.type === 'added' || c.type === 'modified');
+                    if (newOnes.length === 0) return;
+                    console.log('[MAIL ENGINE] 🔔 ' + newOnes.length + ' email(s) saliente(s) legacy detectado(s)');
+                    tryProcessOutgoing(db);
+                }, err => {
+                    console.error('[MAIL ENGINE] Listener Firestore (legacy) error:', err.message);
+                });
+        }
+
+        // 4) Intervalo IMAP periódico
+        if (!skipImap) {
+            setInterval(async () => {
+                console.log('[MAIL ENGINE] ⏰ Pasada IMAP periódica…');
+                // Re-leemos pausa: el admin puede activar/desactivar sobre la marcha
+                try {
+                    const cfgDoc = await db.collection('config').doc('admin').get();
+                    if (cfgDoc.exists && cfgDoc.data().mailEngineEnabled === false) {
+                        console.log('[MAIL ENGINE] IMAP sigue pausado por admin. Salto pasada.');
+                        return;
+                    }
+                } catch(_) {}
+                await runImapOnce();
+            }, IMAP_INTERVAL_MIN * 60 * 1000);
+        }
+
+        // 5) Heartbeat cada 30 min para que se vea que sigue vivo en logs
+        setInterval(() => {
+            console.log('[MAIL ENGINE] ❤️ Heartbeat ' + new Date().toLocaleString('es-ES'));
+        }, 30 * 60 * 1000);
+
+        console.log('[MAIL ENGINE] ✅ Listo. NO cerrar esta ventana — el motor vive aquí.');
+        // No salimos. El proceso se queda vivo por los listeners y setIntervals.
+        return;
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  ONE-SHOT MODE — pasada única y salida (compat cron)
+    // ════════════════════════════════════════════════════════════
+    if (!skipImap) {
+        lastError = await runImapOnce();
+        if (lastError) {
+            console.error('[MAIL ENGINE] ALL RETRIES EXHAUSTED. Last error:', lastError.message);
+        }
+    } else {
+        try { await firebase.firestore().collection('config').doc('admin').set({
+            mailEngineLastSkippedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            mailEngineLastReason: 'imap_paused_by_admin'
+        }, { merge: true }); } catch(e) {}
+    }
+
+    if (!skipOutgoing) {
+        try {
+            const db = firebase.firestore();
+            await processOutgoingQueue(db);
+        } catch(e) {
+            console.error('[MAIL ENGINE] Error procesando cola saliente:', e.message);
+        }
+    } else {
+        console.log('[MAIL ENGINE] Cola saliente saltada por flag de pausa.');
     }
 
     process.exit(lastError ? 1 : 0);

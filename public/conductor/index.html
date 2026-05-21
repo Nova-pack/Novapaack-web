@@ -7,7 +7,7 @@
     <link rel="icon" href="../favicon.ico">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
     <style>
-        @font-face { font-family: 'Xenotron'; src: local('Xenotron'), url('https://db.onlinewebfonts.com/t/13f990d5baee565bea4d9ff96e201c84.woff2') format('woff2'); }
+        @font-face { font-family: 'Xenotron'; src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2'); font-display: block; }
         :root {
             --bg: #0a0a0a; --bg-card: #141416; --border: #2a2a2d;
             --brand: #FF6600; --brand-dark: #cc5200;
@@ -161,7 +161,8 @@
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script src="../firebase-config.js"></script>
-<script src="conductor.js"></script>
+<script src="../libs/qrcode.min.js"></script>
+<script src="conductor.js?v=20260515_qr_local"></script>
 
 <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
 </body>
