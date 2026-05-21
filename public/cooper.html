@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#FF4D00">
+<title>NOVAPACK · Portal Cooper</title>
+<link rel="icon" href="icon_new.png">
+
+<!-- Firebase SDK compat -->
+<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --orange: #FF4D00;
+    --orange-soft: #FF9800;
+    --bg: #0e0e12;
+    --surface: #1a1a22;
+    --border: #2d2d3a;
+    --text: #e8e8ec;
+    --text-dim: #9a9aa8;
+    --green: #4CAF50;
+    --blue: #2196F3;
+  }
+  body {
+    font-family: 'Inter', -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Pantallas ─── */
+  .screen { display: none; min-height: 100vh; }
+  .screen.active { display: block; }
+
+  /* ─── Gate (PIN / Nombre) ─── */
+  .gate {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 24px; text-align: center;
+  }
+  .gate-logo {
+    font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 2rem;
+    color: var(--orange); letter-spacing: -1px; margin-bottom: 4px;
+  }
+  .gate-logo span { color: #FF3B30; }
+  .gate-sub { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 32px; }
+  .gate-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 22px; width: 100%; max-width: 380px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  .gate-title { font-size: 1.1rem; font-weight: 800; margin-bottom: 6px; }
+  .gate-hint { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 20px; }
+  .gate-input {
+    width: 100%; padding: 14px 16px; font-size: 1.3rem; text-align: center;
+    background: var(--bg); border: 2px solid var(--border); border-radius: 10px;
+    color: var(--text); font-family: monospace; letter-spacing: 6px; outline: none;
+    transition: border-color 0.15s;
+  }
+  .gate-input.name { letter-spacing: normal; font-family: inherit; font-size: 1.05rem; }
+  .gate-input:focus { border-color: var(--orange); }
+  .gate-btn {
+    width: 100%; margin-top: 16px; padding: 14px; font-size: 1rem; font-weight: 800;
+    background: linear-gradient(135deg, var(--orange), var(--orange-soft));
+    color: #fff; border: 0; border-radius: 10px; cursor: pointer;
+  }
+  .gate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .gate-err {
+    margin-top: 14px; color: #FF8A80; font-size: 0.85rem; min-height: 20px;
+  }
+
+  /* ─── Header galería ─── */
+  .gx-header {
+    position: sticky; top: 0; z-index: 50; background: var(--surface);
+    border-bottom: 1px solid var(--border); padding: 12px 16px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .gx-header .logo {
+    font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 1.1rem;
+    color: var(--orange);
+  }
+  .gx-header .logo span { color: #FF3B30; }
+  .gx-header .who { font-size: 0.75rem; color: var(--text-dim); flex: 1; }
+  .gx-header .who b { color: var(--text); }
+
+  /* ─── Cuerpo ─── */
+  .gx-body { padding: 14px 16px 40px; max-width: 980px; margin: 0 auto; }
+
+  .gx-filters {
+    display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .gx-chip {
+    padding: 7px 14px; border-radius: 20px; font-size: 0.78rem; font-weight: 700;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+    cursor: pointer;
+  }
+  .gx-chip.active { background: var(--orange); border-color: var(--orange); color: #fff; }
+
+  /* ─── Carpetas día ─── */
+  .day-folder {
+    display: flex; align-items: center; gap: 12px; padding: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 10px; cursor: pointer;
+  }
+  .day-folder.today { border-color: rgba(255,152,0,0.5); background: rgba(255,152,0,0.06); }
+  .day-folder .icon { font-size: 1.8rem; }
+  .day-folder .info { flex: 1; min-width: 0; }
+  .day-folder .dlabel {
+    font-size: 0.92rem; font-weight: 700; text-transform: capitalize;
+  }
+  .day-folder .dmeta {
+    font-size: 0.74rem; color: var(--text-dim); display: flex; gap: 12px; margin-top: 3px;
+  }
+  .day-folder .arrow { color: #555; font-size: 1.3rem; }
+
+  /* ─── Vista fotos del día ─── */
+  .photos-bar {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .back-btn {
+    background: var(--surface); border: 1px solid var(--border); color: var(--blue);
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; font-weight: 700;
+  }
+  .print-btn {
+    background: var(--blue); border: 0; color: #fff;
+    padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; font-weight: 800;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .photos-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+  }
+  .photo-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; cursor: pointer;
+  }
+  .photo-card img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #000;
+  }
+  .photo-card .pc-meta { padding: 8px 10px; }
+  .photo-card .pc-type {
+    font-size: 0.75rem; font-weight: 800; display: flex; align-items: center; gap: 4px;
+  }
+  .photo-card .pc-type.recogida { color: var(--orange-soft); }
+  .photo-card .pc-type.entrega { color: var(--green); }
+  .photo-card .pc-time { font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
+  .photo-card .pc-note {
+    font-size: 0.7rem; color: var(--text-dim); margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .gx-empty { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  .gx-empty .big { font-size: 3rem; opacity: 0.3; }
+
+  /* ─── Lightbox foto individual ─── */
+  .lightbox {
+    display: none; position: fixed; inset: 0; z-index: 200;
+    background: rgba(0,0,0,0.94); padding: 16px;
+    flex-direction: column;
+  }
+  .lightbox.active { display: flex; }
+  .lb-top {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 10px; gap: 10px;
+  }
+  .lb-info { font-size: 0.82rem; color: var(--text-dim); }
+  .lb-actions { display: flex; gap: 8px; }
+  .lb-img-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto;
+  }
+  .lb-img-wrap img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+
+  /* ─── Loader ─── */
+  .loader {
+    position: fixed; inset: 0; background: var(--bg); z-index: 999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  }
+  .loader.hidden { display: none; }
+  .spinner {
+    width: 40px; height: 40px; border: 4px solid var(--border);
+    border-top-color: var(--orange); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ─── Área de impresión (oculta en pantalla) ─── */
+  #print-area { display: none; }
+
+  @media print {
+    body * { visibility: hidden; }
+    #print-area, #print-area * { visibility: visible; }
+    #print-area {
+      display: block !important; position: absolute; left: 0; top: 0; width: 100%;
+      background: #fff; color: #000; padding: 10mm;
+    }
+    .print-header {
+      border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 10px;
+    }
+    .print-header h1 { font-size: 16pt; }
+    .print-header .ph-sub { font-size: 9pt; color: #444; }
+    .print-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 8mm;
+    }
+    .print-cell { page-break-inside: avoid; border: 1px solid #999; padding: 4mm; }
+    .print-cell img { width: 100%; max-height: 110mm; object-fit: contain; }
+    .print-cell .pcap {
+      font-size: 8pt; margin-top: 3mm; border-top: 1px dashed #999; padding-top: 2mm;
+    }
+    .print-single img { width: 100%; max-height: 240mm; object-fit: contain; }
+    .print-single .pcap { font-size: 10pt; margin-top: 5mm; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ LOADER ═══════════ -->
+<div class="loader" id="loader">
+  <div class="spinner"></div>
+  <div style="color:var(--text-dim); font-size:0.85rem;">Conectando…</div>
+</div>
+
+<!-- ═══════════ PANTALLA 1 · PIN ═══════════ -->
+<div class="screen" id="screen-pin">
+  <div class="gate">
+    <div class="gate-logo">NOVAPACK<span>►</span></div>
+    <div class="gate-sub">Portal de Recogidas y Entregas · Cooper</div>
+    <div class="gate-card">
+      <div class="gate-title">🔒 Acceso restringido</div>
+      <div class="gate-hint">Introduce el PIN que te ha facilitado NOVAPACK.</div>
+      <input type="tel" inputmode="numeric" id="pin-input" class="gate-input"
+             placeholder="······" maxlength="10" autocomplete="off">
+      <button class="gate-btn" id="pin-btn">ENTRAR</button>
+      <div class="gate-err" id="pin-err"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ PANTALLA 2 · NOMBRE ═══════════ -->
+<div class="screen" id="screen-name">
+  <div class="gate">
+    <div class="gate-logo">NOVAPACK<span>►</span></div>
+    <div class="gate-sub">Portal Cooper</div>
+    <div class="gate-card">
+      <div class="gate-title">👋 ¿Quién eres?</div>
+      <div class="gate-hint">Escribe tu nombre para registrar el acceso. Queda guardado para NOVAPACK.</div>
+      <input type="text" id="name-input" class="gate-input name"
+             placeholder="Nombre y apellido" maxlength="60" autocomplete="off">
+      <button class="gate-btn" id="name-btn">CONTINUAR</button>
+      <div class="gate-err" id="name-err"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ PANTALLA 3 · GALERÍA ═══════════ -->
+<div class="screen" id="screen-gallery">
+  <div class="gx-header">
+    <div class="logo">NOVAPACK<span>►</span></div>
+    <div class="who">Cooper · <b id="who-name">—</b></div>
+  </div>
+  <div class="gx-body">
+    <div class="gx-filters" id="gx-filters">
+      <div class="gx-chip active" data-filter="all">Todo</div>
+      <div class="gx-chip" data-filter="recogida">📥 Recogidas</div>
+      <div class="gx-chip" data-filter="entrega">📤 Entregas</div>
+    </div>
+    <div id="gx-content"></div>
+  </div>
+</div>
+
+<!-- ═══════════ LIGHTBOX ═══════════ -->
+<div class="lightbox" id="lightbox">
+  <div class="lb-top">
+    <div class="lb-info" id="lb-info">—</div>
+    <div class="lb-actions">
+      <button class="print-btn" id="lb-print">🖨️ Imprimir</button>
+      <button class="back-btn" id="lb-close">✕ Cerrar</button>
+    </div>
+  </div>
+  <div class="lb-img-wrap"><img id="lb-img" src="" alt=""></div>
+</div>
+
+<!-- ═══════════ ÁREA DE IMPRESIÓN ═══════════ -->
+<div id="print-area"></div>
+
+<script src="firebase-config.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  // ─── Estado ───
+  var _photos = [];        // todas las fotos cargadas (90 días)
+  var _filter = 'all';     // all | recogida | entrega
+  var _openDay = null;     // 'YYYY-MM-DD' o null
+  var _userName = '';
+  var DAYS_BACK = 90;
+
+  // ─── Utilidades ───
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
+    $(id).classList.add('active');
+  }
+  function tsToDate(v) {
+    if (!v) return null;
+    if (typeof v.toDate === 'function') return v.toDate();
+    if (typeof v === 'number') return new Date(v);
+    var d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  function dayKey(d) { return d.toISOString().split('T')[0]; }
+  function dayLabel(d) {
+    return d.toLocaleDateString('es-ES', { weekday:'long', day:'2-digit', month:'long', year:'numeric' });
+  }
+  function timeLabel(d) {
+    return d.toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' });
+  }
+
+  // ─── Init: auth anónima + leer PIN ───
+  firebase.auth().signInAnonymously()
+    .then(function() {
+      $('loader').classList.add('hidden');
+      showScreen('screen-pin');
+      $('pin-input').focus();
+    })
+    .catch(function(e) {
+      $('loader').innerHTML = '<div style="color:#FF8A80; text-align:center; padding:20px;">' +
+        'No se pudo conectar.<br><small>' + esc(e.message) + '</small><br><br>' +
+        '<button onclick="location.reload()" style="padding:10px 20px; background:#FF4D00; color:#fff; border:0; border-radius:8px;">Reintentar</button></div>';
+    });
+
+  // ─── PIN ───
+  var _storedPin = null;
+  async function _loadPin() {
+    try {
+      var doc = await firebase.firestore().collection('config').doc('cooper_portal').get();
+      if (doc.exists && doc.data().pin) {
+        _storedPin = String(doc.data().pin).trim();
+      } else {
+        _storedPin = null;
+      }
+    } catch (e) {
+      _storedPin = null;
+      console.warn('[cooper] no pin config:', e.message);
+    }
+  }
+
+  $('pin-btn').addEventListener('click', _checkPin);
+  $('pin-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') _checkPin(); });
+
+  async function _checkPin() {
+    var entered = $('pin-input').value.trim();
+    var errEl = $('pin-err');
+    if (!entered) { errEl.textContent = 'Escribe el PIN.'; return; }
+
+    $('pin-btn').disabled = true;
+    errEl.textContent = '';
+
+    if (_storedPin === null) await _loadPin();
+
+    if (_storedPin === null) {
+      errEl.textContent = 'El portal aún no está configurado. Contacta con NOVAPACK.';
+      $('pin-btn').disabled = false;
+      return;
+    }
+    if (entered !== _storedPin) {
+      errEl.textContent = 'PIN incorrecto.';
+      $('pin-btn').disabled = false;
+      $('pin-input').value = '';
+      $('pin-input').focus();
+      return;
+    }
+    // PIN OK → pantalla nombre
+    $('pin-btn').disabled = false;
+    showScreen('screen-name');
+    $('name-input').focus();
+  }
+
+  // ─── NOMBRE + registro de acceso ───
+  $('name-btn').addEventListener('click', _submitName);
+  $('name-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') _submitName(); });
+
+  async function _submitName() {
+    var name = $('name-input').value.trim();
+    var errEl = $('name-err');
+    if (name.length < 2) { errEl.textContent = 'Escribe tu nombre completo.'; return; }
+
+    $('name-btn').disabled = true;
+    errEl.textContent = '';
+    _userName = name;
+
+    // Registrar acceso (no bloqueante crítico — si falla, igual entra)
+    try {
+      await firebase.firestore().collection('cooper_access_log').add({
+        name: name,
+        accessAt: firebase.firestore.FieldValue.serverTimestamp(),
+        userAgent: navigator.userAgent || '',
+        platform: navigator.platform || '',
+        language: navigator.language || '',
+        screen: (window.screen ? (window.screen.width + 'x' + window.screen.height) : ''),
+        portal: 'cooper'
+      });
+    } catch (e) {
+      console.warn('[cooper] no se pudo registrar acceso:', e.message);
+    }
+
+    $('who-name').textContent = name;
+    showScreen('screen-gallery');
+    _loadPhotos();
+  }
+
+  // ─── Cargar fotos (últimos 90 días) ───
+  async function _loadPhotos() {
+    $('gx-content').innerHTML = '<div class="gx-empty"><div class="spinner" style="margin:0 auto;"></div>' +
+      '<div style="margin-top:14px;">Cargando fotos…</div></div>';
+
+    var since = new Date();
+    since.setDate(since.getDate() - DAYS_BACK);
+
+    try {
+      var snap = await firebase.firestore().collection('cooper_photos')
+        .where('createdAt', '>=', firebase.firestore.Timestamp.fromDate(since))
+        .orderBy('createdAt', 'desc')
+        .limit(3000)
+        .get();
+
+      _photos = [];
+      snap.forEach(function(doc) {
+        var d = doc.data();
+        var date = tsToDate(d.createdAt) || tsToDate(d.timestamp);
+        if (!date) return;
+        _photos.push({ id: doc.id, data: d, date: date });
+      });
+      _renderGallery();
+    } catch (e) {
+      // Fallback: si falla el índice de createdAt, intentar por timestamp
+      console.warn('[cooper] query createdAt fail, fallback:', e.message);
+      try {
+        var snap2 = await firebase.firestore().collection('cooper_photos')
+          .orderBy('timestamp', 'desc').limit(3000).get();
+        var sinceMs = since.getTime();
+        _photos = [];
+        snap2.forEach(function(doc) {
+          var d = doc.data();
+          var date = tsToDate(d.createdAt) || tsToDate(d.timestamp);
+          if (!date || date.getTime() < sinceMs) return;
+          _photos.push({ id: doc.id, data: d, date: date });
+        });
+        _renderGallery();
+      } catch (e2) {
+        $('gx-content').innerHTML = '<div class="gx-empty" style="color:#FF8A80;">' +
+          'Error cargando las fotos.<br><small>' + esc(e2.message) + '</small></div>';
+      }
+    }
+  }
+
+  // ─── Filtros ───
+  $('gx-filters').addEventListener('click', function(e) {
+    var chip = e.target.closest('.gx-chip');
+    if (!chip) return;
+    _filter = chip.getAttribute('data-filter');
+    document.querySelectorAll('.gx-chip').forEach(function(c) { c.classList.remove('active'); });
+    chip.classList.add('active');
+    _renderGallery();
+  });
+
+  function _filtered() {
+    if (_filter === 'all') return _photos;
+    return _photos.filter(function(p) { return (p.data.type || '') === _filter; });
+  }
+
+  // ─── Render galería ───
+  function _renderGallery() {
+    var items = _filtered();
+    var content = $('gx-content');
+
+    if (items.length === 0) {
+      content.innerHTML = '<div class="gx-empty"><div class="big">📭</div>' +
+        '<div style="margin-top:8px;">No hay fotos' +
+        (_filter !== 'all' ? ' de este tipo' : ' en los últimos ' + DAYS_BACK + ' días') + '.</div></div>';
+      return;
+    }
+
+    // Agrupar por día
+    var groups = {};
+    items.forEach(function(p) {
+      var k = dayKey(p.date);
+      if (!groups[k]) groups[k] = { label: dayLabel(p.date), items: [] };
+      groups[k].items.push(p);
+    });
+    var keys = Object.keys(groups).sort().reverse();
+
+    // ── Vista carpeta abierta ──
+    if (_openDay && groups[_openDay]) {
+      var folder = groups[_openDay];
+      var h = '';
+      h += '<div class="photos-bar">';
+      h += '<button class="back-btn" id="btn-back">← Volver</button>';
+      h += '<div style="flex:1; font-weight:700; text-transform:capitalize; font-size:0.9rem;">' + esc(folder.label) + '</div>';
+      h += '<button class="print-btn" id="btn-print-day">🖨️ Imprimir día (' + folder.items.length + ')</button>';
+      h += '</div>';
+      h += '<div class="photos-grid">';
+      folder.items.forEach(function(p, idx) {
+        var type = p.data.type || 'entrega';
+        var typeLabel = type === 'recogida' ? 'Recogida' : 'Entrega';
+        var typeIcon = type === 'recogida' ? '📥' : '📤';
+        h += '<div class="photo-card" data-idx="' + idx + '">';
+        h += '<img src="' + esc(p.data.photoURL || '') + '" loading="lazy" alt="">';
+        h += '<div class="pc-meta">';
+        h += '<div class="pc-type ' + type + '">' + typeIcon + ' ' + typeLabel + '</div>';
+        h += '<div class="pc-time">🕐 ' + timeLabel(p.date) + '</div>';
+        if (p.data.note) h += '<div class="pc-note">📝 ' + esc(p.data.note) + '</div>';
+        h += '</div></div>';
+      });
+      h += '</div>';
+      content.innerHTML = h;
+
+      $('btn-back').addEventListener('click', function() { _openDay = null; _renderGallery(); });
+      $('btn-print-day').addEventListener('click', function() { _printDay(folder); });
+      content.querySelectorAll('.photo-card').forEach(function(card) {
+        card.addEventListener('click', function() {
+          _openLightbox(folder.items[parseInt(card.getAttribute('data-idx'), 10)]);
+        });
+      });
+      return;
+    }
+
+    // ── Vista carpetas ──
+    var todayKey = dayKey(new Date());
+    var html = '';
+    keys.forEach(function(k) {
+      var folder = groups[k];
+      var rec = 0, ent = 0;
+      folder.items.forEach(function(p) {
+        if ((p.data.type || '') === 'recogida') rec++; else ent++;
+      });
+      var isToday = k === todayKey;
+      html += '<div class="day-folder' + (isToday ? ' today' : '') + '" data-day="' + k + '">';
+      html += '<div class="icon">📁</div>';
+      html += '<div class="info">';
+      html += '<div class="dlabel">' + esc(folder.label) + (isToday ? ' · HOY' : '') + '</div>';
+      html += '<div class="dmeta">';
+      html += '<span>📥 ' + rec + ' recogidas</span>';
+      html += '<span>📤 ' + ent + ' entregas</span>';
+      html += '<span>📷 ' + folder.items.length + '</span>';
+      html += '</div></div>';
+      html += '<div class="arrow">›</div>';
+      html += '</div>';
+    });
+    content.innerHTML = html;
+    content.querySelectorAll('.day-folder').forEach(function(f) {
+      f.addEventListener('click', function() {
+        _openDay = f.getAttribute('data-day');
+        window.scrollTo(0, 0);
+        _renderGallery();
+      });
+    });
+  }
+
+  // ─── Lightbox foto individual ───
+  var _lbCurrent = null;
+  function _openLightbox(p) {
+    _lbCurrent = p;
+    var type = (p.data.type === 'recogida') ? 'Recogida' : 'Entrega';
+    $('lb-img').src = p.data.photoURL || '';
+    $('lb-info').innerHTML = '<b>' + type + '</b> · ' + esc(dayLabel(p.date)) + ' ' + timeLabel(p.date) +
+      (p.data.note ? ' · 📝 ' + esc(p.data.note) : '') +
+      (p.data.driverName ? ' · 🚛 ' + esc(p.data.driverName) : '');
+    $('lightbox').classList.add('active');
+  }
+  $('lb-close').addEventListener('click', function() {
+    $('lightbox').classList.remove('active');
+    _lbCurrent = null;
+  });
+  $('lb-print').addEventListener('click', function() {
+    if (_lbCurrent) _printSingle(_lbCurrent);
+  });
+
+  // ─── Impresión: hoja del día ───
+  function _printDay(folder) {
+    var type, typeLabel;
+    var h = '';
+    h += '<div class="print-header">';
+    h += '<h1>NOVAPACK ► · Cooper — ' + esc(folder.label) + '</h1>';
+    h += '<div class="ph-sub">' + folder.items.length + ' foto(s) · Impreso por ' + esc(_userName) +
+         ' · ' + new Date().toLocaleString('es-ES') + '</div>';
+    h += '</div>';
+    h += '<div class="print-grid">';
+    folder.items.forEach(function(p) {
+      type = p.data.type || 'entrega';
+      typeLabel = type === 'recogida' ? 'RECOGIDA' : 'ENTREGA';
+      h += '<div class="print-cell">';
+      h += '<img src="' + esc(p.data.photoURL || '') + '" alt="">';
+      h += '<div class="pcap"><b>' + typeLabel + '</b> · ' + timeLabel(p.date);
+      if (p.data.driverName) h += ' · ' + esc(p.data.driverName);
+      if (p.data.note) h += '<br>' + esc(p.data.note);
+      h += '</div></div>';
+    });
+    h += '</div>';
+    $('print-area').innerHTML = h;
+    _doPrint();
+  }
+
+  // ─── Impresión: foto individual ───
+  function _printSingle(p) {
+    var type = p.data.type === 'recogida' ? 'RECOGIDA' : 'ENTREGA';
+    var h = '';
+    h += '<div class="print-header">';
+    h += '<h1>NOVAPACK ► · Cooper — ' + type + '</h1>';
+    h += '<div class="ph-sub">' + esc(dayLabel(p.date)) + ' ' + timeLabel(p.date) +
+         ' · Impreso por ' + esc(_userName) + ' · ' + new Date().toLocaleString('es-ES') + '</div>';
+    h += '</div>';
+    h += '<div class="print-single">';
+    h += '<img src="' + esc(p.data.photoURL || '') + '" alt="">';
+    h += '<div class="pcap"><b>' + type + '</b>';
+    if (p.data.driverName) h += ' · Repartidor: ' + esc(p.data.driverName);
+    if (p.data.route) h += ' · Ruta: ' + esc(p.data.route);
+    if (p.data.note) h += '<br>📝 ' + esc(p.data.note);
+    h += '</div></div>';
+    $('print-area').innerHTML = h;
+    _doPrint();
+  }
+
+  // ─── Disparar impresión esperando que carguen las imágenes ───
+  function _doPrint() {
+    var area = $('print-area');
+    var imgs = area.querySelectorAll('img');
+    var pending = imgs.length;
+    if (pending === 0) { window.print(); return; }
+
+    var done = 0;
+    var fired = false;
+    function go() {
+      if (fired) return;
+      fired = true;
+      window.print();
+    }
+    imgs.forEach(function(img) {
+      if (img.complete) {
+        done++;
+        if (done === pending) go();
+      } else {
+        img.addEventListener('load', function() {
+          done++;
+          if (done === pending) go();
+        });
+        img.addEventListener('error', function() {
+          done++;
+          if (done === pending) go();
+        });
+      }
+    });
+    // Failsafe: imprimir igualmente tras 4s aunque alguna imagen no cargue
+    setTimeout(go, 4000);
+  }
+
+})();
+</script>
+</body>
+</html>

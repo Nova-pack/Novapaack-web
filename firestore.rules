@@ -225,6 +225,19 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ─── COOPER PORTAL: registro de accesos (auditoría inmutable) ───
+    // El portal cooper.html escribe una entrada cada vez que alguien
+    // entra con el PIN correcto + nombre. Solo el admin lo lee.
+    // Inmutable: una vez escrito no se edita ni se borra.
+    match /cooper_access_log/{docId} {
+      allow read: if isAdmin();
+      allow create: if isAuth()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() < 80;
+      allow update, delete: if false;
+    }
+
     // ─── USER: notifications (auth read/create/update, admin delete) ───
     match /user_notifications/{docId} {
       allow read, create, update: if isAuth();

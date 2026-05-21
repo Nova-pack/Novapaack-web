@@ -4107,7 +4107,12 @@ window.runPublicTicketsBackfill = async function() {
                 </h1>
                 <p style="color:var(--text-dim); margin-top:5px; margin-bottom:0; font-size:0.9rem;">Fotos de albaranes Cooper capturadas por los repartidores. Solo informativo, sin valor contable.</p>
             </div>
-            <div id="cooper-stats" style="display:flex; gap:12px; flex-wrap:wrap;"></div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button onclick="openCooperPortalModal()" style="background:linear-gradient(135deg,#5DADE2,#2980B9); border:none; color:#fff; padding:10px 18px; border-radius:8px; font-weight:bold; font-size:0.85rem; cursor:pointer; display:flex; align-items:center; gap:6px;" title="Gestionar el portal de acceso de Cooper (PIN + registro de accesos)">
+                    <span class="material-symbols-outlined" style="font-size:1.1rem;">vpn_key</span> Portal Cooper
+                </button>
+                <div id="cooper-stats" style="display:flex; gap:12px; flex-wrap:wrap;"></div>
+            </div>
         </div>
 
         <!-- Sub-tabs -->
@@ -18422,6 +18427,151 @@ window._invalidateAllTicketCaches = function(ticketDocId, optionalPatch) {
         }
     } catch (e) {
         console.warn('[invalidateAllTicketCaches] error:', e);
+    }
+};
+
+// ─── PORTAL COOPER — gestión de PIN + registro de accesos ────────────────
+// El portal cooper.html permite a Cooper ver e imprimir sus fotos de
+// recogidas/entregas (solo lectura). Se accede con un PIN compartido.
+// Cada entrada queda registrada en /cooper_access_log con nombre + fecha.
+window.openCooperPortalModal = async function() {
+    var modal = document.getElementById('cooper-portal-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'cooper-portal-modal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99999; padding:20px; overflow-y:auto;';
+        modal.innerHTML =
+            '<div style="max-width:880px; margin:0 auto; background:#0d0d15; border:2px solid #5DADE2; border-radius:12px; padding:22px; color:#e8e8ec;">' +
+                '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">' +
+                    '<h2 style="margin:0; color:#5DADE2; font-size:1.25rem; display:flex; align-items:center; gap:8px;">🔐 Portal Cooper — Acceso y Registro</h2>' +
+                    '<button onclick="document.getElementById(\'cooper-portal-modal\').style.display=\'none\';" style="background:transparent; color:#aaa; border:1px solid #444; padding:8px 14px; border-radius:6px; cursor:pointer; font-weight:700;">✕ Cerrar</button>' +
+                '</div>' +
+                // Bloque URL
+                '<div style="background:rgba(93,173,226,0.08); border:1px solid rgba(93,173,226,0.3); border-radius:8px; padding:14px; margin-bottom:16px;">' +
+                    '<div style="font-size:0.78rem; color:#9a9aa8; margin-bottom:6px;">📲 Enlace del portal (dáselo a Cooper — que lo guarde como favorito):</div>' +
+                    '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">' +
+                        '<code id="cooper-portal-url" style="flex:1; min-width:240px; background:#000; padding:8px 12px; border-radius:6px; color:#5DADE2; font-size:0.9rem;">https://novapack-68f05.web.app/cooper.html</code>' +
+                        '<button onclick="navigator.clipboard.writeText(document.getElementById(\'cooper-portal-url\').textContent); showToast(\'Enlace copiado\',\'success\');" style="background:#5DADE2; color:#000; border:0; padding:8px 14px; border-radius:6px; font-weight:700; cursor:pointer;">📋 Copiar</button>' +
+                    '</div>' +
+                '</div>' +
+                // Bloque PIN
+                '<div style="background:rgba(255,255,255,0.03); border:1px solid #2d2d3a; border-radius:8px; padding:14px; margin-bottom:16px;">' +
+                    '<div style="font-size:0.95rem; font-weight:800; margin-bottom:8px;">🔑 PIN de acceso</div>' +
+                    '<div style="font-size:0.78rem; color:#9a9aa8; margin-bottom:10px;">El código que Cooper introduce para entrar. Cámbialo cuando quieras — el anterior dejará de funcionar al instante.</div>' +
+                    '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">' +
+                        '<span style="font-size:0.8rem; color:#9a9aa8;">PIN actual:</span>' +
+                        '<code id="cooper-pin-current" style="background:#000; padding:6px 14px; border-radius:6px; color:#FFD700; font-size:1.1rem; font-weight:900; letter-spacing:2px;">…</code>' +
+                    '</div>' +
+                    '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px;">' +
+                        '<input type="text" id="cooper-pin-new" placeholder="Nuevo PIN (4-10 dígitos)" maxlength="10" inputmode="numeric" style="background:#000; border:1px solid #444; color:#fff; padding:8px 12px; border-radius:6px; font-size:1rem; font-family:monospace; letter-spacing:2px; width:200px;">' +
+                        '<button onclick="cooperPortalSavePin()" style="background:#4CAF50; color:#fff; border:0; padding:8px 16px; border-radius:6px; font-weight:700; cursor:pointer;">💾 Guardar nuevo PIN</button>' +
+                        '<button onclick="cooperPortalGenPin()" style="background:#333; color:#ccc; border:1px solid #555; padding:8px 14px; border-radius:6px; cursor:pointer;">🎲 Generar aleatorio</button>' +
+                    '</div>' +
+                '</div>' +
+                // Bloque registro de accesos
+                '<div style="background:rgba(255,255,255,0.03); border:1px solid #2d2d3a; border-radius:8px; padding:14px;">' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">' +
+                        '<div style="font-size:0.95rem; font-weight:800;">📋 Registro de accesos</div>' +
+                        '<button onclick="cooperPortalLoadLog()" style="background:#1e3a5f; color:#5DADE2; border:1px solid #2d5a8e; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:0.78rem; font-weight:700;">🔄 Refrescar</button>' +
+                    '</div>' +
+                    '<div id="cooper-access-log" style="max-height:340px; overflow-y:auto;"><div style="color:#888; padding:20px; text-align:center;">Cargando…</div></div>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(modal);
+    } else {
+        modal.style.display = 'block';
+    }
+    cooperPortalLoadConfig();
+    cooperPortalLoadLog();
+};
+
+window.cooperPortalLoadConfig = async function() {
+    try {
+        var doc = await db.collection('config').doc('cooper_portal').get();
+        var pin = (doc.exists && doc.data().pin) ? String(doc.data().pin) : null;
+        var el = document.getElementById('cooper-pin-current');
+        if (el) el.textContent = pin || '(sin configurar)';
+    } catch (e) {
+        console.warn('[cooper-portal] load config fail:', e);
+    }
+};
+
+window.cooperPortalGenPin = function() {
+    var pin = '';
+    for (var i = 0; i < 6; i++) pin += Math.floor(Math.random() * 10);
+    var inp = document.getElementById('cooper-pin-new');
+    if (inp) inp.value = pin;
+};
+
+window.cooperPortalSavePin = async function() {
+    var inp = document.getElementById('cooper-pin-new');
+    var pin = (inp ? inp.value : '').trim();
+    if (!/^\d{4,10}$/.test(pin)) {
+        alert('El PIN debe ser de 4 a 10 dígitos numéricos.');
+        return;
+    }
+    if (!confirm('Cambiar el PIN del portal Cooper a "' + pin + '"\n\nEl PIN anterior dejará de funcionar inmediatamente.\nAvisa a Cooper del nuevo código.\n\n¿Continuar?')) return;
+    try {
+        await db.collection('config').doc('cooper_portal').set({
+            pin: pin,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedBy: (typeof currentUser !== 'undefined' && currentUser && currentUser.uid) ? currentUser.uid : 'admin'
+        }, { merge: true });
+        if (inp) inp.value = '';
+        cooperPortalLoadConfig();
+        if (typeof showToast === 'function') showToast('PIN del portal Cooper actualizado', 'success');
+        else alert('PIN actualizado.');
+    } catch (e) {
+        alert('Error guardando el PIN: ' + e.message);
+    }
+};
+
+window.cooperPortalLoadLog = async function() {
+    var cont = document.getElementById('cooper-access-log');
+    if (!cont) return;
+    cont.innerHTML = '<div style="color:#888; padding:20px; text-align:center;">Cargando…</div>';
+    try {
+        var snap = await db.collection('cooper_access_log')
+            .orderBy('accessAt', 'desc').limit(200).get();
+        if (snap.empty) {
+            cont.innerHTML = '<div style="color:#888; padding:24px; text-align:center;">Todavía no hay accesos registrados.</div>';
+            return;
+        }
+        var rows = '';
+        snap.forEach(function(doc) {
+            var d = doc.data();
+            var when = '—';
+            if (d.accessAt && typeof d.accessAt.toDate === 'function') {
+                when = d.accessAt.toDate().toLocaleString('es-ES', {
+                    day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'
+                });
+            }
+            // Dispositivo legible desde userAgent
+            var ua = d.userAgent || '';
+            var device = 'Desconocido';
+            if (/iPhone|iPad|iPod/i.test(ua)) device = '📱 iPhone/iPad';
+            else if (/Android/i.test(ua)) device = '📱 Android';
+            else if (/Windows/i.test(ua)) device = '💻 Windows';
+            else if (/Mac/i.test(ua)) device = '💻 Mac';
+            else if (/Linux/i.test(ua)) device = '💻 Linux';
+            rows += '<tr style="border-bottom:1px solid #222;">' +
+                '<td style="padding:7px 10px; font-weight:700; color:#FFD700;">' + escapeHtml(d.name || '—') + '</td>' +
+                '<td style="padding:7px 10px; color:#ccc; white-space:nowrap;">' + escapeHtml(when) + '</td>' +
+                '<td style="padding:7px 10px; color:#9a9aa8;">' + escapeHtml(device) + '</td>' +
+                '<td style="padding:7px 10px; color:#666; font-size:0.7rem;">' + escapeHtml(d.screen || '') + '</td>' +
+                '</tr>';
+        });
+        cont.innerHTML =
+            '<table style="width:100%; border-collapse:collapse; font-size:0.82rem;">' +
+            '<thead><tr style="background:#1e1e26; color:#9cdcfe; font-size:0.72rem;">' +
+                '<th style="padding:8px 10px; text-align:left;">Nombre</th>' +
+                '<th style="padding:8px 10px; text-align:left;">Fecha y hora</th>' +
+                '<th style="padding:8px 10px; text-align:left;">Dispositivo</th>' +
+                '<th style="padding:8px 10px; text-align:left;">Pantalla</th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table>' +
+            '<div style="margin-top:8px; font-size:0.7rem; color:#666;">Mostrando los últimos ' + snap.size + ' accesos (máx. 200).</div>';
+    } catch (e) {
+        cont.innerHTML = '<div style="color:#FF8A80; padding:20px; text-align:center;">Error: ' + escapeHtml(e.message) + '</div>';
     }
 };
 
