@@ -1096,7 +1096,68 @@ function initApp() {
             var pin1Plain = configData.masterPin1 || '';  // legacy fallback
             var pin2Plain = configData.masterPin2 || '';  // legacy fallback
 
-            // STEP 3: compare. Prefer hash; fall back to plain for migration period.
+            // STEP 3: cargar TODAS las rutas (necesario para comprobar el PIN
+            // de ruta, y también para el selector si entra con PIN maestro).
+            var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
+            _adminRoutes = [];
+            // Mapa label → pin, para que las subrutas hereden el PIN del padre
+            var _pinByLabel = {};
+            phonesSnap.forEach(function(doc) {
+                var d = doc.data();
+                if (d.label) _pinByLabel[d.label.trim()] = (d.pin || '').toString().trim();
+            });
+            phonesSnap.forEach(function(doc) {
+                var d = doc.data();
+                var effectivePin = (d.pin || '').toString().trim();
+                if (d.parentRoute && d.parentRoute.trim()) {
+                    // Subruta: hereda el PIN del padre
+                    effectivePin = _pinByLabel[d.parentRoute.trim()] || '';
+                }
+                _adminRoutes.push({
+                    docId: doc.id,
+                    label: d.label || 'Sin nombre',
+                    number: d.number || '',
+                    pin: effectivePin,
+                    driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
+                });
+            });
+
+            if (_adminRoutes.length === 0) {
+                document.getElementById('login-error').textContent = 'No hay rutas configuradas.';
+                try { await auth.signOut(); } catch(e){}
+                _isMasterPinSession = false;
+                hideLoading();
+                return;
+            }
+
+            // STEP 4: ¿el PIN escrito coincide con el PIN de alguna ruta?
+            // → entrar DIRECTAMENTE a esa ruta (sin SMS, sin selector).
+            var matchedRoute = null;
+            for (var ri = 0; ri < _adminRoutes.length; ri++) {
+                if (_adminRoutes[ri].pin && _adminRoutes[ri].pin === pin) {
+                    matchedRoute = _adminRoutes[ri];
+                    break;
+                }
+            }
+            if (matchedRoute) {
+                sessionStorage.removeItem('pinAttempts');
+                sessionStorage.removeItem('pinLockUntil');
+                _pinAttempts = 0;
+                currentDriverPhone = normalizePhone(matchedRoute.number);
+                currentRouteLabel = matchedRoute.label;
+                console.log('[REPARTO] Entrada por PIN de ruta:', matchedRoute.label);
+                hideLoading();
+                if (matchedRoute.driverNames.length <= 1) {
+                    currentDriverName = matchedRoute.driverNames[0] || 'Repartidor';
+                    document.getElementById('login-view').style.display = 'none';
+                    enterMainApp();
+                } else {
+                    showDriverSelector(matchedRoute.driverNames, matchedRoute.label);
+                }
+                return;
+            }
+
+            // STEP 5: comprobar PIN MAESTRO (hash; fallback plano por migración).
             var pinHash = await _sha256Hex(pin);
             var ok = false;
             if (pinHash && (pinHash === pin1Hash || pinHash === pin2Hash)) ok = true;
@@ -1112,7 +1173,7 @@ function initApp() {
                     sessionStorage.setItem('pinAttempts', '0');
                     _pinAttempts = 0;
                 }
-                document.getElementById('login-error').textContent = 'PIN maestro incorrecto.';
+                document.getElementById('login-error').textContent = 'PIN incorrecto (ni de ruta ni maestro).';
                 // Roll back the anonymous session — never leave logged in on bad PIN
                 try { await auth.signOut(); } catch(e){}
                 _isMasterPinSession = false;
@@ -1120,31 +1181,10 @@ function initApp() {
                 return;
             }
 
-            // Reset attempt counter on success
+            // PIN maestro correcto → reset intentos + selector de rutas
             sessionStorage.removeItem('pinAttempts');
             sessionStorage.removeItem('pinLockUntil');
             _pinAttempts = 0;
-
-            // STEP 4: load all routes
-            var phonesSnap = await db.collection('config').doc('phones').collection('list').get();
-            _adminRoutes = [];
-            phonesSnap.forEach(function(doc) {
-                var d = doc.data();
-                _adminRoutes.push({
-                    docId: doc.id,
-                    label: d.label || 'Sin nombre',
-                    number: d.number || '',
-                    driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
-                });
-            });
-
-            if (_adminRoutes.length === 0) {
-                document.getElementById('login-error').textContent = 'No hay rutas configuradas.';
-                try { await auth.signOut(); } catch(e){}
-                _isMasterPinSession = false;
-                hideLoading();
-                return;
-            }
 
             showAdminRouteSelector();
         } catch (e) {

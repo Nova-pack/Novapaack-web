@@ -10443,6 +10443,62 @@ window.runPublicTicketsBackfill = async function() {
                 loadPhones();
             };
 
+            // ─── PIN de acceso por ruta ───────────────────────────────────
+            // Cada ruta padre/standalone tiene su propio PIN. El repartidor
+            // puede entrar a la app de reparto escribiendo este PIN y va
+            // directo a SU ruta (sin SMS). Las subrutas heredan el del padre.
+            window.setRoutePin = async function(docId, label) {
+                let curPin = '';
+                try {
+                    const snap = await db.collection('config').doc('phones').collection('list').doc(docId).get();
+                    if (snap.exists) curPin = snap.data().pin || '';
+                } catch(_) {}
+
+                const v = prompt(
+                    'PIN de acceso para la ruta:\n"' + label + '"\n\n' +
+                    'El repartidor entrará a la app escribiendo este PIN (sin SMS).\n' +
+                    '4 a 6 dígitos. Déjalo vacío para quitar el PIN.',
+                    curPin || ''
+                );
+                if (v === null) return; // cancelado
+
+                const pin = v.trim();
+                if (pin && !/^\d{4,6}$/.test(pin)) {
+                    alert('El PIN debe ser de 4 a 6 dígitos numéricos.');
+                    return;
+                }
+
+                // Comprobar que el PIN no esté ya en uso por otra ruta
+                if (pin) {
+                    try {
+                        const allSnap = await db.collection('config').doc('phones').collection('list').get();
+                        let clash = null;
+                        allSnap.forEach(d => {
+                            if (d.id !== docId && String(d.data().pin || '') === pin) {
+                                clash = d.data().label || d.id;
+                            }
+                        });
+                        if (clash) {
+                            alert('❌ Ese PIN ya lo usa la ruta:\n"' + clash + '"\n\nElige un PIN distinto — cada ruta debe tener uno único.');
+                            return;
+                        }
+                    } catch(_) {}
+                }
+
+                try {
+                    await db.collection('config').doc('phones').collection('list').doc(docId).update({
+                        pin: pin,
+                        pinUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    if (typeof showToast === 'function') {
+                        showToast(pin ? ('PIN de ruta guardado: ' + pin) : 'PIN de ruta eliminado', 'success');
+                    }
+                    if (typeof window.loadRouteMonitor === 'function') window.loadRouteMonitor();
+                } catch(e) {
+                    alert('Error guardando el PIN: ' + e.message);
+                }
+            };
+
             // --- REDESIGNED ROUTE MONITOR TOWER ---
             // ═══════════════════════════════════════════════════
             // GPS LIVE MAP — Real-time driver tracking on Google Maps
@@ -10833,6 +10889,21 @@ window.runPublicTicketsBackfill = async function() {
                     const allRoutes = [];
                     phoneSnap.forEach(doc => { allRoutes.push({ docId: doc.id, ...doc.data() }); });
 
+                    // ── Resolver de PIN por ruta ──
+                    // Cada ruta padre/standalone tiene su propio campo `pin`.
+                    // Las subrutas (parentRoute apunta al label del padre) NO
+                    // tienen pin propio: heredan el del padre.
+                    const _pinByLabel = {};
+                    allRoutes.forEach(r => {
+                        if (r.label) _pinByLabel[r.label.trim()] = r.pin || '';
+                    });
+                    window._resolveRoutePin = function(r) {
+                        if (r.parentRoute && r.parentRoute.trim()) {
+                            return { pin: _pinByLabel[r.parentRoute.trim()] || '', inherited: true, parentLabel: r.parentRoute.trim() };
+                        }
+                        return { pin: r.pin || '', inherited: false, parentLabel: '' };
+                    };
+
                     const groups = {};
                     const standalone = [];
                     allRoutes.forEach(r => {
@@ -10991,10 +11062,28 @@ window.runPublicTicketsBackfill = async function() {
                                     </div>
                                     
                                     <!-- Progress bar -->
-                                    <div style="height:4px; background:#222; border-radius:2px; margin-bottom:14px; overflow:hidden;">
+                                    <div style="height:4px; background:#222; border-radius:2px; margin-bottom:10px; overflow:hidden;">
                                         <div style="height:100%; width:${pct}%; background:${barColor}; border-radius:2px; transition:width 0.5s;"></div>
                                     </div>
-                                    
+
+                                    <!-- Casilla PIN de acceso a la ruta -->
+                                    ${(function(){
+                                        var pinInfo = (typeof window._resolveRoutePin === 'function') ? window._resolveRoutePin(routeData) : { pin: routeData.pin||'', inherited:false, parentLabel:'' };
+                                        if (pinInfo.inherited) {
+                                            return '<div style="display:flex; align-items:center; gap:6px; background:rgba(93,173,226,0.08); border:1px dashed #2d5a8e; border-radius:4px; padding:6px 10px; margin-bottom:12px; font-size:0.72rem;">' +
+                                                '<span class="material-symbols-outlined" style="font-size:0.95rem; color:#5dade2;">vpn_key</span>' +
+                                                '<span style="color:#888;">PIN heredado del padre:</span>' +
+                                                '<span style="color:#5dade2; font-weight:900; letter-spacing:1px;">' + (pinInfo.pin ? escapeHtml(pinInfo.pin) : '— sin PIN —') + '</span>' +
+                                                '</div>';
+                                        }
+                                        return '<div style="display:flex; align-items:center; gap:6px; background:rgba(255,77,0,0.06); border:1px solid #6b4e1f; border-radius:4px; padding:6px 10px; margin-bottom:12px; font-size:0.72rem;">' +
+                                            '<span class="material-symbols-outlined" style="font-size:0.95rem; color:#FF9800;">vpn_key</span>' +
+                                            '<span style="color:#888;">PIN de ruta:</span>' +
+                                            '<span style="color:#FFD700; font-weight:900; letter-spacing:1px; flex:1;">' + (pinInfo.pin ? escapeHtml(pinInfo.pin) : '— sin asignar —') + '</span>' +
+                                            '<button onclick="event.stopPropagation(); setRoutePin(\'' + routeData.docId + '\', \'' + escapeHtml(routeData.label).replace(/\x27/g,"\\x27") + '\')" style="background:#3d2e11; border:1px solid #6b4e1f; color:#FF9800; font-size:0.65rem; font-weight:700; cursor:pointer; border-radius:3px; padding:3px 8px;">' + (pinInfo.pin ? 'CAMBIAR' : 'PONER PIN') + '</button>' +
+                                            '</div>';
+                                    })()}
+
                                     <div style="display:flex; justify-content:space-around; margin-bottom:12px; text-align:center;">
                                         <div>
                                             <div style="font-size:1.4rem; font-weight:800; color:#d4d4d4;">${total}</div>

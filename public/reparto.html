@@ -322,13 +322,14 @@
             <button class="btn btn-primary" id="btn-send-sms" style="margin-top:10px;"><span class="material-symbols-outlined">send</span> ENVIAR CÓDIGO SMS</button>
 
             <div class="login-divider">
-                <span>O ACCESO ADMIN</span>
+                <span>O ACCESO CON PIN</span>
             </div>
             <div class="form-group" style="margin-bottom:0;">
-                <label class="form-label" style="color:#AB47BC;"><span class="material-symbols-outlined">lock</span> PIN Maestro</label>
-                <input type="password" id="master-pin-input" class="form-control" placeholder="Introduce PIN maestro" style="text-align:center; font-size:1.2rem; font-weight:900; letter-spacing:5px;">
+                <label class="form-label" style="color:#AB47BC;"><span class="material-symbols-outlined">lock</span> PIN de tu ruta (o PIN maestro)</label>
+                <input type="tel" inputmode="numeric" id="master-pin-input" class="form-control" placeholder="Introduce tu PIN" style="text-align:center; font-size:1.2rem; font-weight:900; letter-spacing:5px;">
+                <div style="font-size:0.7rem; color:#888; margin-top:6px; text-align:center; line-height:1.4;">Con el PIN de tu ruta entras directo a tu reparto, sin SMS. Si no lo tienes, pídeselo al administrador.</div>
             </div>
-            <button class="btn btn-primary" id="btn-master-pin" style="margin-top:10px; background:linear-gradient(135deg,#AB47BC,#7B1FA2);"><span class="material-symbols-outlined">key</span> ACCEDER COMO ADMIN</button>
+            <button class="btn btn-primary" id="btn-master-pin" style="margin-top:10px; background:linear-gradient(135deg,#AB47BC,#7B1FA2);"><span class="material-symbols-outlined">key</span> ACCEDER CON PIN</button>
         </div>
 
         <!-- Step 2: Verify code -->
