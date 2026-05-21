@@ -1603,163 +1603,105 @@
         // Crea una NUEVA cuenta Auth, actualiza loginEmail+authUid en la
         // ficha, y avisa al admin de que la cuenta Auth antigua queda
         // huérfana (recordatorio para borrarla en Firebase Console).
-        // ─── MODAL UNIFICADO: CAMBIAR EMAIL Y/O CONTRASEÑA ───────────────────
-        // Usa la Cloud Function updateClientAuth (Admin SDK) para modificar la
-        // cuenta Firebase Auth EXISTENTE sin crear cuentas nuevas ni dejar
-        // cuentas huérfanas. Ambos campos son opcionales: puedes cambiar solo
-        // la contraseña, solo el email, o los dos a la vez.
+        // ─── CAMBIAR EMAIL Y/O CONTRASEÑA DE LOGIN ───────────────────────────
+        // Modal HTML estático en el body (id="modal-change-login").
+        // Llama a la CF updateClientAuth (Admin SDK) para modificar la cuenta
+        // Firebase Auth EXISTENTE sin crear nuevas ni dejar cuentas huérfanas.
         // ─────────────────────────────────────────────────────────────────────
-        (function _injectChangeLoginModal() {
-            if (document.getElementById('modal-change-login')) return;
-            const div = document.createElement('div');
-            div.id = 'modal-change-login';
-            div.style.cssText = 'display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10500; justify-content:center; align-items:center; padding:20px;';
-            div.innerHTML = `
-              <div style="background:#1a1a1a; border:1px solid #3c3c3c; border-radius:12px; padding:28px; width:100%; max-width:480px; position:relative; box-shadow:0 10px 40px rgba(0,0,0,0.9);">
-                <button onclick="document.getElementById('modal-change-login').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">✕</button>
-                <h3 style="margin:0 0 6px; color:#FF9F0A; font-size:1.1rem; text-transform:uppercase; letter-spacing:1px;">
-                  <span class="material-symbols-outlined" style="vertical-align:middle; font-size:1.2rem; margin-right:4px;">manage_accounts</span>
-                  Cambiar acceso
-                </h3>
-                <div id="cl-client-name" style="color:#aaa; font-size:0.85rem; margin-bottom:18px;"></div>
 
-                <div style="background:rgba(255,255,255,0.04); border:1px solid #333; border-radius:8px; padding:12px 14px; margin-bottom:18px; font-size:0.8rem; color:#999;">
-                  <div style="color:#ddd; margin-bottom:4px;"><strong>Login actual</strong></div>
-                  <div id="cl-current-login" style="font-family:monospace; color:#FF9F0A; word-break:break-all;"></div>
-                  <div id="cl-current-uid" style="font-family:monospace; color:#666; font-size:0.72rem; margin-top:3px; word-break:break-all;"></div>
-                </div>
-
-                <!-- NUEVO EMAIL -->
-                <label style="display:block; color:#bbb; font-size:0.82rem; font-weight:600; margin-bottom:6px;">
-                  Nuevo email de login <span style="color:#666; font-weight:400;">(dejar vacío = no cambiar)</span>
-                </label>
-                <div style="display:flex; gap:6px; margin-bottom:16px;">
-                  <input id="cl-new-email" type="email" placeholder="nuevo@ejemplo.com"
-                    style="flex:1; background:#111; border:1px solid #444; border-radius:6px; color:#fff; padding:9px 12px; font-size:0.9rem; outline:none;"
-                    oninput="document.getElementById('cl-new-email').style.borderColor=this.value&&!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(this.value)?'#FF3B30':'#444'">
-                  <button onclick="_clGenerateSynthetic()" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:6px; padding:0 10px; font-size:0.75rem; cursor:pointer; white-space:nowrap;">⚙️ Sintético</button>
-                </div>
-
-                <!-- NUEVA CONTRASEÑA -->
-                <label style="display:block; color:#bbb; font-size:0.82rem; font-weight:600; margin-bottom:6px;">
-                  Nueva contraseña <span style="color:#666; font-weight:400;">(dejar vacío = no cambiar)</span>
-                </label>
-                <div style="display:flex; gap:6px; margin-bottom:22px;">
-                  <div style="flex:1; position:relative;">
-                    <input id="cl-new-password" type="password" placeholder="mínimo 6 caracteres"
-                      style="width:100%; box-sizing:border-box; background:#111; border:1px solid #444; border-radius:6px; color:#fff; padding:9px 38px 9px 12px; font-size:0.9rem; outline:none;">
-                    <button type="button" onclick="_clTogglePwd()" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; color:#888; cursor:pointer; font-size:1rem; line-height:1; padding:0;">
-                      <span id="cl-pwd-eye" class="material-symbols-outlined" style="font-size:1.1rem; vertical-align:middle;">visibility</span>
-                    </button>
-                  </div>
-                  <button onclick="_clGeneratePassword()" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:6px; padding:0 10px; font-size:0.75rem; cursor:pointer; white-space:nowrap;">🎲 Generar</button>
-                </div>
-
-                <div id="cl-error" style="display:none; background:rgba(255,59,48,0.12); border:1px solid rgba(255,59,48,0.4); color:#FF6B6B; border-radius:6px; padding:9px 12px; font-size:0.82rem; margin-bottom:14px;"></div>
-
-                <div style="display:flex; gap:10px; justify-content:flex-end;">
-                  <button onclick="document.getElementById('modal-change-login').style.display='none'" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:7px; padding:10px 20px; font-size:0.88rem; cursor:pointer;">Cancelar</button>
-                  <button id="cl-save-btn" onclick="_clSave()" style="background:#FF9F0A; border:none; color:#000; border-radius:7px; padding:10px 22px; font-size:0.88rem; font-weight:700; cursor:pointer;">
-                    <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle; margin-right:4px;">save</span>Guardar cambios
-                  </button>
-                </div>
-              </div>`;
-            document.body.appendChild(div);
-        })();
-
-        // Estado interno del modal
-        let _clDocId = '';
-        let _clAuthUid = '';
-        let _clCurrentData = {};
+        var _clDocId = '';
+        var _clAuthUid = '';
+        var _clCurrentData = {};
 
         window._clTogglePwd = function() {
-            const inp = document.getElementById('cl-new-password');
-            const eye = document.getElementById('cl-pwd-eye');
+            var inp = document.getElementById('cl-new-password');
+            var eye = document.getElementById('cl-pwd-eye');
             if (!inp) return;
-            const show = inp.type === 'password';
+            var show = inp.type === 'password';
             inp.type = show ? 'text' : 'password';
             if (eye) eye.textContent = show ? 'visibility_off' : 'visibility';
         };
 
         window._clGeneratePassword = function() {
-            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$!';
-            let pwd = '';
-            for (let i = 0; i < 10; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
-            const inp = document.getElementById('cl-new-password');
+            var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#!';
+            var pwd = '';
+            for (var i = 0; i < 10; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
+            var inp = document.getElementById('cl-new-password');
             if (inp) { inp.value = pwd; inp.type = 'text'; }
-            const eye = document.getElementById('cl-pwd-eye');
+            var eye = document.getElementById('cl-pwd-eye');
             if (eye) eye.textContent = 'visibility_off';
         };
 
         window._clGenerateSynthetic = function() {
-            const synth = typeof window.generateLoginEmail === 'function'
+            var synth = typeof window.generateLoginEmail === 'function'
                 ? window.generateLoginEmail(_clCurrentData).toLowerCase()
-                : ('c' + Math.floor(Math.random()*99999) + '@novapack.com');
-            const inp = document.getElementById('cl-new-email');
+                : ('c' + Math.floor(Math.random() * 99999) + '@novapack.com');
+            var inp = document.getElementById('cl-new-email');
             if (inp) inp.value = synth;
         };
 
         window._clSave = async function() {
-            const newEmail = (document.getElementById('cl-new-email').value || '').trim().toLowerCase();
-            const newPassword = (document.getElementById('cl-new-password').value || '').trim();
-            const errEl = document.getElementById('cl-error');
-            const saveBtn = document.getElementById('cl-save-btn');
+            var newEmail    = (document.getElementById('cl-new-email').value || '').trim().toLowerCase();
+            var newPassword = (document.getElementById('cl-new-password').value || '').trim();
+            var errEl   = document.getElementById('cl-error');
+            var saveBtn = document.getElementById('cl-save-btn');
 
             errEl.style.display = 'none';
 
             if (!newEmail && !newPassword) {
-                errEl.textContent = 'Introduce al menos un nuevo email o una nueva contraseña.';
+                errEl.textContent = 'Introduce al menos un nuevo email o una nueva contrasena.';
                 errEl.style.display = 'block'; return;
             }
-            if (newEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(newEmail)) {
-                errEl.textContent = 'El email no tiene formato válido.';
+            if (newEmail && newEmail.indexOf('@') < 1) {
+                errEl.textContent = 'El email no tiene formato valido.';
                 errEl.style.display = 'block'; return;
             }
             if (newPassword && newPassword.length < 6) {
-                errEl.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+                errEl.textContent = 'La contrasena debe tener al menos 6 caracteres.';
                 errEl.style.display = 'block'; return;
             }
 
             saveBtn.disabled = true;
-            saveBtn.textContent = 'Guardando…';
+            saveBtn.textContent = 'Guardando...';
             try {
-                // 1. Llamar Cloud Function (Admin SDK → modifica Auth existente)
-                const _fnRegion = (window.npFunctions) || firebase.app().functions('europe-west1');
-                const fn = _fnRegion.httpsCallable('updateClientAuth');
-                await fn({ uid: _clAuthUid, newEmail: newEmail || null, newPassword: newPassword || null });
+                // 1. Cloud Function — Admin SDK modifica cuenta Auth existente
+                var fnRegion = window.npFunctions || firebase.app().functions('europe-west1');
+                var cfUpdate = fnRegion.httpsCallable('updateClientAuth');
+                await cfUpdate({ uid: _clAuthUid, newEmail: newEmail || null, newPassword: newPassword || null });
 
                 // 2. Actualizar Firestore
-                const patch = {
+                var patch = {
                     accessChangedAt: firebase.firestore.FieldValue.serverTimestamp(),
                     accessChangedBy: (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin'
                 };
-                if (newEmail) patch.loginEmail = newEmail;
+                if (newEmail)    patch.loginEmail         = newEmail;
                 if (newPassword) patch.loginPasswordPlain = newPassword;
                 await db.collection('users').doc(_clDocId).update(patch);
 
-                // 3. Actualizar caches en memoria
-                window._invalidateAllClientCaches(_clDocId, patch);
+                // 3. Caches en memoria
+                if (typeof window._invalidateAllClientCaches === 'function')
+                    window._invalidateAllClientCaches(_clDocId, patch);
 
                 // 4. Cerrar modal
                 document.getElementById('modal-change-login').style.display = 'none';
 
-                // 5. Resumen + ofrecer enviar bienvenida
-                const resumen = (newEmail ? '  Email: ' + newEmail + '\n' : '') +
-                                (newPassword ? '  Contraseña: ' + newPassword + '\n' : '');
-                showToast('Acceso actualizado ✓', 'success');
-                const sendWelcome = confirm('✅ Acceso actualizado:\n\n' + resumen + '\n¿Enviar email de bienvenida con las nuevas credenciales?');
-                if (sendWelcome) {
-                    const fresh = { ..._clCurrentData, ...patch };
-                    await window.advClientWelcome(_clDocId);
+                // 5. Toast + ofrecer email de bienvenida
+                if (typeof showToast === 'function') showToast('Acceso actualizado correctamente', 'success');
+                var resumen = (newEmail    ? '  Email: '       + newEmail    + '\n' : '')
+                            + (newPassword ? '  Contrasena: '  + newPassword + '\n' : '');
+                var sendW = confirm('Acceso actualizado:\n\n' + resumen + '\nEnviar email de bienvenida con las nuevas credenciales?');
+                if (sendW && typeof window.advClientWelcome === 'function') {
+                    window.advClientWelcome(_clDocId);
                 }
+                if (typeof loadUsers === 'function') loadUsers('current');
             } catch(e) {
                 saveBtn.disabled = false;
-                saveBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem;vertical-align:middle;margin-right:4px;">save</span>Guardar cambios';
-                const msg = (e.message || '').toLowerCase();
-                if (msg.includes('already-exists') || msg.includes('email-already-exists')) {
-                    errEl.textContent = '⚠️ Ese email ya está en uso por otra cuenta. Prueba con otro o usa el botón "⚙️ Sintético".';
+                saveBtn.textContent = 'Guardar cambios';
+                var msg = (e.message || '').toLowerCase();
+                if (msg.indexOf('already-exists') >= 0 || msg.indexOf('email-already') >= 0) {
+                    errEl.textContent = 'Ese email ya esta en uso por otra cuenta. Prueba con otro o usa Sintetico.';
                 } else {
-                    errEl.textContent = 'Error: ' + (e.message || e);
+                    errEl.textContent = 'Error: ' + (e.message || String(e));
                 }
                 errEl.style.display = 'block';
             }
@@ -7223,6 +7165,56 @@ window.runPublicTicketsBackfill = async function() {
             prev.textContent = p + '-' + n;
         };
         </script>
+
+        <!-- MODAL: CAMBIAR EMAIL / CONTRASEÑA DE LOGIN -->
+        <div id="modal-change-login" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10500; justify-content:center; align-items:center; padding:20px;">
+          <div style="background:#1a1a1a; border:1px solid #3c3c3c; border-radius:12px; padding:28px; width:100%; max-width:480px; position:relative; box-shadow:0 10px 40px rgba(0,0,0,0.9);">
+            <button onclick="document.getElementById('modal-change-login').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&#x2715;</button>
+            <h3 style="margin:0 0 6px; color:#FF9F0A; font-size:1.1rem; text-transform:uppercase; letter-spacing:1px;">
+              <span class="material-symbols-outlined" style="vertical-align:middle; font-size:1.2rem; margin-right:4px;">manage_accounts</span>
+              Cambiar acceso
+            </h3>
+            <div id="cl-client-name" style="color:#aaa; font-size:0.85rem; margin-bottom:18px;"></div>
+
+            <div style="background:rgba(255,255,255,0.04); border:1px solid #333; border-radius:8px; padding:12px 14px; margin-bottom:18px; font-size:0.8rem;">
+              <div style="color:#ddd; margin-bottom:4px;"><strong>Login actual</strong></div>
+              <div id="cl-current-login" style="font-family:monospace; color:#FF9F0A; word-break:break-all;"></div>
+              <div id="cl-current-uid" style="font-family:monospace; color:#666; font-size:0.72rem; margin-top:3px; word-break:break-all;"></div>
+            </div>
+
+            <label style="display:block; color:#bbb; font-size:0.82rem; font-weight:600; margin-bottom:6px;">
+              Nuevo email de login &nbsp;<span style="color:#666; font-weight:400;">(vacío = no cambiar)</span>
+            </label>
+            <div style="display:flex; gap:6px; margin-bottom:16px;">
+              <input id="cl-new-email" type="email" placeholder="nuevo@ejemplo.com" autocomplete="off"
+                style="flex:1; background:#111; border:1px solid #444; border-radius:6px; color:#fff; padding:9px 12px; font-size:0.9rem; outline:none;">
+              <button type="button" onclick="window._clGenerateSynthetic()" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:6px; padding:0 10px; font-size:0.75rem; cursor:pointer; white-space:nowrap;">&#x2699;&#xFE0F; Sint&#233;tico</button>
+            </div>
+
+            <label style="display:block; color:#bbb; font-size:0.82rem; font-weight:600; margin-bottom:6px;">
+              Nueva contrase&#241;a &nbsp;<span style="color:#666; font-weight:400;">(vac&#237;o = no cambiar)</span>
+            </label>
+            <div style="display:flex; gap:6px; margin-bottom:22px;">
+              <div style="flex:1; position:relative;">
+                <input id="cl-new-password" type="password" placeholder="m&#237;nimo 6 caracteres" autocomplete="new-password"
+                  style="width:100%; box-sizing:border-box; background:#111; border:1px solid #444; border-radius:6px; color:#fff; padding:9px 38px 9px 12px; font-size:0.9rem; outline:none;">
+                <button type="button" onclick="window._clTogglePwd()" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; color:#888; cursor:pointer; padding:0;">
+                  <span id="cl-pwd-eye" class="material-symbols-outlined" style="font-size:1.1rem; vertical-align:middle;">visibility</span>
+                </button>
+              </div>
+              <button type="button" onclick="window._clGeneratePassword()" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:6px; padding:0 10px; font-size:0.75rem; cursor:pointer; white-space:nowrap;">&#x1F3B2; Generar</button>
+            </div>
+
+            <div id="cl-error" style="display:none; background:rgba(255,59,48,0.12); border:1px solid rgba(255,59,48,0.4); color:#FF6B6B; border-radius:6px; padding:9px 12px; font-size:0.82rem; margin-bottom:14px;"></div>
+
+            <div style="display:flex; gap:10px; justify-content:flex-end;">
+              <button type="button" onclick="document.getElementById('modal-change-login').style.display='none'" style="background:#2a2a2a; border:1px solid #555; color:#bbb; border-radius:7px; padding:10px 20px; font-size:0.88rem; cursor:pointer;">Cancelar</button>
+              <button type="button" id="cl-save-btn" onclick="window._clSave()" style="background:#FF9F0A; border:none; color:#000; border-radius:7px; padding:10px 22px; font-size:0.88rem; font-weight:700; cursor:pointer;">
+                <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle; margin-right:4px;">save</span>Guardar cambios
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- BULK DELETE MODAL (Admin: eliminar albaranes de Excel erróneos) -->
         <div id="modal-bulk-delete" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:1010; justify-content:center; align-items:center; padding:20px;">
