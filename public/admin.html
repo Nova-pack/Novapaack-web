@@ -1299,6 +1299,40 @@
                    || null;
             if (!c) { alert('Cliente no encontrado en cache. Recarga la lista.'); return; }
 
+            // ─── DETECTAR PADRE CON SUCURSALES ACTIVAS ────────────────────────
+            // Si este cliente es padre (no tiene parentClientId propio) Y tiene
+            // sucursales con authUid activo → ofrecer email consolidado.
+            if (!c.parentClientId) {
+                const allClients = Object.values(window.userMap || {})
+                    .concat(window._advClientsCache || []);
+                // Eliminar duplicados por id
+                const seen = new Set();
+                const uniqueAll = allClients.filter(u => {
+                    if (!u || !u.id || seen.has(u.id)) return false;
+                    seen.add(u.id);
+                    return true;
+                });
+                const activeBranches = uniqueAll.filter(u =>
+                    u.authUid &&
+                    (u.parentClientId === docId || u.parentClientId === String(c.idNum || '')) &&
+                    u.id !== docId
+                );
+                if (activeBranches.length > 0) {
+                    const choice = confirm(
+                        '📧 Este cliente tiene ' + activeBranches.length + ' sucursal(es) con acceso activado:\n\n' +
+                        activeBranches.map(u => '  • ' + (u.name || '#' + (u.idNum || ''))).join('\n') +
+                        '\n\n¿Enviar UN ÚNICO email con TODOS los accesos (recomendado)?\n\n' +
+                        '[Aceptar] → Email consolidado (central + todas las sucursales)\n' +
+                        '[Cancelar] → Solo el email de este cliente (sin sucursales)'
+                    );
+                    if (choice) {
+                        window.composeConsolidatedWelcomeEmail(docId);
+                        return;
+                    }
+                    // Si cancela → sigue con el email individual normal
+                }
+            }
+
             // ─── RESOLVER EMAIL DE DESTINO ─────────────────────────
             // PRIORIDAD (decisión del user 2026-05-13):
             //   1. adminEmail del propio cliente — el correo de administración
@@ -8794,7 +8828,7 @@ window.runPublicTicketsBackfill = async function() {
                                     <button class="btn btn-outline btn-sm" onclick="openManageCompaniesModal('${escapeHtml(data.id)}')" title="Sedes/Empresas">🏢</button>
                                     <button class="btn btn-outline btn-sm" onclick="openManageDestinationsModal('${escapeHtml(data.id)}')" title="Agenda/Direcciones">📇</button>
                                     ${data.authUid
-                                        ? `<button class="btn btn-outline btn-sm" onclick="composeWelcomeEmail(userMap['${escapeHtml(data.id)}'])" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>
+                                        ? `<button class="btn btn-outline btn-sm" onclick="advClientWelcome('${escapeHtml(data.id)}')" title="Reenviar email de bienvenida (acceso activado)" style="border-color:#34C759; color:#34C759;">✉️</button>
                                            <button class="btn btn-outline btn-sm" onclick="openChangeLoginModal('${escapeHtml(data.id)}')" title="Cambiar email de login (crea nuevo Auth, el anterior se debe borrar en Console)" style="border-color:#FFB300; color:#FFB300;">🔄</button>
                                            <button class="btn btn-outline btn-sm" onclick="openLinkAuthModal('${escapeHtml(data.id)}')" title="Re-vincular a otra cuenta Auth ya existente (UID conocido)" style="border-color:#5DADE2; color:#5DADE2;">🔗</button>`
                                         : `<button class="btn btn-outline btn-sm" onclick="openActivateAccessModal('${escapeHtml(data.id)}')" title="Activar acceso online a este cliente" style="border-color:#FF9F0A; color:#FF9F0A;">🔓</button>
@@ -9279,7 +9313,7 @@ window.runPublicTicketsBackfill = async function() {
                         statusLabel.innerHTML = '<span style="font-size:1rem;">🟢</span> <strong>Acceso activo</strong>';
                         statusActions.innerHTML =
                             '<button type="button" onclick="openChangeLoginModal(\'' + escapeHtml(uid) + '\')" style="background:rgba(255,179,0,0.10); border:1px solid #FFB300; color:#FFB300; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">🔄 Cambiar login</button>'
-                          + '<button type="button" onclick="composeWelcomeEmail(userMap[\'' + escapeHtml(uid) + '\'])" style="background:rgba(52,199,89,0.10); border:1px solid #34C759; color:#34C759; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">✉️ Reenviar bienvenida</button>';
+                          + '<button type="button" onclick="advClientWelcome(\'' + escapeHtml(uid) + '\')" style="background:rgba(52,199,89,0.10); border:1px solid #34C759; color:#34C759; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer;">✉️ Reenviar bienvenida</button>';
                         if (statusInfo) {
                             statusInfo.style.display = 'block';
                             statusInfo.textContent = 'Login: ' + (data.loginEmail || data.email || '?') + ' · UID: ' + data.authUid;
