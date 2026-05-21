@@ -13,6 +13,13 @@
 <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
 
 <style>
+  /* Fuente corporativa NOVAPACK — hosteada localmente */
+  @font-face {
+    font-family: 'Xenotron';
+    src: local('Xenotron'), url('/fonts/xenotron.woff2') format('woff2');
+    font-display: block;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   :root {
     --orange: #FF4D00;
@@ -41,10 +48,14 @@
     min-height: 100vh; padding: 24px; text-align: center;
   }
   .gate-logo {
-    font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 2rem;
-    color: var(--orange); letter-spacing: -1px; margin-bottom: 4px;
+    font-family: 'Xenotron', sans-serif; font-weight: 300; font-size: 2.1rem;
+    color: var(--orange); letter-spacing: 4px; margin-bottom: 4px;
   }
-  .gate-logo span { color: #FF3B30; }
+  .gate-logo span {
+    color: #FF3B30; font-family: sans-serif; font-weight: 900; font-size: 0.7em;
+    margin-left: 4px; letter-spacing: 0;
+    filter: drop-shadow(0 0 5px rgba(255,59,48,0.5));
+  }
   .gate-sub { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 32px; }
   .gate-card {
     background: var(--surface); border: 1px solid var(--border);
@@ -78,10 +89,13 @@
     display: flex; align-items: center; gap: 12px;
   }
   .gx-header .logo {
-    font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 1.1rem;
-    color: var(--orange);
+    font-family: 'Xenotron', sans-serif; font-weight: 300; font-size: 1.25rem;
+    color: var(--orange); letter-spacing: 2px;
   }
-  .gx-header .logo span { color: #FF3B30; }
+  .gx-header .logo span {
+    color: #FF3B30; font-family: sans-serif; font-weight: 900; font-size: 0.7em;
+    margin-left: 3px; letter-spacing: 0;
+  }
   .gx-header .who { font-size: 0.75rem; color: var(--text-dim); flex: 1; }
   .gx-header .who b { color: var(--text); }
 
@@ -209,6 +223,10 @@
       border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 10px;
     }
     .print-header h1 { font-size: 16pt; }
+    .print-header h1 .np-logo {
+      font-family: 'Xenotron', sans-serif; font-weight: 300; letter-spacing: 2px; color: #FF4D00;
+    }
+    .print-header h1 .np-logo .arrow { color: #FF3B30; font-family: sans-serif; font-weight: 900; }
     .print-header .ph-sub { font-size: 9pt; color: #444; }
     .print-grid {
       display: grid; grid-template-columns: repeat(2, 1fr); gap: 8mm;
@@ -234,7 +252,7 @@
 <!-- ═══════════ PANTALLA 1 · PIN ═══════════ -->
 <div class="screen" id="screen-pin">
   <div class="gate">
-    <div class="gate-logo">NOVAPACK<span>►</span></div>
+    <div class="gate-logo">NOVAPACK<span>➤</span></div>
     <div class="gate-sub">Portal de Recogidas y Entregas · Cooper</div>
     <div class="gate-card">
       <div class="gate-title">🔒 Acceso restringido</div>
@@ -250,7 +268,7 @@
 <!-- ═══════════ PANTALLA 2 · NOMBRE ═══════════ -->
 <div class="screen" id="screen-name">
   <div class="gate">
-    <div class="gate-logo">NOVAPACK<span>►</span></div>
+    <div class="gate-logo">NOVAPACK<span>➤</span></div>
     <div class="gate-sub">Portal Cooper</div>
     <div class="gate-card">
       <div class="gate-title">👋 ¿Quién eres?</div>
@@ -266,7 +284,7 @@
 <!-- ═══════════ PANTALLA 3 · GALERÍA ═══════════ -->
 <div class="screen" id="screen-gallery">
   <div class="gx-header">
-    <div class="logo">NOVAPACK<span>►</span></div>
+    <div class="logo">NOVAPACK<span>➤</span></div>
     <div class="who">Cooper · <b id="who-name">—</b></div>
   </div>
   <div class="gx-body">
@@ -648,7 +666,7 @@
     var routeTxt = _routeFilter === 'all' ? 'Todas las rutas' : ('Ruta ' + _routeFilter);
     var h = '';
     h += '<div class="print-header">';
-    h += '<h1>NOVAPACK ► · Cooper — ' + esc(folder.label) + '</h1>';
+    h += '<h1><span class="np-logo">NOVAPACK<span class="arrow">➤</span></span> · Cooper — ' + esc(folder.label) + '</h1>';
     h += '<div class="ph-sub">' + esc(routeTxt) + ' · ' + folder.items.length + ' foto(s) · Impreso por ' + esc(_userName) +
          ' · ' + new Date().toLocaleString('es-ES') + '</div>';
     h += '</div>';
@@ -674,7 +692,7 @@
     var type = p.data.type === 'recogida' ? 'RECOGIDA' : 'ENTREGA';
     var h = '';
     h += '<div class="print-header">';
-    h += '<h1>NOVAPACK ► · Cooper — ' + type + '</h1>';
+    h += '<h1><span class="np-logo">NOVAPACK<span class="arrow">➤</span></span> · Cooper — ' + type + '</h1>';
     h += '<div class="ph-sub">' + esc(dayLabel(p.date)) + ' ' + timeLabel(p.date) +
          ' · Impreso por ' + esc(_userName) + ' · ' + new Date().toLocaleString('es-ES') + '</div>';
     h += '</div>';
