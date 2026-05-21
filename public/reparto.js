@@ -1214,10 +1214,21 @@ function initApp() {
                 var allRoutes = []; // para diagnóstico
                 var closeMatches = []; // por últimos 4 dígitos
 
+                // Poblar _adminRoutes también en el flujo de login por SMS, para
+                // poder ofrecer el selector manual de ruta como fallback si el
+                // teléfono no coincide con ninguna ruta configurada.
+                _adminRoutes = [];
+
                 phonesSnap.forEach(function(doc) {
                     var d = doc.data();
                     var routePhone = normalizePhone(d.number);
                     allRoutes.push({ label: d.label || '(sin label)', raw: d.number, normalized: routePhone });
+                    _adminRoutes.push({
+                        docId: doc.id,
+                        label: d.label || 'Sin nombre',
+                        number: d.number || '',
+                        driverNames: [d.driverName, d.driverName2, d.driverName3, d.driverName4].filter(function(n) { return n && n.trim(); })
+                    });
                     if (routePhone === currentDriverPhone) {
                         found = true;
                         foundRouteLabel = d.label || '';
@@ -1231,21 +1242,36 @@ function initApp() {
                 });
 
                 console.log('[REPARTO] Rutas configuradas en config/phones/list (' + allRoutes.length + '):', allRoutes);
+
+                // ── NO SE ENCONTRÓ RUTA POR TELÉFONO ──
+                // En lugar de entrar SIN ruta (lo que hacía que las fotos Cooper
+                // se guardaran como 'Sin ruta' y rompía la app), ofrecemos el
+                // selector manual de ruta. El repartidor elige su ruta y entra
+                // con todo correcto.
                 if (!found) {
                     console.warn('[REPARTO] ❌ NO se encontró ruta con teléfono ' + currentDriverPhone);
                     if (closeMatches.length) {
                         console.warn('[REPARTO] Rutas con últimos 4 dígitos coincidentes (posible typo en config):', closeMatches);
                     }
-                    showToast('⚠️ Tu teléfono (' + currentDriverPhone + ') no está asignado a ninguna ruta. Avisa al admin para que lo configure en Control de Rutas.', 'warning', 8000);
-                } else {
-                    console.log('[REPARTO] ✅ Ruta encontrada:', foundRouteLabel);
+                    hideLoading();
+                    showToast('No detectamos tu ruta por el teléfono (' + currentDriverPhone + '). Selecciónala manualmente.', 'warning', 7000);
+                    if (_adminRoutes.length > 0) {
+                        // Marca de sesión para que el selector funcione igual que el de admin
+                        _isMasterPinSession = true;
+                        showAdminRouteSelector();
+                        return;
+                    }
+                    // Sin rutas configuradas en absoluto → último recurso
+                    showToast('⚠️ No hay rutas configuradas. Avisa al admin.', 'error', 9000);
+                    return;
                 }
 
+                console.log('[REPARTO] ✅ Ruta encontrada:', foundRouteLabel);
                 currentRouteLabel = foundRouteLabel;
 
                 // If no names found, use a default
                 if (driverNames.length === 0) {
-                    driverNames.push(found ? 'Repartidor' : 'Repartidor ' + currentDriverPhone.slice(-4));
+                    driverNames.push('Repartidor');
                 }
 
                 // If only one driver, skip selection and go straight to app
