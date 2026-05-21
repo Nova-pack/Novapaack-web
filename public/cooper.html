@@ -327,6 +327,7 @@
 
   // ─── Estado ───
   var _photos = [];        // todas las fotos cargadas (90 días)
+  var _allRoutes = [];     // todas las rutas configuradas (config/phones/list)
   var _filter = 'all';     // all | recogida | entrega
   var _routeFilter = 'all'; // all | <nombre de ruta>
   var _openDay = null;     // 'YYYY-MM-DD' o null
@@ -448,7 +449,25 @@
 
     $('who-name').textContent = name;
     showScreen('screen-gallery');
+    await _loadAllRoutes();
     _loadPhotos();
+  }
+
+  // ─── Cargar TODAS las rutas configuradas (config/phones/list) ───
+  // Para que el desplegable las muestre todas aunque no tengan fotos.
+  async function _loadAllRoutes() {
+    try {
+      var snap = await firebase.firestore().collection('config/phones/list').get();
+      _allRoutes = [];
+      snap.forEach(function(doc) {
+        var d = doc.data();
+        var label = (d.label || '').trim();
+        if (label) _allRoutes.push(label);
+      });
+    } catch (e) {
+      _allRoutes = [];
+      console.warn('[cooper] no se pudieron cargar las rutas:', e.message);
+    }
   }
 
   // ─── Cargar fotos (últimos 90 días) ───
@@ -516,26 +535,48 @@
     _renderGallery();
   });
 
-  // Rellena el desplegable de rutas con las rutas presentes en las fotos
+  // Acorta una etiqueta de ruta larga para mostrarla en el desplegable
+  // (las rutas en config tienen labels con muchas poblaciones separadas
+  // por comas — mostramos las 3 primeras + "…")
+  function _shortRoute(label) {
+    var parts = String(label).split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    if (parts.length <= 3) return parts.join(', ');
+    return parts.slice(0, 3).join(', ') + '… (+' + (parts.length - 3) + ')';
+  }
+
+  // Rellena el desplegable de rutas. Muestra TODAS las rutas configuradas
+  // (config/phones/list) aunque no tengan fotos, MÁS cualquier ruta que
+  // aparezca en las fotos pero no esté en la config (p.ej. 'Sin ruta').
   function _populateRouteSelect() {
     var sel = $('gx-route-select');
     if (!sel) return;
+
     // Cuenta fotos por ruta
     var counts = {};
     _photos.forEach(function(p) {
       var r = (p.data.route || 'Sin ruta').trim() || 'Sin ruta';
       counts[r] = (counts[r] || 0) + 1;
     });
-    var routes = Object.keys(counts).sort(function(a, b) {
+
+    // Conjunto unión: todas las configuradas + las que aparecen en fotos
+    var routeSet = {};
+    _allRoutes.forEach(function(r) { routeSet[r] = true; });
+    Object.keys(counts).forEach(function(r) { routeSet[r] = true; });
+
+    var routes = Object.keys(routeSet).sort(function(a, b) {
       return a.localeCompare(b, 'es', { numeric: true });
     });
+
     var html = '<option value="all">Todas las rutas (' + _photos.length + ')</option>';
     routes.forEach(function(r) {
-      html += '<option value="' + esc(r) + '">' + esc(r) + ' (' + counts[r] + ')</option>';
+      var n = counts[r] || 0;
+      var disp = _shortRoute(r);
+      html += '<option value="' + esc(r) + '">' + esc(disp) + ' (' + n + ')</option>';
     });
     sel.innerHTML = html;
-    // Mantener selección si sigue existiendo
-    if (_routeFilter !== 'all' && counts[_routeFilter] === undefined) {
+
+    // Mantener selección si sigue existiendo en la lista
+    if (_routeFilter !== 'all' && !routeSet[_routeFilter]) {
       _routeFilter = 'all';
     }
     sel.value = _routeFilter;
