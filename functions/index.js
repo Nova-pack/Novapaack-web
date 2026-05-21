@@ -93,6 +93,21 @@ async function processQueue() {
         const subject = (doc.subject || '(sin asunto)').trim();
         const body = doc.body || '';
 
+        // ── Correos de bienvenida enviados manualmente vía mailto ───────────
+        // Cuando el admin pulsa ✉️, se abre el cliente de correo del admin
+        // (mailto:) Y se graba un doc en /mailbox para trazabilidad. Estos docs
+        // tienen sentVia='mailto_admin'. El SMTP no debe volver a enviarlos:
+        // el destinatario ya los recibió del cliente de correo del admin.
+        if (doc.sentVia === 'mailto_admin') {
+            await doc.ref.update({
+                status: 'sent_manual',
+                skippedAt: admin.firestore.FieldValue.serverTimestamp(),
+                skipReason: 'Enviado manualmente por el admin vía mailto. El motor SMTP no debe duplicarlo.'
+            }).catch(() => {});
+            skipped++;
+            continue;
+        }
+
         if (!to || !to.includes('@')) {
             await doc.ref.update({
                 status: 'failed',

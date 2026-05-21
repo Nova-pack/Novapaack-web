@@ -1871,7 +1871,7 @@
                 const adminEmailNow = (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin';
                 const docPayload = {
                     type: 'outgoing_welcome',
-                    status: 'queued', // FASE 2: cuando enchufemos SMTP, mail_engine lo procesará
+                    status: 'sent_manual', // ← NO 'queued': el envío lo hizo el cliente de correo del admin vía mailto. Si pusimos 'queued', el mail_engine SMTP lo volvía a enviar y el cliente recibía el correo dos (o más) veces.
                     to: to,
                     toName: opts.name || '',
                     toUid: opts.uid || opts.docId || '',
@@ -1882,8 +1882,8 @@
                     direction: 'outgoing',
                     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                     createdBy: adminEmailNow,
-                    sentVia: 'mailto_admin', // el envío real lo hizo el cliente de correo del admin
-                    note: 'Email de bienvenida compuesto desde admin. mail_engine SMTP no activado todavía — el envío efectivo lo hizo el admin desde su cliente de correo.'
+                    sentVia: 'mailto_admin',
+                    note: 'Email de bienvenida compuesto desde admin. El envío efectivo lo hizo el admin desde su cliente de correo (mailto:). El motor SMTP NO debe reenviarlo.'
                 };
                 await db.collection('mailbox').add(docPayload);
             } catch(e) {
@@ -2058,7 +2058,7 @@
                     const adminEmailNow = (firebase.auth().currentUser && firebase.auth().currentUser.email) || 'admin';
                     await db.collection('mailbox').add({
                         type: 'outgoing_welcome',
-                        status: 'queued',
+                        status: 'sent_manual', // ← NO 'queued': el envío lo hizo el admin vía mailto. Con 'queued' el motor SMTP lo reenviaría duplicando el correo.
                         to: to,
                         toName: parent.name || '',
                         clientId: parent.id,
