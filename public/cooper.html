@@ -88,6 +88,17 @@
   /* ─── Cuerpo ─── */
   .gx-body { padding: 14px 16px 40px; max-width: 980px; margin: 0 auto; }
 
+  /* ─── Selector de ruta ─── */
+  .gx-route-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  .gx-route-label { font-size: 0.85rem; font-weight: 700; color: var(--text-dim); }
+  .gx-route-select {
+    flex: 1; padding: 10px 12px; font-size: 0.95rem; font-weight: 700;
+    background: var(--surface); border: 2px solid var(--orange); border-radius: 10px;
+    color: var(--text); outline: none; cursor: pointer;
+  }
+
   .gx-filters {
     display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;
   }
@@ -259,6 +270,14 @@
     <div class="who">Cooper · <b id="who-name">—</b></div>
   </div>
   <div class="gx-body">
+    <!-- Selector de RUTA -->
+    <div class="gx-route-row">
+      <label class="gx-route-label">🚛 Ruta:</label>
+      <select id="gx-route-select" class="gx-route-select">
+        <option value="all">Todas las rutas</option>
+      </select>
+    </div>
+    <!-- Filtro tipo -->
     <div class="gx-filters" id="gx-filters">
       <div class="gx-chip active" data-filter="all">Todo</div>
       <div class="gx-chip" data-filter="recogida">📥 Recogidas</div>
@@ -291,6 +310,7 @@
   // ─── Estado ───
   var _photos = [];        // todas las fotos cargadas (90 días)
   var _filter = 'all';     // all | recogida | entrega
+  var _routeFilter = 'all'; // all | <nombre de ruta>
   var _openDay = null;     // 'YYYY-MM-DD' o null
   var _userName = '';
   var DAYS_BACK = 90;
@@ -435,6 +455,7 @@
         if (!date) return;
         _photos.push({ id: doc.id, data: d, date: date });
       });
+      _populateRouteSelect();
       _renderGallery();
     } catch (e) {
       // Fallback: si falla el índice de createdAt, intentar por timestamp
@@ -450,6 +471,7 @@
           if (!date || date.getTime() < sinceMs) return;
           _photos.push({ id: doc.id, data: d, date: date });
         });
+        _populateRouteSelect();
         _renderGallery();
       } catch (e2) {
         $('gx-content').innerHTML = '<div class="gx-empty" style="color:#FF8A80;">' +
@@ -465,12 +487,51 @@
     _filter = chip.getAttribute('data-filter');
     document.querySelectorAll('.gx-chip').forEach(function(c) { c.classList.remove('active'); });
     chip.classList.add('active');
+    _openDay = null; // al cambiar filtro, volver a carpetas
     _renderGallery();
   });
 
+  // Selector de ruta
+  $('gx-route-select').addEventListener('change', function() {
+    _routeFilter = this.value;
+    _openDay = null; // al cambiar ruta, volver a carpetas
+    _renderGallery();
+  });
+
+  // Rellena el desplegable de rutas con las rutas presentes en las fotos
+  function _populateRouteSelect() {
+    var sel = $('gx-route-select');
+    if (!sel) return;
+    // Cuenta fotos por ruta
+    var counts = {};
+    _photos.forEach(function(p) {
+      var r = (p.data.route || 'Sin ruta').trim() || 'Sin ruta';
+      counts[r] = (counts[r] || 0) + 1;
+    });
+    var routes = Object.keys(counts).sort(function(a, b) {
+      return a.localeCompare(b, 'es', { numeric: true });
+    });
+    var html = '<option value="all">Todas las rutas (' + _photos.length + ')</option>';
+    routes.forEach(function(r) {
+      html += '<option value="' + esc(r) + '">' + esc(r) + ' (' + counts[r] + ')</option>';
+    });
+    sel.innerHTML = html;
+    // Mantener selección si sigue existiendo
+    if (_routeFilter !== 'all' && counts[_routeFilter] === undefined) {
+      _routeFilter = 'all';
+    }
+    sel.value = _routeFilter;
+  }
+
   function _filtered() {
-    if (_filter === 'all') return _photos;
-    return _photos.filter(function(p) { return (p.data.type || '') === _filter; });
+    return _photos.filter(function(p) {
+      if (_filter !== 'all' && (p.data.type || '') !== _filter) return false;
+      if (_routeFilter !== 'all') {
+        var r = (p.data.route || 'Sin ruta').trim() || 'Sin ruta';
+        if (r !== _routeFilter) return false;
+      }
+      return true;
+    });
   }
 
   // ─── Render galería ───
@@ -513,6 +574,7 @@
         h += '<div class="pc-meta">';
         h += '<div class="pc-type ' + type + '">' + typeIcon + ' ' + typeLabel + '</div>';
         h += '<div class="pc-time">🕐 ' + timeLabel(p.date) + '</div>';
+        if (p.data.route) h += '<div class="pc-note">🚛 ' + esc(p.data.route) + '</div>';
         if (p.data.note) h += '<div class="pc-note">📝 ' + esc(p.data.note) + '</div>';
         h += '</div></div>';
       });
@@ -583,10 +645,11 @@
   // ─── Impresión: hoja del día ───
   function _printDay(folder) {
     var type, typeLabel;
+    var routeTxt = _routeFilter === 'all' ? 'Todas las rutas' : ('Ruta ' + _routeFilter);
     var h = '';
     h += '<div class="print-header">';
     h += '<h1>NOVAPACK ► · Cooper — ' + esc(folder.label) + '</h1>';
-    h += '<div class="ph-sub">' + folder.items.length + ' foto(s) · Impreso por ' + esc(_userName) +
+    h += '<div class="ph-sub">' + esc(routeTxt) + ' · ' + folder.items.length + ' foto(s) · Impreso por ' + esc(_userName) +
          ' · ' + new Date().toLocaleString('es-ES') + '</div>';
     h += '</div>';
     h += '<div class="print-grid">';
@@ -596,6 +659,7 @@
       h += '<div class="print-cell">';
       h += '<img src="' + esc(p.data.photoURL || '') + '" alt="">';
       h += '<div class="pcap"><b>' + typeLabel + '</b> · ' + timeLabel(p.date);
+      if (p.data.route) h += ' · 🚛 ' + esc(p.data.route);
       if (p.data.driverName) h += ' · ' + esc(p.data.driverName);
       if (p.data.note) h += '<br>' + esc(p.data.note);
       h += '</div></div>';
