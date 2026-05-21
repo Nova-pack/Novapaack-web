@@ -3225,6 +3225,9 @@ window.runPublicTicketsBackfill = async function() {
             </div>
             <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
                 <span id="route-map-driver-status" style="font-size:0.75rem; padding:3px 10px; border-radius:12px; font-weight:700;"></span>
+                <button id="btn-clear-gps" onclick="clearRouteGPS()" style="background:#3d1a1a; border:1px solid #7f2020; color:#FF6B6B; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:4px;" title="Elimina la posición GPS guardada del repartidor (útil cuando la última señal es muy antigua o incorrecta)">
+                    <span class="material-symbols-outlined" style="font-size:0.9rem;">gps_off</span> Borrar GPS
+                </button>
                 <button onclick="if(_routeMapRefresh) _routeMapRefresh()" style="background:#1e3a5f; border:1px solid #2d5a8e; color:#5dade2; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:0.75rem; font-weight:700; display:flex; align-items:center; gap:4px;">
                     <span class="material-symbols-outlined" style="font-size:0.9rem;">refresh</span> Actualizar
                 </button>
@@ -10706,6 +10709,34 @@ window.runPublicTicketsBackfill = async function() {
             let _routeMapGeoCache = {};
             let _routeMapInfoWindow = null;
             let _routeMapGeocoder = null;
+            let _routeMapGpsDocId = '';  // docId activo para poder borrarlo con clearRouteGPS
+
+            // Borrar la posición GPS caducada de un repartidor.
+            // Útil cuando el marcador está en un lugar imposible (sesión anterior).
+            window.clearRouteGPS = async function() {
+                if (!_routeMapGpsDocId) {
+                    if (typeof showToast === 'function') showToast('No hay referencia de GPS activa', 'error');
+                    return;
+                }
+                var doc = await db.collection('driver_locations').doc(_routeMapGpsDocId).get();
+                var lastAt = '';
+                if (doc.exists && doc.data().updatedAt) {
+                    try { lastAt = '\n\nÚltima señal: ' + doc.data().updatedAt.toDate().toLocaleString('es-ES'); } catch(e){}
+                }
+                if (!confirm('¿Borrar la posición GPS guardada para esta ruta?' + lastAt + '\n\nEl marcador desaparecerá del mapa. La próxima vez que el repartidor abra la app se volverá a posicionar correctamente.')) return;
+                try {
+                    await db.collection('driver_locations').doc(_routeMapGpsDocId).delete();
+                    // Limpiar marker del mapa
+                    if (_routeMapDriverMarker) { _routeMapDriverMarker.setMap(null); _routeMapDriverMarker = null; }
+                    var statusEl = document.getElementById('route-map-driver-status');
+                    if (statusEl) { statusEl.textContent = 'Sin datos GPS'; statusEl.style.background = '#555'; }
+                    var updateEl = document.getElementById('route-map-last-update');
+                    if (updateEl) updateEl.textContent = '';
+                    if (typeof showToast === 'function') showToast('Posición GPS borrada. El repartidor se reposicionará al abrir la app.', 'success');
+                } catch(e) {
+                    if (typeof showToast === 'function') showToast('Error al borrar GPS: ' + e.message, 'error');
+                }
+            };
 
             function _makeCircleSvg(color, label, size) {
                 size = size || 28;
@@ -10739,8 +10770,8 @@ window.runPublicTicketsBackfill = async function() {
                 // Init map
                 var container = document.getElementById('route-map-container');
                 _routeMap = new google.maps.Map(container, {
-                    center: { lat: 39.47, lng: -0.376 },
-                    zoom: 8,
+                    center: { lat: 36.72, lng: -4.42 },  // Málaga capital
+                    zoom: 9,
                     mapTypeControl: false,
                     streetViewControl: false,
                     fullscreenControl: true
@@ -10757,6 +10788,7 @@ window.runPublicTicketsBackfill = async function() {
                     ? window.normalizePhone(phone)
                     : phone.replace(/\D/g, '').replace(/^34/, '');
                 var gpsDocId = normalPhone.replace(/[^a-zA-Z0-9]/g, '_');
+                _routeMapGpsDocId = gpsDocId;  // para clearRouteGPS()
                 _routeMapUnsub = db.collection('driver_locations').doc(gpsDocId)
                     .onSnapshot(function(doc) {
                         if (!doc.exists) {

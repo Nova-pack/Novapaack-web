@@ -196,6 +196,8 @@ service cloud.firestore {
         && docId == request.resource.data.phone
         && request.resource.data.phone.size() >= 6
         && request.resource.data.phone.size() <= 15;
+      // Admin puede borrar posiciones GPS caducadas o incorrectas desde la torre
+      allow delete: if isAdmin();
     }
 
     // ─── DRIVER: route reassignments log (auth create, admin read/delete) ───
